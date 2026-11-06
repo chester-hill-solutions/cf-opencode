@@ -23,12 +23,18 @@ export interface ConversationState {
   pending: Record<string, string>
 }
 
+export interface StoredEventEntry {
+  seq: number
+  event: import("./events").ConversationEvent
+}
+
 export interface KeyValueStorage {
   get<T>(key: string): Promise<T | undefined>
   put(key: string, value: unknown): Promise<void>
 }
 
 const SEEN_LIMIT = 200
+const EVENT_LIMIT = 200
 
 export class ConversationStore {
   constructor(private readonly storage: KeyValueStorage) {}
@@ -57,6 +63,25 @@ export class ConversationStore {
     state.transport = transport
     if (slack) state.slack = slack
     await this.save(state)
+  }
+
+  /** Monotonic sequence for SSE ids; survives restarts. */
+  async nextSeq(): Promise<number> {
+    const current = (await this.storage.get<number>("seq")) ?? 0
+    const next = current + 1
+    await this.storage.put("seq", next)
+    return next
+  }
+
+  async appendEvent(entry: StoredEventEntry): Promise<void> {
+    const log = (await this.storage.get<StoredEventEntry[]>("events")) ?? []
+    log.push(entry)
+    await this.storage.put("events", log.slice(-EVENT_LIMIT))
+  }
+
+  async eventsAfter(lastID: number): Promise<StoredEventEntry[]> {
+    const log = (await this.storage.get<StoredEventEntry[]>("events")) ?? []
+    return log.filter((entry) => entry.seq > lastID)
   }
 
   async rememberPermission(requestID: string, sessionID: string): Promise<void> {

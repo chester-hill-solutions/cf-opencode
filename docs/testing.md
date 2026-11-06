@@ -58,5 +58,6 @@ bun run test:workers
 
 - No container e2e in CI (image build + provider key).
 - No Slack adapter e2e (needs a test workspace).
-- No SSE replay/heartbeat tests — those features are not implemented yet.
+- SSE replay/heartbeat is covered at the formatting/state level; no end-to-end
+  reconnect test against a live container yet.
 - No load test: the harness runs `max_instances: 1`; extra conversations queue on alarms.

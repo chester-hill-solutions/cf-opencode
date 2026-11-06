@@ -43,6 +43,30 @@ describe("ConversationStore", () => {
     expect(await store.takePermission("req_1")).toBeUndefined()
   })
 
+  test("sequences SSE events and replays after an id", async () => {
+    const store = new ConversationStore(fakeStorage())
+    const first = await store.nextSeq()
+    await store.appendEvent({ seq: first, event: { type: "assistant", text: "one" } })
+    const second = await store.nextSeq()
+    await store.appendEvent({ seq: second, event: { type: "settled" } })
+
+    expect([first, second]).toEqual([1, 2])
+    expect((await store.eventsAfter(0)).map((entry) => entry.seq)).toEqual([1, 2])
+    expect((await store.eventsAfter(1)).map((entry) => entry.seq)).toEqual([2])
+    expect(await store.eventsAfter(2)).toEqual([])
+  })
+
+  test("caps the event log", async () => {
+    const store = new ConversationStore(fakeStorage())
+    for (let i = 0; i < 250; i++) {
+      const seq = await store.nextSeq()
+      await store.appendEvent({ seq, event: { type: "settled" } })
+    }
+    const all = await store.eventsAfter(0)
+    expect(all.length).toBe(200)
+    expect(all[all.length - 1]!.seq).toBe(250)
+  })
+
   test("caps the dedupe list", async () => {
     const storage = fakeStorage()
     const store = new ConversationStore(storage)

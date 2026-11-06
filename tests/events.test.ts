@@ -15,6 +15,10 @@ describe("formatSse", () => {
     expect(frame.endsWith("\n\n")).toBe(true)
   })
 
+  test("includes an SSE id when sequenced", () => {
+    expect(formatSse({ type: "settled" }, 7)).toBe('id: 7\nevent: settled\ndata: {"type":"settled"}\n\n')
+  })
+
   test("settled has no payload fields", () => {
     expect(formatSse({ type: "settled" })).toBe('event: settled\ndata: {"type":"settled"}\n\n')
   })

@@ -12,6 +12,12 @@ export type ConversationEvent =
   | { type: "error"; message: string }
 
 /** One SSE frame: an `event:` name plus the JSON payload. */
-export function formatSse(event: ConversationEvent): string {
-  return `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`
+export function formatSse(event: ConversationEvent, seq?: number): string {
+  const id = seq === undefined ? "" : `id: ${seq}\n`
+  return `${id}event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`
+}
+
+export interface StoredEvent {
+  seq: number
+  event: ConversationEvent
 }

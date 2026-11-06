@@ -42,6 +42,7 @@ export interface PermissionRequest {
 export class Conversation extends DurableObject<Env> {
   private readonly store: ConversationStore
   private readonly subscribers = new Set<ReadableStreamDefaultController<Uint8Array>>()
+  private heartbeat: ReturnType<typeof setInterval> | undefined
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
@@ -53,7 +54,7 @@ export class Conversation extends DurableObject<Env> {
     if (url.pathname === "/message") return this.onMessage((await request.json()) as MessageRequest)
     if (url.pathname === "/slack") return this.onSlackEvent((await request.json()) as SlackEventRequest)
     if (url.pathname === "/permission") return this.onPermission((await request.json()) as PermissionRequest)
-    if (url.pathname === "/events") return this.onEvents()
+    if (url.pathname === "/events") return this.onEvents(request)
     if (url.pathname === "/state") return Response.json(await this.store.get())
     if (url.pathname === "/health") return Response.json({ ok: true })
     return new Response("not found", { status: 404 })
@@ -103,17 +104,23 @@ export class Conversation extends DurableObject<Env> {
 
   // -------------------------------------------------------------------- SSE
 
-  private onEvents(): Response {
+  private async onEvents(request: Request): Promise<Response> {
+    const lastID = Number(request.headers.get("last-event-id") ?? "0") || 0
+    const replay = await this.store.eventsAfter(lastID)
     const encoder = new TextEncoder()
     let ref: ReadableStreamDefaultController<Uint8Array> | undefined
+
     const stream = new ReadableStream<Uint8Array>({
       start: (controller) => {
         ref = controller
-        this.subscribers.add(controller)
+        for (const entry of replay) controller.enqueue(encoder.encode(formatSse(entry.event, entry.seq)))
         controller.enqueue(encoder.encode(": connected\n\n"))
+        this.subscribers.add(controller)
+        this.syncHeartbeat()
       },
       cancel: () => {
         if (ref) this.subscribers.delete(ref)
+        this.syncHeartbeat()
       },
     })
     return new Response(stream, {
@@ -125,8 +132,8 @@ export class Conversation extends DurableObject<Env> {
     })
   }
 
-  private emit(event: ConversationEvent): void {
-    const chunk = new TextEncoder().encode(formatSse(event))
+  private broadcast(event: ConversationEvent, seq: number): void {
+    const chunk = new TextEncoder().encode(formatSse(event, seq))
     for (const controller of this.subscribers) {
       try {
         controller.enqueue(chunk)
@@ -134,11 +141,33 @@ export class Conversation extends DurableObject<Env> {
         this.subscribers.delete(controller)
       }
     }
+    this.syncHeartbeat()
+  }
+
+  /** Keep idle SSE connections alive without holding a container. */
+  private syncHeartbeat(): void {
+    if (this.subscribers.size > 0 && !this.heartbeat) {
+      this.heartbeat = setInterval(() => {
+        const chunk = new TextEncoder().encode(": heartbeat\n\n")
+        for (const controller of this.subscribers) {
+          try {
+            controller.enqueue(chunk)
+          } catch {
+            this.subscribers.delete(controller)
+          }
+        }
+      }, 15_000)
+    } else if (this.subscribers.size === 0 && this.heartbeat) {
+      clearInterval(this.heartbeat)
+      this.heartbeat = undefined
+    }
   }
 
   /** Emit to SSE and, when the conversation has a Slack target, post there too. */
   private async deliver(event: ConversationEvent): Promise<void> {
-    this.emit(event)
+    const seq = await this.store.nextSeq()
+    await this.store.appendEvent({ seq, event })
+    this.broadcast(event, seq)
     const state = await this.store.get()
     if (!state.slack || !this.env.SLACK_BOT_TOKEN) return
     if (event.type === "assistant") {
