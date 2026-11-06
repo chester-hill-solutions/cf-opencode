@@ -116,11 +116,33 @@ added. Captures: 18/18, correct dimensions, no console errors. Dark mode only (t
 condition). The critics read the scroll fold as occlusion; the screenshot confirms the bar is a separate
 row and the content is reachable by scrolling.
 
-## Run status — closed after 2 iterations
+## Iteration 3 — tighter vertical rhythm
 
-Stopped deliberately: the budget for a single session was two scored iterations, and the second kept with
-no viewport regression. **Result: +19.17 over baseline** in the paired draw (baseline vs final), no
-viewport regressed.
+**Hypothesis (written before the change).** Change: reduce header/main/fieldset/label/input/textarea
+spacing so more of the form fits at 900×650. Predicted: density +2, no viewport regression. Mechanism:
+less empty vertical space per section. Scope: `public/index.html`.
+
+**A/B mapping (recorded before scoring).** A = `iter-3-after`, B = `iter-2-after` (seed `iter-3`).
+
+**Verdict: REVERTED (mean +2.00, 1280×800 regressed −3.50).**
+
+| Viewport | best (iter-2) | candidate | Δ |
+|---|---|---|---|
+| 900×650 | 73.00 | 78.00 | +5.00 |
+| 1280×800 | 78.50 | 75.00 | **−3.50** |
+| 1600×1000 | 61.00 | 65.50 | +4.50 |
+| **mean** | 70.83 | 72.83 | +2.00 |
+
+The mechanism did what it promised at 900 and 1600 (one more section visible, density +1 across the run),
+but at 1280 the fold landed on the PERMISSIONS legend, clipping it mid-glyph in five states; the 1280
+critic preferred the previous set. The no-regression gate vetoed the keep. **Finding: spacing alone cannot
+fix the fold; the surface needs a scroll affordance or content padding before density can be tightened.**
+
+## Run status — closed after 3 iterations
+
+Stopped deliberately: the budget for a single session was three scored iterations; iteration 2 kept and
+iteration 3 reverted. **Result: +19.17 over baseline** in the paired draw (baseline vs final), no viewport
+regressed. The best tree is the iteration-2 layout (the one now deployed).
 
 **Remaining headroom, recorded for the next run:**
 
@@ -143,6 +165,7 @@ viewport regressed.
 | 0 | baseline | — | 45.33 absolute |
 | 1 | sticky action bar + status pill | +3.92 (900: −6.00) | REVERTED |
 | 2 | action bar as a layout row | +19.17 | **KEPT** |
+| 3 | tighter vertical rhythm | +2.00 (1280: −3.50) | REVERTED |
 
 Baseline-vs-final was scored in one draw (iteration 2), not by summing iteration deltas.
 
