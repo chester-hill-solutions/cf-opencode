@@ -1,0 +1,17 @@
+node_modules
+.git
+.wrangler
+.github
+bench
+docs
+hillclimb
+packages
+public
+scripts
+test
+tests
+web
+*.md
+bun.lock
+package.json
+tsconfig*.json

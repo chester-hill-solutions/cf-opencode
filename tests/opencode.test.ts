@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import { portFetch } from "../src/opencode"
+import { basicAuth, portFetch } from "../src/opencode"
+
+describe("basicAuth", () => {
+  test("uses the opencode username and the server password", () => {
+    expect(basicAuth("secret")).toBe(`Basic ${btoa("opencode:secret")}`)
+  })
+})
 
 describe("portFetch", () => {
   test("rewrites the request to the container host and preserves it", async () => {

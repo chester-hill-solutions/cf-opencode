@@ -18,18 +18,24 @@ CHECKPOINT="/tmp/cf-opencode-checkpoint.tar.gz"
 
 now() { python3 -c 'import time; print(int(time.time() * 1000))'; }
 
+REPO_ENV=()
+if [ -n "${WORKSPACE_REPO:-}" ]; then REPO_ENV+=(--env "WORKSPACE_REPO=${WORKSPACE_REPO}"); fi
+if [ -n "${WORKSPACE_BRANCH:-}" ]; then REPO_ENV+=(--env "WORKSPACE_BRANCH=${WORKSPACE_BRANCH}"); fi
+
 case "$RUNTIME" in
   container)
     command -v container >/dev/null || { echo "Apple container is not installed"; exit 1; }
     container build -t "$IMAGE" "$ROOT"
-    container run -d --name "$NAME" -p "${CONTROL_PORT}:4001" -p 4000:4000 -p "${STOW_PORT}:9000" "$IMAGE" >/dev/null
+    container run -d --name "$NAME" "${REPO_ENV[@]}" -p "${CONTROL_PORT}:4001" -p 4000:4000 -p "${STOW_PORT}:9000" "$IMAGE" >/dev/null
     stop() { container stop "$NAME" >/dev/null 2>&1 || true; }
+    s3_health() { container exec "$NAME" curl -fsS "http://127.0.0.1:9000/_stow/health"; }
     ;;
   docker)
     command -v docker >/dev/null || { echo "docker is not installed"; exit 1; }
     docker build -t "$IMAGE" "$ROOT"
-    docker run -d --name "$NAME" -p "${CONTROL_PORT}:4001" -p 4000:4000 -p "${STOW_PORT}:9000" "$IMAGE" >/dev/null
+    docker run -d --name "$NAME" "${REPO_ENV[@]}" -p "${CONTROL_PORT}:4001" -p 4000:4000 -p "${STOW_PORT}:9000" "$IMAGE" >/dev/null
     stop() { docker rm -f "$NAME" >/dev/null 2>&1 || true; }
+    s3_health() { docker exec "$NAME" curl -fsS "http://127.0.0.1:9000/_stow/health"; }
     ;;
   *)
     echo "RUNTIME must be container or docker" >&2
@@ -47,11 +53,25 @@ start=$(now)
 curl -fsS -X POST "http://127.0.0.1:${CONTROL_PORT}/start" >/dev/null
 echo "start (stow-s3 + opencode serve): $(( $(now) - start )) ms"
 
-curl -fsS "http://127.0.0.1:${STOW_PORT}/_stow/health" >/dev/null && echo "local S3: healthy"
+# stow binds loopback inside the container; the host-mapped port cannot reach it.
+if s3_health >/dev/null 2>&1; then echo "local S3: healthy (inside container)"; else echo "local S3: unreachable"; fi
 
+HEADERS="/tmp/cf-opencode-checkpoint.headers"
 start=$(now)
-curl -fsS "http://127.0.0.1:${CONTROL_PORT}/checkpoint" -o "$CHECKPOINT"
+curl -fsS -D "$HEADERS" "http://127.0.0.1:${CONTROL_PORT}/checkpoint" -o "$CHECKPOINT"
 echo "checkpoint: $(( $(now) - start )) ms, $(du -h "$CHECKPOINT" | cut -f1)"
+fingerprint=$(awk 'tolower($1)=="x-workspace-fingerprint:"{print $2}' "$HEADERS" | tr -d '\r')
+
+# Checkpointing pauses OpenCode. Restart it, then prove an unchanged workspace
+# takes the 204 path without pausing again.
+start=$(now)
+curl -fsS -X POST "http://127.0.0.1:${CONTROL_PORT}/start" >/dev/null
+echo "restart after checkpoint: $(( $(now) - start )) ms"
+if [ -n "$fingerprint" ]; then
+  start=$(now)
+  code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${CONTROL_PORT}/checkpoint?since=${fingerprint}")
+  echo "checkpoint (unchanged): ${code} in $(( $(now) - start )) ms"
+fi
 
 start=$(now)
 curl -fsS -X POST --data-binary "@${CHECKPOINT}" "http://127.0.0.1:${CONTROL_PORT}/restore" >/dev/null

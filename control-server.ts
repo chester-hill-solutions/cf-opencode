@@ -14,7 +14,7 @@
  */
 
 import { spawn } from "bun"
-import { createHash } from "node:crypto"
+import { createHash, randomBytes } from "node:crypto"
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { buildPermissionRules, type PermissionLists } from "./src/permissions"
 
@@ -32,11 +32,16 @@ const MARKER = `${WORKSPACE}/.harness-initialized`
 
 let opencode: ReturnType<typeof spawn> | undefined
 let stow: ReturnType<typeof spawn> | undefined
+let opencodePassword = ""
 
-async function waitFor(url: string, attempts = 150): Promise<void> {
+function basicAuth(password: string): Record<string, string> {
+  return { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` }
+}
+
+async function waitFor(url: string, attempts = 150, headers?: Record<string, string>): Promise<void> {
   for (let attempt = 0; attempt < attempts; attempt++) {
     try {
-      const res = await fetch(url)
+      const res = await fetch(url, { headers })
       if (res.ok) return
     } catch {
       /* not ready */
@@ -75,10 +80,15 @@ async function startStow(): Promise<void> {
 async function startOpencode(): Promise<void> {
   if (opencode && opencode.exitCode === null) return
   if (opencode) opencode = undefined
+  // OpenCode v2 requires a password. Use the configured one if present so the
+  // Worker and container can share it; otherwise generate a per-start secret.
+  opencodePassword = process.env.OPENCODE_PASSWORD ?? randomBytes(32).toString("base64url")
   opencode = spawn(["opencode", "serve", "--hostname", "0.0.0.0", "--port", String(OPENCODE_PORT)], {
     cwd: WORKSPACE,
     env: {
       ...process.env,
+      OPENCODE_PASSWORD: opencodePassword,
+      OPENCODE_SERVER_PASSWORD: opencodePassword,
       S3_ENDPOINT: `http://127.0.0.1:${STOW_PORT}`,
       S3_ACCESS_KEY_ID: STOW_ACCESS_KEY,
       S3_SECRET_ACCESS_KEY: STOW_SECRET_KEY,
@@ -86,7 +96,7 @@ async function startOpencode(): Promise<void> {
     stdout: "inherit",
     stderr: "inherit",
   })
-  await waitFor(`http://127.0.0.1:${OPENCODE_PORT}/api/info`)
+  await waitFor(`http://127.0.0.1:${OPENCODE_PORT}/api/info`, 150, basicAuth(opencodePassword))
 }
 
 function writeOpencodeConfig(model?: string, permissions?: PermissionLists) {
@@ -142,6 +152,7 @@ export async function workspaceFingerprint(workspace = WORKSPACE): Promise<strin
 
 if (import.meta.main) Bun.serve({
   port: CONTROL_PORT,
+  idleTimeout: 120,
   async fetch(request) {
     const url = new URL(request.url)
 
@@ -170,17 +181,49 @@ if (import.meta.main) Bun.serve({
 
     if (url.pathname === "/start") {
       if (!initialized() && workspaceRepo) {
-        const code = await run(["git", "clone", "--depth", "1", "--branch", workspaceBranch, workspaceRepo, WORKSPACE])
+        // /workspace already contains .state from the entrypoint, so clone
+        // beside it and merge the repository in.
+        const tmp = "/tmp/workspace-clone"
+        rmSync(tmp, { recursive: true, force: true })
+        const code = await run(["git", "clone", "--depth", "1", "--branch", workspaceBranch, workspaceRepo, tmp])
         if (code !== 0) return Response.json({ error: "workspace clone failed" }, { status: 500 })
+        const copied = await run(["cp", "-a", `${tmp}/.`, WORKSPACE])
+        rmSync(tmp, { recursive: true, force: true })
+        if (copied !== 0) return Response.json({ error: "workspace copy failed" }, { status: 500 })
       }
       await startStow()
       await startOpencode()
-      return Response.json({ ok: true })
+      return Response.json({ ok: true, password: opencodePassword })
     }
 
     if (url.pathname === "/restore" && request.method === "POST") {
       const tmp = "/tmp/restore.tar.gz"
-      await Bun.write(tmp, new Response(request.body as ReadableStream))
+      if (!request.body) return Response.json({ error: "empty restore body" }, { status: 400 })
+      // Stream the upload to disk. Bun.write with a Response-wrapped stream can
+      // wait forever, so drain the request body into a file sink directly.
+      const writer = Bun.file(tmp).writer()
+      const reader = request.body.getReader()
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          writer.write(value)
+        }
+      } finally {
+        await writer.end()
+      }
+      // Stop the processes that hold the workspace before replacing it.
+      if (opencode) {
+        opencode.kill()
+        await opencode.exited.catch(() => {})
+        opencode = undefined
+        opencodePassword = ""
+      }
+      if (stow) {
+        stow.kill()
+        await stow.exited.catch(() => {})
+        stow = undefined
+      }
       rmSync(WORKSPACE, { recursive: true, force: true })
       mkdirSync(WORKSPACE, { recursive: true })
       const code = await run(["tar", "xzf", tmp, "-C", WORKSPACE])
@@ -202,6 +245,7 @@ if (import.meta.main) Bun.serve({
         opencode.kill()
         await opencode.exited.catch(() => {})
         opencode = undefined
+        opencodePassword = ""
       }
       try {
         await run(["sqlite3", `${STATE_DIR}/opencode.db`, "PRAGMA wal_checkpoint(TRUNCATE)"])

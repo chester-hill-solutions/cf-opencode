@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers"
-import { makeClient, portFetch, type ContainerPort } from "./opencode"
+import { basicAuth, makeClient, portFetch, type ContainerPort } from "./opencode"
 import {
   ConversationStore,
   type ConversationPhase,
@@ -66,6 +66,8 @@ export class Conversation extends DurableObject<Env> {
   /** This instance has verified the container for the current spec. */
   private ready = false
   private opencodePort?: ContainerPort
+  /** Password for the current OpenCode server process. */
+  private opencodePassword?: string
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
@@ -573,9 +575,17 @@ export class Conversation extends DurableObject<Env> {
     if (!container) throw new Error("no container bound")
     if (!container.running) container.start()
     const port = container.getTcpPort(number)
+    const path = number === OPENCODE_PORT ? "/api/info" : "/health"
+    const headers =
+      number === OPENCODE_PORT && this.opencodePassword
+        ? { authorization: basicAuth(this.opencodePassword) }
+        : undefined
     for (let attempt = 0; attempt < 100; attempt++) {
       try {
-        const res = await port.fetch("http://container/health", { signal: AbortSignal.timeout(2000) })
+        const res = await port.fetch(`http://container${path}`, {
+          headers,
+          signal: AbortSignal.timeout(2000),
+        })
         if (res.ok) return port
       } catch {
         /* not ready yet */
@@ -588,7 +598,7 @@ export class Conversation extends DurableObject<Env> {
   private async withClient<T>(fn: (client: ReturnType<typeof makeClient>) => Promise<T>): Promise<T> {
     try {
       const port = await this.ensureReady()
-      const client = makeClient(portFetch(port))
+      const client = makeClient(portFetch(port), this.opencodePassword)
       const result = await fn(client)
       this.consecutiveFailures = 0
       return result
@@ -681,6 +691,8 @@ export class Conversation extends DurableObject<Env> {
       signal: AbortSignal.timeout(60_000),
     })
     if (!started.ok) throw new Error(`container start failed: ${await started.text()}`)
+    const startedBody = (await started.json()) as { password?: string }
+    if (startedBody.password) this.opencodePassword = startedBody.password
 
     if (state.settingsVersion !== settings.version) {
       await this.store.patch({ settingsVersion: settings.version })
@@ -815,6 +827,7 @@ export class Conversation extends DurableObject<Env> {
   private invalidateOpenCode(): void {
     this.ready = false
     this.opencodePort = undefined
+    this.opencodePassword = undefined
   }
 
   // -------------------------------------------------------------------- Slack

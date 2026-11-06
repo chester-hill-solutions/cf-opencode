@@ -10,10 +10,16 @@ export interface ContainerPort {
   fetch(input: Request | string | URL, init?: RequestInit): Promise<Response>
 }
 
-export function makeClient(portFetch: PortFetch) {
+/** OpenCode v2 requires HTTP Basic auth on its local server. */
+export function basicAuth(password: string): string {
+  return `Basic ${btoa(`opencode:${password}`)}`
+}
+
+export function makeClient(portFetch: PortFetch, password?: string) {
   return OpenCode.make({
     baseUrl: "http://container",
     fetch: portFetch as typeof fetch,
+    ...(password ? { headers: { authorization: basicAuth(password) } } : {}),
   })
 }
 

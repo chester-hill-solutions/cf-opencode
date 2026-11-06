@@ -13,14 +13,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git jq ripgrep sqlite3 tar \
     && rm -rf /var/lib/apt/lists/*
 
-ARG OPENCODE_VERSION=2.2.1
-RUN curl -fsSL https://opencode.ai/install | bash -s -- --version "${OPENCODE_VERSION}" \
+ARG OPENCODE_VERSION=2.2.5
+RUN curl -fsSL https://opencode.ai/v2/install | bash -s -- --version "${OPENCODE_VERSION}" \
     && mv /root/.opencode/bin/opencode /usr/local/bin/opencode
 
-ARG STOW_VERSION=0.3.3
-RUN curl -fsSL -o /usr/local/bin/stow-s3 \
-      "https://github.com/chester-hill-solutions/stow-s3/releases/download/v${STOW_VERSION}/stow-s3-linux-amd64" \
-    && chmod +x /usr/local/bin/stow-s3
+ARG STOW_VERSION=0.3.7
+ARG TARGETARCH
+RUN cd /tmp \
+    && curl -fsSL -o "stow-linux-${TARGETARCH}.tar.gz" \
+      "https://github.com/chester-hill-solutions/stow-s3/releases/download/v${STOW_VERSION}/stow-linux-${TARGETARCH}.tar.gz" \
+    && curl -fsSL -o SHA256SUMS.txt \
+      "https://github.com/chester-hill-solutions/stow-s3/releases/download/v${STOW_VERSION}/SHA256SUMS.txt" \
+    && grep " stow-linux-${TARGETARCH}.tar.gz$" SHA256SUMS.txt | sha256sum -c - \
+    && tar -xzf "stow-linux-${TARGETARCH}.tar.gz" -C /usr/local/bin stow-s3 \
+    && chmod +x /usr/local/bin/stow-s3 \
+    && rm -f "stow-linux-${TARGETARCH}.tar.gz" SHA256SUMS.txt
 
 WORKDIR /app
 COPY control-server.ts entrypoint.sh ./

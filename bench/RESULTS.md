@@ -1,5 +1,26 @@
 # Results
 
+## 2026-11-06 — local Docker container (Apple Silicon, arm64)
+
+Image: `cf-opencode:dev` · OpenCode `2.2.5` · stow-s3 `0.3.7` ·
+workspace clone `chester-hill-solutions/opencode-slack@main`
+
+| metric | value |
+| --- | --- |
+| cold start (container → control `/health`) | 68 ms |
+| start (clone + stow-s3 + `opencode serve`) | 2.21 s |
+| checkpoint | 250 ms, 180 KB |
+| restart OpenCode after checkpoint | 306 ms |
+| checkpoint with unchanged `since` | 200 in 120 ms |
+| restore | 84 ms |
+
+The second checkpoint still returns `200`, not `204`: restarting OpenCode
+writes its session DB, so the workspace fingerprint changes even when the
+source tree does not. Per-turn cost of the checkpoint/restart model is
+therefore roughly 0.3–0.5 s. Keeping the per-turn restart is reasonable at
+this size; an online SQLite backup is only worth it if the archive or the
+restart grows much larger.
+
 ## 2026-11-06 — local (workerd / Miniflare, no container)
 
 | metric | value |
