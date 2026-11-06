@@ -19,6 +19,10 @@ export interface ConversationState {
   lastReply?: string
   /** Settings version the running container was configured with. */
   settingsVersion?: number
+  /** One pending admission when the container could not start. */
+  queued?: { text: string; slack?: SlackTarget; attempts: number }
+  /** Fingerprint of the workspace at the last successful checkpoint. */
+  checkpointFingerprint?: string
   /** Slack event ids already handled (dedupe). */
   seen: string[]
   /** Pending permission requests: requestID -> sessionID. */

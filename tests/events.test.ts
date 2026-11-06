@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test"
-import { formatSse } from "../src/events"
+import { formatSse, isSlowSubscriber } from "../src/events"
+
+describe("isSlowSubscriber", () => {
+  test("drops only subscribers past the queue budget", () => {
+    expect(isSlowSubscriber(0)).toBe(false)
+    expect(isSlowSubscriber(-1024)).toBe(false)
+    expect(isSlowSubscriber(-65 * 1024)).toBe(true)
+    expect(isSlowSubscriber(null)).toBe(false)
+  })
+})
 
 describe("formatSse", () => {
   test("wraps an assistant event in an SSE frame", () => {

@@ -9,7 +9,7 @@ import {
   type SlackEventEnvelope,
 } from "./adapters/slack"
 import { isSettled, latestAssistantReply, type MessageInfo } from "./messages"
-import { formatSse, type ConversationEvent } from "./events"
+import { formatSse, isSlowSubscriber, type ConversationEvent } from "./events"
 import { createSseParser } from "./sse"
 import { parseModelRef, type Env } from "./env"
 import { withRetries } from "./retry"
@@ -81,7 +81,9 @@ export class Conversation extends DurableObject<Env> {
       if (settings.streaming) this.ctx.waitUntil(this.startStream(sessionID))
       return Response.json({ ok: true, sessionID })
     } catch (err) {
-      return Response.json({ ok: false, error: errorMessage(err) }, { status: 500 })
+      const queued = await this.enqueue(text, undefined)
+      if (!queued) return Response.json({ ok: false, error: "busy" }, { status: 503 })
+      return Response.json({ ok: true, queued: true, error: errorMessage(err) }, { status: 202 })
     }
   }
 
@@ -113,8 +115,15 @@ export class Conversation extends DurableObject<Env> {
       return Response.json({ ok: true, sessionID })
     } catch (err) {
       if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
-      await this.postChunked(target.channel, `⚠️ Couldn't start the session: ${errorMessage(err)}`, target.replyTs).catch(() => {})
-      return Response.json({ ok: false, error: errorMessage(err) }, { status: 500 })
+      const queued = await this.enqueue(text, target)
+      if (!queued) {
+        await this.postChunked(
+          target.channel,
+          `⚠️ Container busy and a message is already queued: ${errorMessage(err)}`,
+          target.replyTs,
+        ).catch(() => {})
+      }
+      return Response.json({ ok: true, queued })
     }
   }
 
@@ -165,6 +174,15 @@ export class Conversation extends DurableObject<Env> {
   private broadcast(event: ConversationEvent, seq: number): void {
     const chunk = new TextEncoder().encode(formatSse(event, seq))
     for (const controller of this.subscribers) {
+      if (isSlowSubscriber(controller.desiredSize)) {
+        this.subscribers.delete(controller)
+        try {
+          controller.close()
+        } catch {
+          /* already closed */
+        }
+        continue
+      }
       try {
         controller.enqueue(chunk)
       } catch {
@@ -180,6 +198,15 @@ export class Conversation extends DurableObject<Env> {
       this.heartbeat = setInterval(() => {
         const chunk = new TextEncoder().encode(": heartbeat\n\n")
         for (const controller of this.subscribers) {
+          if (isSlowSubscriber(controller.desiredSize)) {
+            this.subscribers.delete(controller)
+            try {
+              controller.close()
+            } catch {
+              /* already closed */
+            }
+            continue
+          }
           try {
             controller.enqueue(chunk)
           } catch {
@@ -345,6 +372,9 @@ export class Conversation extends DurableObject<Env> {
         if (!saved) {
           await this.deliver({ type: "error", message: "workspace checkpoint failed; this turn is not durable" })
         }
+        if ((await this.store.get()).queued) {
+          await this.ctx.storage.setAlarm(Date.now() + 1000)
+        }
         return true
       }
       return false
@@ -356,6 +386,7 @@ export class Conversation extends DurableObject<Env> {
   /** Alarm fallback: poll while a stream is not covering the run. */
   async alarm(): Promise<void> {
     try {
+      if (await this.drainQueue()) return
       const settled = await this.pumpOnce()
       if (settled) return
     } catch (err) {
@@ -475,6 +506,7 @@ export class Conversation extends DurableObject<Env> {
           body: checkpoint.body,
           signal: AbortSignal.timeout(60_000),
         })
+        await this.store.patch({ checkpointFingerprint: undefined })
       }
     }
 
@@ -499,6 +531,50 @@ export class Conversation extends DurableObject<Env> {
     return container.getTcpPort(OPENCODE_PORT)
   }
 
+  /** Hold one admission when the container cannot start; drain it from the alarm. */
+  private async enqueue(text: string, slack?: SlackTarget): Promise<boolean> {
+    const state = await this.store.get()
+    if (state.queued) return false
+    await this.store.patch({ queued: { text, ...(slack ? { slack } : {}), attempts: 0 } })
+    if (slack) {
+      await this.postChunked(slack.channel, "⏳ Container busy — queued; I'll retry shortly.", slack.replyTs).catch(() => {})
+    }
+    await this.ctx.storage.setAlarm(Date.now() + 5000)
+    return true
+  }
+
+  private async drainQueue(): Promise<boolean> {
+    const state = await this.store.get()
+    if (!state.queued || this.pumping || this.streaming) return false
+    const queued = state.queued
+
+    try {
+      const sessionID = await this.ensureSession(queued.text, queued.slack ? "slack" : "http", queued.slack)
+      await this.withClient((client) => client.session.prompt({ sessionID, text: queued.text }))
+      await this.store.patch({ queued: undefined })
+      await this.startRun()
+      const settings = await this.settings()
+      if (settings.streaming) this.ctx.waitUntil(this.startStream(sessionID))
+      return true
+    } catch (err) {
+      const attempts = queued.attempts + 1
+      if (attempts >= 5) {
+        await this.store.patch({ queued: undefined })
+        if (queued.slack) {
+          await this.postChunked(
+            queued.slack.channel,
+            `⚠️ Couldn't start the session: ${errorMessage(err)}`,
+            queued.slack.replyTs,
+          ).catch(() => {})
+        }
+        return false
+      }
+      await this.store.patch({ queued: { ...queued, attempts } })
+      await this.ctx.storage.setAlarm(Date.now() + Math.min(5000 * attempts, 30_000))
+      return false
+    }
+  }
+
   private checkpointKey(): string {
     return `workspaces/${this.ctx.id.toString()}.tar.gz`
   }
@@ -507,12 +583,18 @@ export class Conversation extends DurableObject<Env> {
     try {
       await withRetries(
         async () => {
+          const state = await this.store.get()
+          const since = state.checkpointFingerprint ?? ""
           const control = await this.port(CONTROL_PORT)
-          const response = await control.fetch("http://container/checkpoint", {
-            signal: AbortSignal.timeout(120_000),
-          })
+          const response = await control.fetch(
+            `http://container/checkpoint?since=${encodeURIComponent(since)}`,
+            { signal: AbortSignal.timeout(120_000) },
+          )
+          if (response.status === 204) return
           if (!response.ok || !response.body) throw new Error(`checkpoint returned ${response.status}`)
           await this.env.CHECKPOINTS.put(this.checkpointKey(), response.body)
+          const fingerprint = response.headers.get("x-workspace-fingerprint")
+          if (fingerprint) await this.store.patch({ checkpointFingerprint: fingerprint })
         },
         { attempts: 3, delayMs: 1000 },
       )

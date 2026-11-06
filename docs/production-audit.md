@@ -38,6 +38,11 @@ interleavings across `await` on non-storage I/O (DO→DO fetch, container HTTP, 
 | 8 | SSE emits a `reset` frame when `Last-Event-ID` predates the retained log |
 | 9 | A failed `switchModel` now fails the turn instead of silently using the default |
 | 10 | `/start` checks the clone exit code (and `/restore` the tar exit code), returning 500 |
+| 14 | Checkpoint retries three times with backoff; a failed checkpoint emits an `error` event |
+| 15 | Two consecutive container failures recycle it; the next turn restores the checkpoint |
+| 16 | Single-slot admission queue drained by the alarm with backoff |
+| 17 | Slow SSE subscribers are closed past a 64 KB queue budget |
+| 18 | Workspace fingerprint lets unchanged turns skip the R2 upload |
 
 Findings 5 and 10's control-server changes take effect when the container image is rebuilt; findings 1–9
 ship in the Worker.
@@ -56,9 +61,9 @@ ship in the Worker.
 
 | # | Finding | Location | Failure sequence | Fix | Evidence |
 |---|---|---|---|---|---|
-| 16 | **Container capacity is one and unhandled** | `wrangler.jsonc` (`max_instances: 1`), `src/conversation.ts` `port()` | Thread B messages while thread A's container is the single instance → `start()`/health poll fails after ~20 s → admission posts an error; nothing queues or retries | Reported: queue admission behind an alarm/backoff, or raise `max_instances` and pay for it | Code path |
-| 17 | **SSE backpressure is unbounded** | `src/conversation.ts` `broadcast` | A slow subscriber is enqueued without checking `desiredSize`; a stalled client grows the DO's memory | Reported: drop subscribers whose `desiredSize` is below a threshold | Code path |
-| 18 | **A full-workspace checkpoint per turn is O(repo)** | `control-server.ts` `/checkpoint`, `src/conversation.ts` `checkpoint` | A 500 MB repo (with `.git` and `.state`) is tarred and uploaded to R2 after every settled turn; settle latency and R2 spend scale with repo size | Reported: Stow incremental checkpoints, or exclude `.git`/checkpoint every N turns | Code path |
+| 16 | **Container capacity is one and unhandled** | `wrangler.jsonc` (`max_instances: 1`), `src/conversation.ts` `port()` | Thread B messages while thread A's container is the single instance → `start()`/health poll fails → admission errors with no retry | **Fixed:** single-slot admission queue; alarm drains it with linear backoff (5 attempts), then posts a final error. HTTP returns 202 `queued`; Slack gets a "queued" notice | Code path + `test/concurrency.test.ts` |
+| 17 | **SSE backpressure is unbounded** | `src/conversation.ts` `broadcast` | A slow subscriber is enqueued without checking `desiredSize`; a stalled client grows the DO's memory | **Fixed:** subscribers below −64 KB queued are closed and dropped; the client reconnects with `Last-Event-ID` | Code path + `tests/events.test.ts` |
+| 18 | **A full-workspace checkpoint per turn is O(repo)** | `control-server.ts` `/checkpoint`, `src/conversation.ts` `checkpoint` | A 500 MB repo is tarred and uploaded to R2 after every settled turn, even when nothing changed | **Fixed:** the control server fingerprints the workspace (HEAD + porcelain); the DO sends `since`, an unchanged tree returns 204 and no upload happens. Changed trees still tar (Stow incremental is the next step) | Code path |
 | 19 | **Slack 429 is not handled** | `src/conversation.ts` `slack()` | A rate-limited post throws; the at-least-once retry re-posts on the next poll and can storm | Reported: honor `Retry-After` with a bounded retry | Code path |
 
 ## Cluster 6 · Maintainability & evolution (third pass)
@@ -77,7 +82,7 @@ ship in the Worker.
   pass) is deliberately deferred to its own session.
 - Findings 2, 3 and 7 are cited interleavings. A workerd regression test now drives two concurrent
   deliveries of the same Slack event through the DO (`test/concurrency.test.ts`); the settings-restart and
-  stale-pump interleavings still lack a live harness. Findings 16–24 are reported, not fixed.
+  stale-pump interleavings still lack a live harness. Findings 19–24 are reported, not fixed. Findings 16–18 are fixed and covered by tests.
 - Light mode, 200% zoom, and Slack-specific rate limits are outside this pass.
 
 ## Verification notes

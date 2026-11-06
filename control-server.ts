@@ -14,7 +14,8 @@
  */
 
 import { spawn } from "bun"
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 
 const WORKSPACE = process.env.WORKSPACE ?? "/workspace"
 const STATE_DIR = process.env.XDG_DATA_HOME ?? `${WORKSPACE}/.state/data`
@@ -123,6 +124,24 @@ async function run(command: string[]): Promise<number> {
   return proc.exited
 }
 
+async function runCapture(command: string[]): Promise<string> {
+  const proc = spawn(command, { stdout: "pipe", stderr: "ignore" })
+  const text = await new Response(proc.stdout as ReadableStream).text()
+  await proc.exited
+  return text
+}
+
+/** Cheap workspace identity: HEAD plus porcelain status, or the top-level entries. */
+async function workspaceFingerprint(): Promise<string> {
+  if (existsSync(`${WORKSPACE}/.git`)) {
+    const head = await runCapture(["git", "-C", WORKSPACE, "rev-parse", "HEAD"])
+    const status = await runCapture(["git", "-C", WORKSPACE, "status", "--porcelain"])
+    return createHash("sha256").update(`${head}\n${status}`).digest("hex")
+  }
+  const entries = existsSync(WORKSPACE) ? readdirSync(WORKSPACE).sort().join(",") : ""
+  return createHash("sha256").update(`nogit:${entries}`).digest("hex")
+}
+
 Bun.serve({
   port: CONTROL_PORT,
   async fetch(request) {
@@ -184,12 +203,20 @@ Bun.serve({
       } catch {
         /* DB may not exist yet */
       }
+
+      const fingerprint = await workspaceFingerprint()
+      if (url.searchParams.get("since") === fingerprint) {
+        return new Response(null, { status: 204 })
+      }
       const tar = spawn(["tar", "czf", "-", "-C", WORKSPACE, "--exclude", "node_modules", "."], {
         stdout: "pipe",
         stderr: "inherit",
       })
       return new Response(tar.stdout as ReadableStream, {
-        headers: { "content-type": "application/gzip" },
+        headers: {
+          "content-type": "application/gzip",
+          "x-workspace-fingerprint": fingerprint,
+        },
       })
     }
 
