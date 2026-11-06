@@ -12,6 +12,7 @@ import { isSettled, latestAssistantReply, type MessageInfo } from "./messages"
 import { formatSse, type ConversationEvent } from "./events"
 import { createSseParser } from "./sse"
 import { parseModelRef, type Env } from "./env"
+import { withRetries } from "./retry"
 import type { HarnessSettings } from "./settings"
 
 const OPENCODE_PORT = 4000
@@ -47,6 +48,7 @@ export class Conversation extends DurableObject<Env> {
   private heartbeat: ReturnType<typeof setInterval> | undefined
   private streaming = false
   private pumping = false
+  private consecutiveFailures = 0
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
@@ -339,7 +341,10 @@ export class Conversation extends DurableObject<Env> {
 
       if (isSettled(messages)) {
         await this.deliver({ type: "settled" })
-        await this.checkpoint()
+        const saved = await this.checkpoint()
+        if (!saved) {
+          await this.deliver({ type: "error", message: "workspace checkpoint failed; this turn is not durable" })
+        }
         return true
       }
       return false
@@ -410,9 +415,21 @@ export class Conversation extends DurableObject<Env> {
   }
 
   private async withClient<T>(fn: (client: ReturnType<typeof makeClient>) => Promise<T>): Promise<T> {
-    const port = await this.ensureReady()
-    const client = makeClient(portFetch(port))
-    return fn(client)
+    try {
+      const port = await this.ensureReady()
+      const client = makeClient(portFetch(port))
+      const result = await fn(client)
+      this.consecutiveFailures = 0
+      return result
+    } catch (error) {
+      this.consecutiveFailures++
+      // Two consecutive failures: assume the container is wedged and recycle it.
+      if (this.consecutiveFailures >= 2) {
+        this.consecutiveFailures = 0
+        await this.ctx.container?.destroy().catch(() => {})
+      }
+      throw error
+    }
   }
 
   private readying?: Promise<ContainerPort>
@@ -486,16 +503,23 @@ export class Conversation extends DurableObject<Env> {
     return `workspaces/${this.ctx.id.toString()}.tar.gz`
   }
 
-  private async checkpoint(): Promise<void> {
+  private async checkpoint(): Promise<boolean> {
     try {
-      const control = await this.port(CONTROL_PORT)
-      const response = await control.fetch("http://container/checkpoint", {
-        signal: AbortSignal.timeout(120_000),
-      })
-      if (!response.ok || !response.body) return
-      await this.env.CHECKPOINTS.put(this.checkpointKey(), response.body)
+      await withRetries(
+        async () => {
+          const control = await this.port(CONTROL_PORT)
+          const response = await control.fetch("http://container/checkpoint", {
+            signal: AbortSignal.timeout(120_000),
+          })
+          if (!response.ok || !response.body) throw new Error(`checkpoint returned ${response.status}`)
+          await this.env.CHECKPOINTS.put(this.checkpointKey(), response.body)
+        },
+        { attempts: 3, delayMs: 1000 },
+      )
+      return true
     } catch (err) {
       console.warn("checkpoint failed", err)
+      return false
     }
   }
 

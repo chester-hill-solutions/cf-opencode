@@ -49,15 +49,35 @@ ship in the Worker.
 | 11 | **No timeout on container HTTP calls** | `src/opencode.ts` `portFetch`, `src/conversation.ts` control calls | Container hangs → the DO awaits forever; the alarm never re-arms and the turn never settles | Default 60 s on API calls, 2 s health, 10 s configure/status, 60 s start/restore, 120 s checkpoint | Code path |
 | 12 | **Crashed children never restarted** | `control-server.ts` `startOpencode` / `startStow` | `opencode serve` exits → the subprocess variable still exists → `/start` returns early → every call fails until the container itself restarts | Check `exitCode`, restart, and report real `running`/`s3` in `/status` | Code path |
 | 13 | **Reply delivery was at-most-once** | `src/conversation.ts` `pumpOnce` | `lastReply` persisted before the Slack post → post fails → next poll considers it delivered → reply lost | Deliver, then persist (at-least-once; a partial failure can duplicate on SSE) | Code path |
-| 14 | **Checkpoint failures are silent** | `src/conversation.ts` `checkpoint` | R2/tar failure is logged and swallowed → no retry or alert → the next cold start restores an older checkpoint | Reported; add a retry and surface the failure on the next settle | Code path |
-| 15 | **No health-based restart** | `src/conversation.ts` `doEnsureReady` | A container that is running but wedged answers `/status` and is reused; calls now time out but nothing restarts it | Reported; a health probe with restart-on-failure is the next step | Code path |
+| 14 | **Checkpoint failures are silent** | `src/conversation.ts` `checkpoint` | R2/tar failure is logged and swallowed → no retry or alert → the next cold start restores an older checkpoint | **Fixed:** 3 attempts with linear backoff; on failure the pump emits an `error` event ("this turn is not durable") | Code path + `tests/retry.test.ts` |
+| 15 | **No health-based restart** | `src/conversation.ts` `doEnsureReady` | A container that is running but wedged answers `/status` and is reused; calls time out but nothing restarts it | **Fixed:** `withClient` counts consecutive failures; two in a row destroy the container so the next turn starts fresh and restores the checkpoint | Code path |
+
+## Cluster 5 · Scalability & distributed systems (third pass)
+
+| # | Finding | Location | Failure sequence | Fix | Evidence |
+|---|---|---|---|---|---|
+| 16 | **Container capacity is one and unhandled** | `wrangler.jsonc` (`max_instances: 1`), `src/conversation.ts` `port()` | Thread B messages while thread A's container is the single instance → `start()`/health poll fails after ~20 s → admission posts an error; nothing queues or retries | Reported: queue admission behind an alarm/backoff, or raise `max_instances` and pay for it | Code path |
+| 17 | **SSE backpressure is unbounded** | `src/conversation.ts` `broadcast` | A slow subscriber is enqueued without checking `desiredSize`; a stalled client grows the DO's memory | Reported: drop subscribers whose `desiredSize` is below a threshold | Code path |
+| 18 | **A full-workspace checkpoint per turn is O(repo)** | `control-server.ts` `/checkpoint`, `src/conversation.ts` `checkpoint` | A 500 MB repo (with `.git` and `.state`) is tarred and uploaded to R2 after every settled turn; settle latency and R2 spend scale with repo size | Reported: Stow incremental checkpoints, or exclude `.git`/checkpoint every N turns | Code path |
+| 19 | **Slack 429 is not handled** | `src/conversation.ts` `slack()` | A rate-limited post throws; the at-least-once retry re-posts on the next poll and can storm | Reported: honor `Retry-After` with a bounded retry | Code path |
+
+## Cluster 6 · Maintainability & evolution (third pass)
+
+| # | Finding | Location | Failure sequence | Fix | Evidence |
+|---|---|---|---|---|---|
+| 20 | **Model catalogue duplicated** | `src/models.ts`, `public/index.html` `FALLBACK_MODELS` | A model added to one list and not the other drifts; the UI offers a model the API does not know (or misses one) | Reported: generate the fallback from the catalogue at build time, or drop the fallback | Two copies in the tree |
+| 21 | **Prod/test config drift** | `wrangler.jsonc` vs `wrangler.test.jsonc` | Different compatibility dates, containers only in prod, `CONTAINER_URL` only in tests; a new prod binding can be missing in tests and vice versa | Reported: derive the test config from prod, or add a CI check comparing binding names | Diff of the two files |
+| 22 | **Implicit conversation state machine** | `src/conversation.ts` | Lifecycle is inferred from `sessionID?`, `settingsVersion?`, `lastReply?`, `pumping`, `streaming`, `readying`, `consecutiveFailures`; "starting", "running" and "settling" are not named states | Reported: explicit state + guarded transitions (prompt 37, separate session) | Field list |
+| 23 | **Observability gaps** | whole Worker | No metrics or traces; only `console.warn`; no turn latency, queue depth, checkpoint bytes or failure classes | Reported: counters/log fields and OTel export | Code path |
+| 24 | **Mixed responsibilities** | `src/conversation.ts` (~500 lines) | Slack delivery, SSE fan-out, container lifecycle, pump and permissions live in one class | Reported (prompt 36): extract `ContainerRuntime` and `EventStream`; do not restructure in the audit | File size and imports |
 
 ## What was not checked
 
-- Clusters 1 (performance), 5 (scalability), 6 (maintainability).
+- Cluster 1 (performance). Clusters 5 and 6 are reported above; cluster 6 prompt 37 (full state-machine
+  pass) is deliberately deferred to its own session.
 - Findings 2, 3 and 7 are cited interleavings. A workerd regression test now drives two concurrent
   deliveries of the same Slack event through the DO (`test/concurrency.test.ts`); the settings-restart and
-  stale-pump interleavings still lack a live harness. Findings 14 and 15 remain open.
+  stale-pump interleavings still lack a live harness. Findings 16–24 are reported, not fixed.
 - Light mode, 200% zoom, and Slack-specific rate limits are outside this pass.
 
 ## Verification notes
