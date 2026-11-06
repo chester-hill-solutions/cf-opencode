@@ -108,4 +108,21 @@ describe("validateSettings", () => {
       expect(validateSettings({ dailyBudgetUSD: value }, base).ok).toBe(false)
     }
   })
+
+  test("defaults to two concurrent containers", () => {
+    expect(base.maxContainers).toBe(2)
+  })
+
+  test("accepts a container cap and keeps it across saves", () => {
+    const withCap = { ...base, maxContainers: 4 }
+    const result = validateSettings({ streaming: false }, withCap)
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value.maxContainers).toBe(4)
+  })
+
+  test("rejects an invalid container cap", () => {
+    for (const value of [0, 11, 2.5, "2"]) {
+      expect(validateSettings({ maxContainers: value }, base).ok).toBe(false)
+    }
+  })
 })

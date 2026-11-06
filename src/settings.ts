@@ -22,6 +22,8 @@ export interface HarnessSettings {
   streaming: boolean
   /** Harness-wide daily spend cap in USD; 0 disables enforcement. */
   dailyBudgetUSD: number
+  /** Maximum conversation containers running at once. */
+  maxContainers: number
   permissions: PermissionLists
   /** First-run connection state; written by the onboarding API, never by PUT. */
   onboarding: OnboardingState
@@ -96,6 +98,7 @@ export function defaultSettings(env: SettingsDefaults): HarnessSettings {
     pollSeconds: Number(env.POLL_SECONDS ?? DEFAULT_POLL_SECONDS) || DEFAULT_POLL_SECONDS,
     streaming: true,
     dailyBudgetUSD: 0,
+    maxContainers: 2,
     permissions: { allow: DEFAULT_ALLOW, ask: DEFAULT_ASK, deny: DEFAULT_DENY },
     onboarding: {},
     version: 1,
@@ -145,6 +148,16 @@ export function validateSettings(
     return { ok: false, error: "dailyBudgetUSD must be a number between 0 and 100000" }
   }
 
+  const maxContainers = body.maxContainers ?? base.maxContainers
+  if (
+    typeof maxContainers !== "number" ||
+    !Number.isInteger(maxContainers) ||
+    maxContainers < 1 ||
+    maxContainers > 10
+  ) {
+    return { ok: false, error: "maxContainers must be an integer between 1 and 10" }
+  }
+
   const permissionsInput = (body.permissions ?? base.permissions) as Record<string, unknown>
   const permissions: PermissionLists = { allow: [], ask: [], deny: [] }
   for (const key of ["allow", "ask", "deny"] as const) {
@@ -169,6 +182,7 @@ export function validateSettings(
       pollSeconds,
       streaming,
       dailyBudgetUSD,
+      maxContainers,
       permissions,
       onboarding: base.onboarding ?? {},
       version: base.version,

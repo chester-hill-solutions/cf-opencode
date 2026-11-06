@@ -343,6 +343,23 @@ export function SettingsApp() {
                       USD per day. 0 disables the cap. New turns are rejected once it is reached.
                     </FieldDescription>
                   </Field>
+                  <Field>
+                    <FieldLabel htmlFor="maxContainers">Max containers</FieldLabel>
+                    <Input
+                      id="maxContainers"
+                      type="number"
+                      inputMode="numeric"
+                      min={1}
+                      max={10}
+                      step={1}
+                      value={draft.maxContainers}
+                      onChange={(event) => update("maxContainers", event.target.value)}
+                      aria-describedby="containers-hint"
+                    />
+                    <FieldDescription id="containers-hint">
+                      Conversations running at once. Extra messages queue.
+                    </FieldDescription>
+                  </Field>
                   <div className="streaming-field">
                     <Checkbox
                       id="streaming"

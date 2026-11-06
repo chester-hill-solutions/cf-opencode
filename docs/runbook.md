@@ -143,6 +143,22 @@ Removes every checkpoint version, the legacy archive and the DO state, and stops
 the container. The next message on that key starts from scratch (seeded from the
 account state).
 
+## Concurrency and warmth
+
+`maxContainers` (default 2, 1–10) caps how many conversation containers run at
+once; the `durable_object` policy has no `max_instances`. The Settings Durable
+Object issues a 10-minute lease per conversation container; a conversation that
+cannot get one returns `202 queued` with `container capacity reached` and the
+queue retries with backoff. `GET /api/leases` shows the cap and active leases,
+and `capacity.rejected` counts refusals.
+
+Leases are refreshed on every request and released on recycle/reset/delete, or
+they expire after 10 minutes.
+
+Containers stay warm for 10 minutes after a conversation goes quiet
+(`setInactivityTimeout`), so quick follow-up turns skip the cold start. Raise it
+for latency, lower it for idle cost.
+
 ## Lifecycle phases
 
 | Phase | Meaning | What to check |

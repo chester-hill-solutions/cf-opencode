@@ -10,6 +10,7 @@ export type SettingsDraft = {
   pollSeconds: string
   streaming: boolean
   dailyBudgetUSD: string
+  maxContainers: string
   permissions: Record<PermissionKind, string>
 }
 
@@ -57,6 +58,7 @@ export const emptyDraft: SettingsDraft = {
   pollSeconds: "2",
   streaming: true,
   dailyBudgetUSD: "0",
+  maxContainers: "2",
   permissions: { allow: "", ask: "", deny: "" },
 }
 
@@ -68,6 +70,7 @@ export function toDraft(settings: HarnessSettings): SettingsDraft {
     pollSeconds: String(settings.pollSeconds),
     streaming: settings.streaming,
     dailyBudgetUSD: String(settings.dailyBudgetUSD ?? 0),
+    maxContainers: String(settings.maxContainers ?? 2),
     permissions: {
       allow: settings.permissions.allow.join("\n"),
       ask: settings.permissions.ask.join("\n"),

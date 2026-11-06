@@ -48,6 +48,10 @@ const CHECKPOINT_RETRY_MS = 30_000
 const CHECKPOINT_RETRY_LIMIT = 3
 /** How many checkpoint versions to keep per conversation. */
 const CHECKPOINT_KEEP = 5
+/** Container lease lifetime for the concurrency cap, refreshed per turn. */
+const LEASE_TTL_MS = 10 * 60_000
+/** Keep a warm container between quick follow-up turns. */
+const INACTIVITY_TIMEOUT_MS = 10 * 60_000
 
 /** R2 key holding the account's OpenCode state (config + provider credentials). */
 export const ACCOUNT_STATE_KEY = "account/state.tar.gz"
@@ -97,6 +101,10 @@ export class Conversation extends DurableObject<Env> {
   private startMode: "image" | "snapshot" | "none" = "none"
   /** An admission is in flight in this instance; alarms must not reset it. */
   private admitting = false
+  /** This instance holds a container lease from the Settings DO. */
+  private leaseHeld = false
+  /** The inactivity timeout was applied to the current container. */
+  private inactivitySet = false
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
@@ -243,6 +251,7 @@ export class Conversation extends DurableObject<Env> {
     } catch {
       /* already stopped */
     }
+    await this.releaseLease()
     this.ready = false
     this.opencodePort = undefined
     this.opencodePassword = undefined
@@ -260,6 +269,7 @@ export class Conversation extends DurableObject<Env> {
     } catch {
       /* already stopped */
     }
+    await this.releaseLease()
     this.ready = false
     this.opencodePort = undefined
     this.opencodePassword = undefined
@@ -273,6 +283,7 @@ export class Conversation extends DurableObject<Env> {
     } catch {
       /* already stopped */
     }
+    await this.releaseLease()
     this.ready = false
     this.opencodePort = undefined
     this.opencodePassword = undefined
@@ -342,15 +353,52 @@ export class Conversation extends DurableObject<Env> {
     }
   }
 
+  private async acquireLease(): Promise<void> {
+    const response = await this.env.SETTINGS.getByName("global").fetch(
+      "https://settings/leases/acquire",
+      {
+        method: "POST",
+        body: JSON.stringify({ id: this.ctx.id.toString(), ttlMs: LEASE_TTL_MS }),
+      },
+    )
+    if (response.ok) {
+      this.leaseHeld = true
+      return
+    }
+    void this.count("capacity.rejected")
+    throw new Error("container capacity reached")
+  }
+
+  private async releaseLease(): Promise<void> {
+    if (!this.leaseHeld) return
+    this.leaseHeld = false
+    try {
+      await this.env.SETTINGS.getByName("global").fetch("https://settings/leases/release", {
+        method: "POST",
+        body: JSON.stringify({ id: this.ctx.id.toString() }),
+      })
+    } catch {
+      /* the lease expires on its own */
+    }
+  }
+
+  private applyInactivity(container: NonNullable<typeof this.ctx.container>): void {
+    if (this.inactivitySet) return
+    this.inactivitySet = true
+    void container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS).catch(() => {})
+  }
+
   /** Start the container, preferring a snapshot when one is available. */
   private async startContainer(): Promise<boolean> {
     const container = this.ctx.container
     if (!container) throw new Error("no container bound")
+    await this.acquireLease()
     const snapshot = await this.snapshotHandle()
     if (snapshot) {
       try {
         container.start({ ...this.startOptions(), image: undefined, containerSnapshot: snapshot } as ContainerStartupOptions)
         this.startMode = "snapshot"
+        this.applyInactivity(container)
         logEvent("snapshot.restored")
         return true
       } catch {
@@ -359,6 +407,7 @@ export class Conversation extends DurableObject<Env> {
     }
     container.start(this.startOptions())
     this.startMode = "image"
+    this.applyInactivity(container)
     return false
   }
 
@@ -1015,6 +1064,7 @@ export class Conversation extends DurableObject<Env> {
         void this.count("container.recycled")
         logEvent("container.recycled")
         await this.ctx.container?.destroy().catch(() => {})
+        await this.releaseLease()
       }
       throw error
     }
@@ -1033,6 +1083,8 @@ export class Conversation extends DurableObject<Env> {
   }
 
   private async doEnsureReady(): Promise<ContainerPort> {
+    if (this.leaseHeld) void this.acquireLease().catch(() => {})
+    if (this.ctx.container?.running) this.applyInactivity(this.ctx.container)
     const settings = await this.settings()
     const state = await this.store.get()
     const container = this.ctx.container

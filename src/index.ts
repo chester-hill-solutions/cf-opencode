@@ -127,6 +127,10 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return settingsDo(env, `/metrics${url.search}`)
   }
 
+  if (parts[1] === "leases" && request.method === "GET") {
+    return settingsDo(env, "/leases")
+  }
+
   if (parts[1] === "models" && request.method === "GET") {
     return Response.json({ models: MODEL_CATALOG, recommended: recommendModel().ref })
   }

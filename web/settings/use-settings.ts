@@ -53,6 +53,7 @@ function isSettings(value: unknown): value is HarnessSettings {
     typeof item.pollSeconds === "number" &&
     typeof item.streaming === "boolean" &&
     typeof item.dailyBudgetUSD === "number" &&
+    typeof item.maxContainers === "number" &&
     typeof item.version === "number" &&
     !!permissions &&
     ["allow", "ask", "deny"].every(
@@ -182,6 +183,7 @@ export function useSettings() {
       pollSeconds: Number(draft.pollSeconds),
       streaming: draft.streaming,
       dailyBudgetUSD: Number(draft.dailyBudgetUSD),
+      maxContainers: Number(draft.maxContainers),
       permissions: {
         allow: ruleLines(draft.permissions.allow),
         ask: ruleLines(draft.permissions.ask),

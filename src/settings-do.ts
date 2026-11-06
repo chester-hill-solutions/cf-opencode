@@ -6,6 +6,9 @@ import type { VaultKeyValueStorage } from "@chester-hill-solutions/vault/core"
 
 /** How long a GitHub OAuth state value stays usable. */
 const OAUTH_STATE_TTL_MS = 10 * 60_000
+/** How long a conversation's container lease lasts without a heartbeat. */
+const LEASE_TTL_MS = 10 * 60_000
+const LEASE_PREFIX = "lease:"
 
 /** Singleton Durable Object holding the harness-wide settings and secrets. */
 export class Settings extends DurableObject<Env> {
@@ -90,6 +93,27 @@ export class Settings extends DurableObject<Env> {
       return Response.json({ date, metrics })
     }
 
+    // Container leases: a small, TTL-based cap on concurrent conversation
+    // containers, replacing the per-application max_instances the
+    // durable_object scheduling policy does not support.
+    if (url.pathname === "/leases/acquire" && request.method === "POST") {
+      const body = (await request.json()) as { id?: string; ttlMs?: number }
+      if (!body.id) return Response.json({ error: "id is required" }, { status: 400 })
+      return this.acquireLease(body.id, body.ttlMs)
+    }
+
+    if (url.pathname === "/leases/release" && request.method === "POST") {
+      const body = (await request.json()) as { id?: string }
+      if (!body.id) return Response.json({ error: "id is required" }, { status: 400 })
+      await this.ctx.storage.delete(`${LEASE_PREFIX}${body.id}`)
+      return Response.json({ ok: true })
+    }
+
+    if (url.pathname === "/leases" && request.method === "GET") {
+      const [cap, active] = await Promise.all([this.current(), this.activeLeases()])
+      return Response.json({ cap: cap.maxContainers, active })
+    }
+
     // Secrets are encrypted with the CHS vault. Values never leave the DO
     // unless a trusted caller asks for a specific key by name.
     if (url.pathname === "/secrets" && request.method === "GET") {
@@ -154,6 +178,7 @@ export class Settings extends DurableObject<Env> {
       ...settings,
       onboarding: settings.onboarding ?? {},
       dailyBudgetUSD: settings.dailyBudgetUSD ?? 0,
+      maxContainers: settings.maxContainers ?? 2,
     }
   }
 
@@ -164,6 +189,44 @@ export class Settings extends DurableObject<Env> {
     const next: HarnessSettings = { ...current, onboarding, updatedAt: Date.now() }
     await this.ctx.storage.put("settings", next)
     return Response.json(next)
+  }
+
+  /** Active, unexpired leases; expired entries are removed as they are seen. */
+  private async activeLeases(): Promise<Array<{ id: string; expiresAt: number }>> {
+    const now = Date.now()
+    const entries = await this.ctx.storage.list<number>({ prefix: LEASE_PREFIX })
+    const active: Array<{ id: string; expiresAt: number }> = []
+    for (const [key, expiresAt] of entries) {
+      if (expiresAt > now) active.push({ id: key.slice(LEASE_PREFIX.length), expiresAt })
+      else await this.ctx.storage.delete(key)
+    }
+    return active
+  }
+
+  /**
+   * Grant or refresh a container lease. Returns 429 with the earliest expiry
+   * when the cap is full, so the caller can queue and retry.
+   */
+  private async acquireLease(id: string, ttlMs?: number): Promise<Response> {
+    const settings = await this.current()
+    const cap = Math.max(1, settings.maxContainers ?? 2)
+    const ttl = Math.min(
+      Math.max(Number(ttlMs ?? LEASE_TTL_MS) || LEASE_TTL_MS, 60_000),
+      6 * 60 * 60_000,
+    )
+    const active = await this.activeLeases()
+    const now = Date.now()
+    const held = active.find((lease) => lease.id === id)
+    if (held) {
+      await this.ctx.storage.put(`${LEASE_PREFIX}${id}`, now + ttl)
+      return Response.json({ ok: true, cap, active: active.length })
+    }
+    if (active.length >= cap) {
+      const retryAt = Math.min(...active.map((lease) => lease.expiresAt))
+      return Response.json({ ok: false, cap, retryAt }, { status: 429 })
+    }
+    await this.ctx.storage.put(`${LEASE_PREFIX}${id}`, now + ttl)
+    return Response.json({ ok: true, cap, active: active.length + 1 })
   }
 
   private vaultOrError() {
