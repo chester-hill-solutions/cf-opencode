@@ -2,6 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "cf-opencode-test",
   "main": "src/index.ts",
+  "assets": { "directory": "./public" },
   "compatibility_date": "2026-08-22",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {

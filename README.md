@@ -80,6 +80,18 @@ Without the Slack secrets the Slack routes return 503 and the harness is HTTP-on
 - ask for everything else (Slack buttons or the SSE permission event)
 - deny `sudo`, `rm -rf`, `git push --force`, `git reset --hard`, `.ssh`, `.env`, cloud metadata
 
+## Web UI
+
+The Worker serves a single-file chat UI at `/` (static asset, no build step):
+
+- paste the API token, pick a conversation key, send a message
+- assistant text, permission cards with Approve/Deny, and `settled` state render live over SSE
+- reconnects with `Last-Event-ID`
+
+It is a demo surface for the same HTTP/SSE core Slack uses. The token lives in
+`localStorage`; for anything beyond a demo, put an auth layer in front (Cloudflare
+Access or a session endpoint) instead of shipping a shared bearer token to the browser.
+
 ## Deploy (Workers Builds, no local Docker)
 
 1. Connect the repo in **Workers & Pages**.

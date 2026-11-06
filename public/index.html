@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>cf-opencode</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0f1115;
+        --panel: #171a21;
+        --border: #262b36;
+        --text: #e6e9ef;
+        --muted: #8b93a7;
+        --accent: #7c9cff;
+        --danger: #ff7b72;
+        --ok: #58d68d;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border);
+        background: var(--panel);
+      }
+      header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
+      #status {
+        margin-left: auto;
+        font-size: 12px;
+        color: var(--muted);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 2px 10px;
+      }
+      #status.working { color: var(--accent); border-color: var(--accent); }
+      #status.done { color: var(--ok); border-color: var(--ok); }
+      #status.error { color: var(--danger); border-color: var(--danger); }
+      #config {
+        display: flex;
+        gap: 8px;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--border);
+        background: var(--panel);
+        flex-wrap: wrap;
+      }
+      input, textarea, button {
+        font: inherit;
+        color: var(--text);
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 8px 10px;
+      }
+      input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+      #token { width: 260px; }
+      #key { width: 220px; }
+      button { cursor: pointer; }
+      button:hover { border-color: var(--accent); }
+      button.primary { background: var(--accent); color: #0b0d12; border-color: var(--accent); font-weight: 600; }
+      button.danger { color: var(--danger); border-color: var(--danger); }
+      main {
+        flex: 1;
+        overflow-y: auto;
+        padding: 20px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        max-width: 900px;
+        width: 100%;
+        margin: 0 auto;
+      }
+      .bubble {
+        max-width: 85%;
+        padding: 10px 14px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: var(--panel);
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .bubble.user { align-self: flex-end; background: #1c2436; border-color: #2c3a58; }
+      .bubble.error { border-color: var(--danger); color: var(--danger); }
+      .meta { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+      .permission {
+        border: 1px solid #6b5a2a;
+        background: #221d10;
+        border-radius: 12px;
+        padding: 12px 14px;
+        max-width: 85%;
+      }
+      .permission .actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+      .permission code { background: #0b0d12; padding: 1px 5px; border-radius: 4px; }
+      form {
+        display: flex;
+        gap: 8px;
+        padding: 12px 16px;
+        border-top: 1px solid var(--border);
+        background: var(--panel);
+      }
+      textarea {
+        flex: 1;
+        resize: none;
+        min-height: 48px;
+        max-height: 160px;
+      }
+      .empty { color: var(--muted); text-align: center; margin-top: 10vh; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>cf-opencode</h1>
+      <span id="status">idle</span>
+    </header>
+
+    <section id="config">
+      <input id="token" type="password" placeholder="API token" autocomplete="off" />
+      <input id="key" placeholder="conversation" />
+      <button id="connect">Connect</button>
+      <button id="new">New conversation</button>
+    </section>
+
+    <main id="log">
+      <div class="empty">Enter the API token, pick a conversation, then send a message.</div>
+    </main>
+
+    <form id="composer">
+      <textarea id="text" placeholder="Message the harness… (Enter to send, Shift+Enter for a newline)"></textarea>
+      <button class="primary" type="submit">Send</button>
+    </form>
+
+    <script>
+      const $ = (id) => document.getElementById(id)
+      const log = $("log")
+      const status = $("status")
+      const tokenInput = $("token")
+      const keyInput = $("key")
+      const textInput = $("text")
+
+      tokenInput.value = localStorage.getItem("cfopencode.token") ?? ""
+      keyInput.value = localStorage.getItem("cfopencode.key") ?? "web-" + Math.random().toString(36).slice(2, 8)
+
+      let controller
+      let lastEventID = 0
+      let reconnectTimer
+
+      const setStatus = (text, cls = "") => {
+        status.textContent = text
+        status.className = cls
+      }
+
+      const escapeHtml = (value) =>
+        value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+
+      const scroll = () => {
+        log.scrollTop = log.scrollHeight
+      }
+
+      function addBubble(kind, text) {
+        log.querySelector(".empty")?.remove()
+        const el = document.createElement("div")
+        el.className = "bubble " + kind
+        el.innerHTML = `<div class="meta">${kind === "user" ? "you" : "assistant"}</div>${escapeHtml(text)}`
+        log.appendChild(el)
+        scroll()
+        return el
+      }
+
+      function addPermission(event) {
+        log.querySelector(".empty")?.remove()
+        const el = document.createElement("div")
+        el.className = "permission"
+        const resources = (event.resources ?? []).map((r) => `<code>${escapeHtml(String(r))}</code>`).join(" ")
+        el.innerHTML =
+          `<div class="meta">permission requested</div>` +
+          `<div><strong>${escapeHtml(event.action ?? "action")}</strong> ${resources}</div>` +
+          `<div class="actions"></div>`
+        const actions = el.querySelector(".actions")
+        for (const [label, decision, cls] of [
+          ["Approve once", "once", "primary"],
+          ["Always allow", "always", ""],
+          ["Deny", "reject", "danger"],
+        ]) {
+          const button = document.createElement("button")
+          button.textContent = label
+          if (cls) button.className = cls
+          button.onclick = async () => {
+            for (const b of actions.querySelectorAll("button")) b.disabled = true
+            const res = await api(
+              `/api/conversations/${encodeURIComponent(keyInput.value)}/permissions/${encodeURIComponent(event.requestID)}`,
+              { method: "POST", body: JSON.stringify({ decision }) },
+            )
+            button.textContent = res.ok ? "Recorded" : "Failed"
+          }
+          actions.appendChild(button)
+        }
+        log.appendChild(el)
+        scroll()
+      }
+
+      async function api(path, options = {}) {
+        return fetch(path, {
+          ...options,
+          headers: {
+            authorization: "Bearer " + tokenInput.value,
+            ...(options.body ? { "content-type": "application/json" } : {}),
+            ...(options.headers ?? {}),
+          },
+        })
+      }
+
+      function handleFrame(frame) {
+        let event = ""
+        let data = ""
+        let id = ""
+        for (const line of frame.split("\n")) {
+          if (line.startsWith(":")) continue
+          const colon = line.indexOf(":")
+          if (colon < 0) continue
+          const field = line.slice(0, colon)
+          const value = line.slice(colon + 1).replace(/^ /, "")
+          if (field === "event") event = value
+          else if (field === "data") data = value
+          else if (field === "id") id = value
+        }
+        if (id) lastEventID = Number(id) || lastEventID
+        if (!event) return
+        let payload = {}
+        try {
+          payload = JSON.parse(data)
+        } catch {}
+        if (event === "assistant") addBubble("assistant", payload.text ?? "")
+        if (event === "permission") addPermission(payload)
+        if (event === "settled") setStatus("done", "done")
+        if (event === "error") {
+          addBubble("error", payload.message ?? "error")
+          setStatus("error", "error")
+        }
+      }
+
+      async function connect() {
+        localStorage.setItem("cfopencode.token", tokenInput.value)
+        localStorage.setItem("cfopencode.key", keyInput.value)
+        clearTimeout(reconnectTimer)
+        controller?.abort()
+        controller = new AbortController()
+        lastEventID = 0
+        setStatus("connecting…", "working")
+        try {
+          const res = await fetch(`/api/conversations/${encodeURIComponent(keyInput.value)}/events`, {
+            headers: {
+              authorization: "Bearer " + tokenInput.value,
+              ...(lastEventID ? { "last-event-id": String(lastEventID) } : {}),
+            },
+            signal: controller.signal,
+          })
+          if (res.status === 401) {
+            setStatus("token rejected", "error")
+            return
+          }
+          if (!res.ok || !res.body) {
+            setStatus("connection failed", "error")
+            return
+          }
+          setStatus("idle")
+          const reader = res.body.getReader()
+          const decoder = new TextDecoder()
+          let buffer = ""
+          for (;;) {
+            const { done, value } = await reader.read()
+            if (done) break
+            buffer += decoder.decode(value, { stream: true })
+            let index
+            while ((index = buffer.indexOf("\n\n")) >= 0) {
+              const frame = buffer.slice(0, index)
+              buffer = buffer.slice(index + 2)
+              handleFrame(frame)
+            }
+          }
+          setStatus("reconnecting…", "working")
+        } catch (error) {
+          if (controller?.signal.aborted) return
+          setStatus("disconnected", "error")
+        }
+        reconnectTimer = setTimeout(connect, 2000)
+      }
+
+      $("connect").onclick = connect
+
+      $("new").onclick = () => {
+        keyInput.value = "web-" + Math.random().toString(36).slice(2, 8)
+        localStorage.setItem("cfopencode.key", keyInput.value)
+        log.innerHTML = '<div class="empty">New conversation. Send a message to start.</div>'
+        connect()
+      }
+
+      $("composer").onsubmit = async (event) => {
+        event.preventDefault()
+        const text = textInput.value.trim()
+        if (!text) return
+        textInput.value = ""
+        addBubble("user", text)
+        setStatus("working…", "working")
+        const res = await api(`/api/conversations/${encodeURIComponent(keyInput.value)}/messages`, {
+          method: "POST",
+          body: JSON.stringify({ text }),
+        })
+        if (!res.ok) {
+          addBubble("error", "request failed: " + res.status)
+          setStatus("error", "error")
+        }
+      }
+
+      textInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault()
+          $("composer").requestSubmit()
+        }
+      })
+
+      if (tokenInput.value) connect()
+    </script>
+  </body>
+</html>
