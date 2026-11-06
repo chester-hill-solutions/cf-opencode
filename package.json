@@ -15,7 +15,6 @@
     "check:config": "bun scripts/check-config.mjs",
     "test": "bun test tests",
     "test:workers": "vitest run",
-    "test:ui": "bun run build:ui && bun scripts/test-ui.ts",
     "bench": "bun run bench/measure.ts",
     "bench:container": "bash bench/container.sh"
   },
