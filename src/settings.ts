@@ -21,9 +21,21 @@ export interface HarnessSettings {
   /** Read OpenCode's event stream while the container is warm. */
   streaming: boolean
   permissions: PermissionLists
+  /** First-run connection state; written by the onboarding API, never by PUT. */
+  onboarding: OnboardingState
   /** Bumped on every save; conversation DOs restart when it changes. */
   version: number
   updatedAt?: number
+}
+
+export interface OnboardingState {
+  /** When a provider was connected for the first time. */
+  opencodeConnectedAt?: number
+  /** GitHub account connected for private repository access. */
+  githubConnectedAt?: number
+  githubLogin?: string
+  /** When the operator finished (or explicitly skipped) the wizard. */
+  completedAt?: number
 }
 
 export const DEFAULT_ALLOW = SAFE_COMMANDS.map((command) => `${command} *`)
@@ -82,6 +94,7 @@ export function defaultSettings(env: SettingsDefaults): HarnessSettings {
     pollSeconds: Number(env.POLL_SECONDS ?? DEFAULT_POLL_SECONDS) || DEFAULT_POLL_SECONDS,
     streaming: true,
     permissions: { allow: DEFAULT_ALLOW, ask: DEFAULT_ASK, deny: DEFAULT_DENY },
+    onboarding: {},
     version: 1,
   }
 }
@@ -143,6 +156,7 @@ export function validateSettings(
       pollSeconds,
       streaming,
       permissions,
+      onboarding: base.onboarding ?? {},
       version: base.version,
     },
   }

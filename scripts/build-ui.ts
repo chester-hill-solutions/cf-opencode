@@ -8,10 +8,11 @@ const output = resolve(root, "public")
 await rm(resolve(output, "assets"), { recursive: true, force: true })
 await mkdir(resolve(output, "assets"), { recursive: true })
 await mkdir(resolve(output, "brand"), { recursive: true })
+await mkdir(resolve(output, "onboarding"), { recursive: true })
 await mkdir(resolve(output, "ui-kit"), { recursive: true })
 
 const build = await Bun.build({
-  entrypoints: [resolve(root, "web/settings.tsx"), resolve(root, "web/ui-kit.tsx")],
+  entrypoints: [resolve(root, "web/settings.tsx"), resolve(root, "web/ui-kit.tsx"), resolve(root, "web/onboarding.tsx")],
   outdir: resolve(output, "assets"),
   target: "browser",
   format: "esm",
@@ -38,6 +39,7 @@ if (css.exitCode !== 0) throw new Error("UI CSS build failed")
 await Promise.all([
   copyFile(resolve(root, "web/index.html"), resolve(output, "index.html")),
   copyFile(resolve(root, "web/ui-kit.html"), resolve(output, "ui-kit/index.html")),
+  copyFile(resolve(root, "web/onboarding.html"), resolve(output, "onboarding/index.html")),
   copyFile(
     resolve(
       root,

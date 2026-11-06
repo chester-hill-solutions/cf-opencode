@@ -6,6 +6,7 @@
       "name": "opencode-slack-workers",
       "dependencies": {
         "@aboiteau/ui": "workspace:*",
+        "@chester-hill-solutions/vault": "file:vendor/chester-hill-solutions/vault",
         "@opencode/client": "latest",
         "react": "19",
         "react-dom": "19",
@@ -43,6 +44,8 @@
   },
   "packages": {
     "@aboiteau/ui": ["@aboiteau/ui@workspace:packages/ui"],
+
+    "@chester-hill-solutions/vault": ["@chester-hill-solutions/vault@file:vendor/chester-hill-solutions/vault", {}],
 
     "@cloudflare/kv-asset-handler": ["@cloudflare/kv-asset-handler@0.5.0", "", {}, "sha512-jxQYkj8dSIzc0cD6cMMNdOc1UVjqSqu8BZdor5s8cGjW2I8BjODt/kWPVdY+u9zj3ms75Q5qaZgnxUad83+eAg=="],
 

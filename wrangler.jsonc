@@ -17,8 +17,8 @@
     {
       "class_name": "Conversation",
       "image": "./Dockerfile",
-      "instance_type": "lite",
-      "max_instances": 1
+      "instance_type": "basic",
+      "max_instances": 2
     }
   ],
   "durable_objects": {

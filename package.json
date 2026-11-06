@@ -5,7 +5,9 @@
   "type": "module",
   "description": "OpenCode harness on Cloudflare: a Durable Object per conversation, local S3 (stow-s3) for the hot workspace, R2 for cold checkpoints, and an HTTP/SSE core with pluggable adapters.",
   "license": "MIT",
-  "workspaces": ["packages/ui"],
+  "workspaces": [
+    "packages/ui"
+  ],
   "scripts": {
     "dev": "wrangler dev",
     "build:ui": "bun scripts/build-ui.ts",
@@ -22,7 +24,8 @@
     "@aboiteau/ui": "workspace:*",
     "@opencode/client": "latest",
     "react": "19",
-    "react-dom": "19"
+    "react-dom": "19",
+    "@chester-hill-solutions/vault": "file:vendor/chester-hill-solutions/vault"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.6.0",

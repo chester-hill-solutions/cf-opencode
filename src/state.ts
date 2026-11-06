@@ -44,6 +44,8 @@ export interface ConversationState {
   lastReply?: string
   /** Last assistant text posted to Slack; interim updates stay on SSE only. */
   lastSlackReply?: string
+  /** Key of the turn failure already reported, for at-most-once delivery. */
+  reportedError?: string
   /** Settings version the running container was configured with. */
   settingsVersion?: number
   /** One pending admission when the container could not start. */

@@ -1,6 +1,8 @@
 import { parseInteractionBody, verifySlackSignature, type SlackEventEnvelope } from "./adapters/slack"
 import type { Env } from "./env"
 import type { MessageRequest, PermissionRequest, SlackEventRequest } from "./conversation"
+import { ACCOUNT_STATE_KEY } from "./conversation"
+import { GITHUB_LOGIN_KEY, GITHUB_TOKEN_KEY } from "./vault"
 import { MODEL_CATALOG, recommendModel } from "./models"
 
 export { Conversation } from "./conversation"
@@ -18,6 +20,12 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url)
     if (url.pathname === "/health") return new Response("ok")
+
+    // GitHub redirects the browser here without our bearer token; the OAuth
+    // state value is the credential, and it is single-use.
+    if (url.pathname === "/api/onboarding/github/callback") {
+      return handleGithubCallback(request, env, url)
+    }
 
     if (url.pathname.startsWith("/api/")) {
       return handleApi(request, env, url)
@@ -114,6 +122,8 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return Response.json({ error: "not found" }, { status: 404 })
   }
 
+  if (parts[1] === "onboarding") return handleOnboarding(request, env, url, parts)
+
   if (parts[0] !== "api" || parts[1] !== "conversations" || !parts[2]) {
     return Response.json({ error: "not found" }, { status: 404 })
   }
@@ -140,6 +150,10 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     })
   }
 
+  if (request.method === "GET" && suffix.length === 1 && suffix[0] === "context") {
+    return conversation.fetch("https://conversation/context")
+  }
+
   if (request.method === "GET" && suffix.length === 0) {
     return conversation.fetch("https://conversation/state")
   }
@@ -156,4 +170,181 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   }
 
   return Response.json({ error: "not found" }, { status: 404 })
+}
+
+// ------------------------------------------------------------------ onboarding
+
+const GITHUB_AUTHORIZE = "https://github.com/login/oauth/authorize"
+const GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
+const GITHUB_USER_URL = "https://api.github.com/user"
+/** The conversation DO whose container performs provider onboarding. */
+const ONBOARDING_KEY = "onboarding"
+
+async function settingsDo(env: Env, path: string, body?: unknown): Promise<Response> {
+  return env.SETTINGS.getByName("global").fetch(`https://settings${path}`, {
+    method: body === undefined ? "GET" : "POST",
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  })
+}
+
+async function handleOnboarding(
+  request: Request,
+  env: Env,
+  url: URL,
+  parts: string[],
+): Promise<Response> {
+  const section = parts[2]
+
+  if (section === "status" && request.method === "GET") {
+    const settings = (await (await settingsDo(env, "/get")).json()) as {
+      onboarding?: Record<string, unknown>
+      workspaceRepo?: string
+      workspaceBranch?: string
+      model?: string
+    }
+    const secrets = (await (await settingsDo(env, "/secrets")).json().catch(() => ({}))) as {
+      keys?: string[]
+    }
+    const keys = secrets.keys ?? []
+    return Response.json({
+      configured: {
+        github: Boolean(env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET),
+        vault: Boolean(env.VAULT_MASTER_KEY),
+      },
+      onboarding: settings.onboarding ?? {},
+      workspace: {
+        repo: settings.workspaceRepo ?? "",
+        branch: settings.workspaceBranch ?? "main",
+      },
+      model: settings.model ?? "",
+      secrets: {
+        github: keys.includes(GITHUB_TOKEN_KEY),
+        opencode: keys.includes("opencode.connected"),
+      },
+    })
+  }
+
+  // Provider onboarding is proxied into the conversation container, where
+  // OpenCode owns the OAuth attempt and the live model catalogue.
+  if (section === "opencode") {
+    const path = "/" + parts.slice(3).join("/")
+    if (!path || path === "/") return Response.json({ error: "not found" }, { status: 404 })
+    const conversation = env.CONVERSATION.getByName(ONBOARDING_KEY)
+    const body =
+      request.method === "GET" || request.method === "HEAD" ? undefined : await request.text()
+    const res = await conversation.fetch(`https://conversation/onboarding${path}`, {
+      method: request.method,
+      ...(body === undefined ? {} : { body }),
+    })
+    return new Response(res.body, { status: res.status, headers: res.headers })
+  }
+
+  if (section === "reset" && request.method === "POST") {
+    const conversation = env.CONVERSATION.getByName(ONBOARDING_KEY)
+    const res = await conversation.fetch("https://conversation/reset", { method: "POST" })
+    return new Response(res.body, { status: res.status, headers: res.headers })
+  }
+
+  if (section === "github" && parts[3] === "start" && request.method === "GET") {
+    if (!env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET) {
+      return Response.json(
+        { error: "GitHub OAuth is not configured", configured: false },
+        { status: 503 },
+      )
+    }
+    const state = crypto.randomUUID().replace(/-/g, "")
+    await settingsDo(env, "/oauth-state", { state })
+    const redirect = `${url.origin}/api/onboarding/github/callback`
+    const authorize = new URL(GITHUB_AUTHORIZE)
+    authorize.searchParams.set("client_id", env.GITHUB_CLIENT_ID)
+    authorize.searchParams.set("redirect_uri", redirect)
+    authorize.searchParams.set("scope", "repo read:user")
+    authorize.searchParams.set("state", state)
+    return Response.json({ url: authorize.toString(), redirect })
+  }
+
+  if (section === "github" && parts[3] === "disconnect" && request.method === "POST") {
+    await settingsDo(env, "/secrets/delete", { key: GITHUB_TOKEN_KEY })
+    await settingsDo(env, "/secrets/delete", { key: GITHUB_LOGIN_KEY })
+    await settingsDo(env, "/onboarding", { githubConnectedAt: undefined, githubLogin: undefined })
+    return Response.json({ ok: true })
+  }
+
+  // Persist the account state (OpenCode config + credentials) so every new
+  // conversation starts already connected.
+  if (section === "finish" && request.method === "POST") {
+    let snapshot = false
+    try {
+      const conversation = env.CONVERSATION.getByName(ONBOARDING_KEY)
+      const res = await conversation.fetch("https://conversation/onboarding/state-checkpoint")
+      if (res.ok) {
+        const bytes = await res.arrayBuffer()
+        if (bytes.byteLength > 0) {
+          await env.CHECKPOINTS.put(ACCOUNT_STATE_KEY, bytes, {
+            httpMetadata: { contentType: "application/gzip" },
+          })
+          snapshot = true
+        }
+      }
+    } catch {
+      // A missing state only means the next conversation reconnects.
+    }
+    const now = Date.now()
+    await settingsDo(env, "/onboarding", {
+      completedAt: now,
+      ...(snapshot ? { opencodeConnectedAt: now } : {}),
+    })
+    return Response.json({ ok: true, snapshot })
+  }
+
+  return Response.json({ error: "not found" }, { status: 404 })
+}
+
+async function handleGithubCallback(request: Request, env: Env, url: URL): Promise<Response> {
+  const back = (status: string) =>
+    Response.redirect(`${url.origin}/onboarding/?step=github&status=${status}`, 302)
+
+  const code = url.searchParams.get("code")
+  const state = url.searchParams.get("state")
+  if (!code || !state) return back("cancelled")
+  if (!env.GITHUB_CLIENT_ID || !env.GITHUB_CLIENT_SECRET) return back("unconfigured")
+
+  const consumed = (await (await settingsDo(env, "/oauth-state/consume", { state })).json()) as {
+    valid?: boolean
+  }
+  if (!consumed.valid) return back("invalid_state")
+
+  const tokenResponse = await fetch(GITHUB_TOKEN_URL, {
+    method: "POST",
+    headers: { accept: "application/json", "content-type": "application/json" },
+    body: JSON.stringify({
+      client_id: env.GITHUB_CLIENT_ID,
+      client_secret: env.GITHUB_CLIENT_SECRET,
+      code,
+    }),
+  })
+  const tokenBody = (await tokenResponse.json().catch(() => ({}))) as { access_token?: string }
+  if (!tokenBody.access_token) return back("denied")
+
+  let login: string | undefined
+  try {
+    const user = await fetch(GITHUB_USER_URL, {
+      headers: {
+        authorization: `Bearer ${tokenBody.access_token}`,
+        accept: "application/vnd.github+json",
+        "user-agent": "aboiteau",
+      },
+    })
+    if (user.ok) login = ((await user.json()) as { login?: string }).login
+  } catch {
+    // The token still works for cloning without a display name.
+  }
+
+  await settingsDo(env, "/secrets/put", { key: GITHUB_TOKEN_KEY, value: tokenBody.access_token })
+  if (login) await settingsDo(env, "/secrets/put", { key: GITHUB_LOGIN_KEY, value: login })
+  await settingsDo(env, "/onboarding", {
+    githubConnectedAt: Date.now(),
+    ...(login ? { githubLogin: login } : {}),
+  })
+  return back("connected")
 }

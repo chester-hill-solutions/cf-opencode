@@ -1,8 +1,13 @@
 import { DurableObject } from "cloudflare:workers"
-import { defaultSettings, validateSettings, type HarnessSettings } from "./settings"
+import { defaultSettings, validateSettings, type HarnessSettings, type OnboardingState } from "./settings"
+import { accountVault, workspaceID } from "./vault"
 import type { Env } from "./env"
+import type { VaultKeyValueStorage } from "@chester-hill-solutions/vault/core"
 
-/** Singleton Durable Object holding the harness-wide settings. */
+/** How long a GitHub OAuth state value stays usable. */
+const OAUTH_STATE_TTL_MS = 10 * 60_000
+
+/** Singleton Durable Object holding the harness-wide settings and secrets. */
 export class Settings extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
@@ -22,11 +27,95 @@ export class Settings extends DurableObject<Env> {
       return Response.json(next)
     }
 
+    if (url.pathname === "/onboarding" && request.method === "POST") {
+      return this.patchOnboarding((await request.json()) as Partial<OnboardingState>)
+    }
+
+    // Secrets are encrypted with the CHS vault. Values never leave the DO
+    // unless a trusted caller asks for a specific key by name.
+    if (url.pathname === "/secrets" && request.method === "GET") {
+      const vault = this.vaultOrError()
+      if (vault instanceof Response) return vault
+      return Response.json({ keys: await vault.list(workspaceID(this.env)) })
+    }
+
+    if (url.pathname === "/secrets/put" && request.method === "POST") {
+      const vault = this.vaultOrError()
+      if (vault instanceof Response) return vault
+      const body = (await request.json()) as { key?: string; value?: string }
+      if (!body.key || typeof body.value !== "string") {
+        return Response.json({ error: "key and value are required" }, { status: 400 })
+      }
+      await vault.set(workspaceID(this.env), body.key, body.value)
+      return Response.json({ ok: true })
+    }
+
+    if (url.pathname === "/secrets/get" && request.method === "POST") {
+      const vault = this.vaultOrError()
+      if (vault instanceof Response) return vault
+      const body = (await request.json()) as { key?: string }
+      if (!body.key) return Response.json({ error: "key is required" }, { status: 400 })
+      const value = await vault.get(workspaceID(this.env), body.key)
+      return Response.json({ value })
+    }
+
+    if (url.pathname === "/secrets/delete" && request.method === "POST") {
+      const vault = this.vaultOrError()
+      if (vault instanceof Response) return vault
+      const body = (await request.json()) as { key?: string }
+      if (!body.key) return Response.json({ error: "key is required" }, { status: 400 })
+      await vault.delete(workspaceID(this.env), body.key)
+      return Response.json({ ok: true })
+    }
+
+    if (url.pathname === "/oauth-state" && request.method === "POST") {
+      const body = (await request.json()) as { state?: string }
+      if (!body.state) return Response.json({ error: "state is required" }, { status: 400 })
+      await this.ctx.storage.put(`oauth:${body.state}`, Date.now() + OAUTH_STATE_TTL_MS)
+      return Response.json({ ok: true })
+    }
+
+    if (url.pathname === "/oauth-state/consume" && request.method === "POST") {
+      const body = (await request.json()) as { state?: string }
+      if (!body.state) return Response.json({ error: "state is required" }, { status: 400 })
+      const key = `oauth:${body.state}`
+      const expires = await this.ctx.storage.get<number>(key)
+      await this.ctx.storage.delete(key)
+      return Response.json({ valid: typeof expires === "number" && expires > Date.now() })
+    }
+
     return new Response("not found", { status: 404 })
   }
 
   async current(): Promise<HarnessSettings> {
     const stored = await this.ctx.storage.get<HarnessSettings>("settings")
-    return stored ?? defaultSettings(this.env)
+    const settings = stored ?? defaultSettings(this.env)
+    // Records written before onboarding existed have no field; fill it in.
+    return settings.onboarding ? settings : { ...settings, onboarding: {} }
+  }
+
+  /** Merge onboarding metadata without bumping the settings version (no restart). */
+  private async patchOnboarding(patch: Partial<OnboardingState>): Promise<Response> {
+    const current = await this.current()
+    const onboarding: OnboardingState = { ...current.onboarding, ...patch }
+    const next: HarnessSettings = { ...current, onboarding, updatedAt: Date.now() }
+    await this.ctx.storage.put("settings", next)
+    return Response.json(next)
+  }
+
+  private vaultOrError() {
+    try {
+      const vault = accountVault(this.env, this.ctx.storage as unknown as VaultKeyValueStorage)
+      if (!vault) {
+        return Response.json(
+          { error: "VAULT_MASTER_KEY is not configured; set it before connecting accounts" },
+          { status: 503 },
+        )
+      }
+      return vault
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "vault unavailable"
+      return Response.json({ error: message }, { status: 500 })
+    }
   }
 }

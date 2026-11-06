@@ -10,7 +10,15 @@
  *   GET  /status      { initialized, running, s3 }
  *   POST /start       start stow-s3 and opencode serve, wait until ready
  *   POST /restore     body = tar.gz, replaces /workspace
+ *   POST /seed-state  body = tar.gz of .state, seeds OpenCode config + credentials
  *   GET  /checkpoint  tar.gz stream of /workspace (deps excluded)
+ *   GET  /state-checkpoint  tar.gz stream of .state only (account seeding)
+ *   GET  /integrations               OpenCode provider integrations
+ *   POST /integrations/:id/connect/oauth            begin OAuth
+ *   GET  /integrations/:id/connect/oauth/:attempt   poll attempt
+ *   POST /integrations/:id/connect/oauth/:attempt/complete
+ *   POST /integrations/:id/connect/key              save an API key
+ *   GET  /models                     live model catalogue
  */
 
 import { spawn } from "bun"
@@ -28,6 +36,8 @@ const STOW_ACCESS_KEY = process.env.STOW_ACCESS_KEY ?? "stow"
 const STOW_SECRET_KEY = process.env.STOW_SECRET_KEY ?? "stow-secret"
 let workspaceRepo = process.env.WORKSPACE_REPO ?? ""
 let workspaceBranch = process.env.WORKSPACE_BRANCH ?? "main"
+/** GitHub token for cloning private repositories; memory only, never persisted. */
+let githubToken = ""
 const MARKER = `${WORKSPACE}/.harness-initialized`
 
 let opencode: ReturnType<typeof spawn> | undefined
@@ -36,6 +46,42 @@ let opencodePassword = ""
 
 function basicAuth(password: string): Record<string, string> {
   return { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` }
+}
+
+/**
+ * OpenCode's own HTTP API, for onboarding: provider integrations and the live
+ * model catalogue. The DO is the only caller; never exposed publicly.
+ */
+async function opencodeFetch(path: string, init?: { method?: string; body?: unknown }): Promise<Response> {
+  if (!opencode || opencode.exitCode !== null) {
+    return Response.json({ error: "OpenCode is not running" }, { status: 503 })
+  }
+  return fetch(`http://127.0.0.1:${OPENCODE_PORT}${path}`, {
+    method: init?.method ?? "GET",
+    headers: {
+      ...basicAuth(opencodePassword),
+      ...(init?.body === undefined ? {} : { "content-type": "application/json" }),
+    },
+    ...(init?.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+    signal: AbortSignal.timeout(60_000),
+  })
+}
+
+/** Clone arguments, adding a credential header for private GitHub repositories. */
+function cloneArgs(repo: string): string[] {
+  const auth = githubToken && /^https:\/\/github\.com\//.test(repo)
+  const encoded = Buffer.from(`x-access-token:${githubToken}`).toString("base64")
+  return [
+    ...(auth
+      ? ["-c", `http.https://github.com/.extraheader=AUTHORIZATION: basic ${encoded}`]
+      : []),
+    "clone",
+    "--depth",
+    "1",
+    "--branch",
+    workspaceBranch,
+    repo,
+  ]
 }
 
 async function waitFor(url: string, attempts = 150, headers?: Record<string, string>): Promise<void> {
@@ -164,9 +210,11 @@ if (import.meta.main) Bun.serve({
         workspaceBranch?: string
         model?: string
         permissions?: PermissionLists
+        githubToken?: string
       }
       if (settings.workspaceRepo) workspaceRepo = settings.workspaceRepo
       if (settings.workspaceBranch) workspaceBranch = settings.workspaceBranch
+      if (typeof settings.githubToken === "string") githubToken = settings.githubToken
       writeOpencodeConfig(settings.model, settings.permissions)
       return Response.json({ ok: true })
     }
@@ -185,8 +233,18 @@ if (import.meta.main) Bun.serve({
         // beside it and merge the repository in.
         const tmp = "/tmp/workspace-clone"
         rmSync(tmp, { recursive: true, force: true })
-        const code = await run(["git", "clone", "--depth", "1", "--branch", workspaceBranch, workspaceRepo, tmp])
-        if (code !== 0) return Response.json({ error: "workspace clone failed" }, { status: 500 })
+        const clone = spawn(["git", ...cloneArgs(workspaceRepo), tmp], {
+          stdout: "ignore",
+          stderr: "pipe",
+        })
+        const cloneError = await new Response(clone.stderr as ReadableStream).text()
+        const code = await clone.exited
+        if (code !== 0) {
+          return Response.json(
+            { error: "workspace clone failed", detail: cloneError.trim().slice(-600) },
+            { status: 500 },
+          )
+        }
         const copied = await run(["cp", "-a", `${tmp}/.`, WORKSPACE])
         rmSync(tmp, { recursive: true, force: true })
         if (copied !== 0) return Response.json({ error: "workspace copy failed" }, { status: 500 })
@@ -264,6 +322,86 @@ if (import.meta.main) Bun.serve({
           "content-length": String(file.size),
           "x-workspace-fingerprint": fingerprint,
         },
+      })
+    }
+
+    // ---- onboarding: OpenCode provider integrations -------------------------
+
+    if (url.pathname === "/integrations" && request.method === "GET") {
+      return opencodeFetch("/api/integration")
+    }
+
+    if (url.pathname === "/models" && request.method === "GET") {
+      return opencodeFetch("/api/model")
+    }
+
+    const connect = url.pathname.match(/^\/integrations\/([^/]+)\/connect\/(oauth|key)$/)
+    if (connect && request.method === "POST") {
+      const [, integrationID, method] = connect
+      const body = await request.json().catch(() => ({}))
+      return opencodeFetch(`/api/integration/${encodeURIComponent(integrationID!)}/connect/${method}`, {
+        method: "POST",
+        body,
+      })
+    }
+
+    const attempt = url.pathname.match(/^\/integrations\/([^/]+)\/connect\/oauth\/([^/]+)(\/complete)?$/)
+    if (attempt) {
+      const [, integrationID, attemptID, complete] = attempt
+      const base = `/api/integration/${encodeURIComponent(integrationID!)}/connect/oauth/${encodeURIComponent(attemptID!)}`
+      if (complete && request.method === "POST") {
+        const body = await request.json().catch(() => ({}))
+        return opencodeFetch(`${base}/complete`, { method: "POST", body })
+      }
+      if (!complete && request.method === "GET") return opencodeFetch(base)
+      if (!complete && request.method === "DELETE") return opencodeFetch(base, { method: "DELETE" })
+    }
+
+    // ---- onboarding: account state (config + provider credentials) ----------
+
+    if (url.pathname === "/seed-state" && request.method === "POST") {
+      const tmp = "/tmp/seed-state.tar.gz"
+      if (!request.body) return Response.json({ error: "empty seed body" }, { status: 400 })
+      const writer = Bun.file(tmp).writer()
+      const reader = request.body.getReader()
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          writer.write(value)
+        }
+      } finally {
+        await writer.end()
+      }
+      mkdirSync(WORKSPACE, { recursive: true })
+      const code = await run(["tar", "xzf", tmp, "-C", WORKSPACE])
+      rmSync(tmp, { force: true })
+      if (code !== 0) return Response.json({ error: "seed failed" }, { status: 500 })
+      return Response.json({ ok: true })
+    }
+
+    if (url.pathname === "/state-checkpoint" && request.method === "GET") {
+      // Pause OpenCode so the credential database is a consistent snapshot.
+      if (opencode) {
+        opencode.kill()
+        await opencode.exited.catch(() => {})
+        opencode = undefined
+        opencodePassword = ""
+      }
+      try {
+        await run(["sqlite3", `${STATE_DIR}/opencode.db`, "PRAGMA wal_checkpoint(TRUNCATE)"])
+      } catch {
+        /* DB may not exist yet */
+      }
+      if (!existsSync(`${WORKSPACE}/.state`)) {
+        return Response.json({ error: "no account state yet" }, { status: 404 })
+      }
+      const archive = "/tmp/cf-opencode-state.tar.gz"
+      const code = await run(["tar", "czf", archive, "-C", WORKSPACE, ".state"])
+      if (code !== 0) return Response.json({ error: "state checkpoint failed" }, { status: 500 })
+      const file = Bun.file(archive)
+      return new Response(file, {
+        headers: { "content-type": "application/gzip", "content-length": String(file.size) },
       })
     }
 

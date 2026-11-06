@@ -7,6 +7,8 @@ export interface MessageInfo {
   content?: Array<{ type?: string; text?: string }>
   time?: { created?: number; completed?: number }
   finish?: string
+  /** Provider/runtime failure attached to a terminal `idle` message. */
+  error?: { type?: string; message?: string } | string
 }
 
 /**
@@ -51,4 +53,43 @@ export function isSettled(messages: MessageInfo[], afterID?: string): boolean {
   const completed = Boolean(assistant.time?.completed)
   if (!completed && !assistant.finish) return false
   return assistant.finish ? TERMINAL_FINISH.has(assistant.finish) : completed
+}
+
+export interface TurnFailure {
+  message: string
+  /** Creation time of the failing message, for at-most-once delivery. */
+  at?: number
+}
+
+/**
+ * A turn can also end without an assistant message: a provider that cannot
+ * route the model (or a runtime fault) ends the session with a terminal `idle`
+ * message carrying an `error`. Settlement has to accept that too, otherwise the
+ * conversation stays `running` forever.
+ *
+ * `runStartedAt` scopes the check to the current run: an `idle` message can sit
+ * after the baseline assistant of the previous turn, so a timestamp guard keeps
+ * a stale failure from settling the next turn.
+ */
+export function turnFailure(
+  messages: MessageInfo[],
+  afterID?: string,
+  runStartedAt?: number,
+): TurnFailure | undefined {
+  const idle = turnMessages(messages, afterID)
+    .filter((message) => message.type === "idle" && message.error)
+    .at(-1)
+  if (!idle?.error) return undefined
+  const at = idle.time?.created
+  if (runStartedAt && typeof at === "number" && at < runStartedAt) return undefined
+  const message =
+    typeof idle.error === "string"
+      ? idle.error
+      : (idle.error.message ?? idle.error.type ?? "run failed")
+  return { message: message || "run failed", at }
+}
+
+/** Stable identity for a failure, so a redelivered poll does not repeat it. */
+export function failureKey(failure: TurnFailure): string {
+  return `${failure.at ?? "unknown"}:${failure.message}`
 }

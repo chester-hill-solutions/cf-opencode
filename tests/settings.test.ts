@@ -68,4 +68,27 @@ describe("validateSettings", () => {
     expect(result.ok).toBe(true)
     if (result.ok) expect(result.value.permissions.allow).toEqual(["ls *"])
   })
+
+  test("starts with no onboarding progress", () => {
+    expect(base.onboarding).toEqual({})
+  })
+
+  test("keeps onboarding progress across a settings save", () => {
+    const connected = {
+      ...base,
+      onboarding: { githubConnectedAt: 123, githubLogin: "octocat", completedAt: 456 },
+    }
+    const result = validateSettings({ pollSeconds: 4 }, connected)
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value.onboarding).toEqual(connected.onboarding)
+  })
+
+  test("does not let a client write onboarding state through PUT", () => {
+    const result = validateSettings(
+      { onboarding: { completedAt: 999, githubLogin: "attacker" } },
+      base
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value.onboarding).toEqual({})
+  })
 })

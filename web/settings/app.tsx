@@ -116,9 +116,12 @@ export function SettingsApp() {
               {title}
             </a>
           ))}
-          <a className="gallery-link" href="/ui-kit/">
-            Aboiteau UI kit <span aria-hidden="true">↗</span>
+          <a className="gallery-link" href="/onboarding/">
+            Get started <span aria-hidden="true">↗</span>
           </a>
+          <a className="gallery-link" href="/ui-kit/">
+            Aboiteau UI kit <span aria-hidden="true">↗</span></a
+          >
         </nav>
         <main className="settings-main" id="main">
           <div className="page-heading">

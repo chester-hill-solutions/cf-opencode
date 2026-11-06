@@ -1,0 +1,22 @@
+{
+  "name": "@chester-hill-solutions/vault",
+  "version": "0.1.0",
+  "description": "Per-workspace encrypted credential storage",
+  "type": "module",
+  "license": "MIT",
+  "files": ["dist"],
+  "main": "./dist/core.js",
+  "types": "./dist/core.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/core.d.ts",
+      "import": "./dist/core.js",
+      "default": "./dist/core.js"
+    },
+    "./core": {
+      "types": "./dist/core.d.ts",
+      "import": "./dist/core.js",
+      "default": "./dist/core.js"
+    }
+  }
+}

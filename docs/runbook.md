@@ -45,6 +45,36 @@ curl -N https://<worker>/api/conversations/demo/events \
 Expected: `{"ok":true,"sessionID":"ses_..."}`, then `assistant` and `settled` frames. The conversation
 state should move `admitting → running → settling → idle`.
 
+## Onboarding
+
+First-run setup lives at `/onboarding/`. It connects a model provider, GitHub, and the workspace.
+
+Required secrets:
+
+```sh
+wrangler secret put VAULT_MASTER_KEY     # 64 hex chars; encrypts stored credentials
+wrangler secret put GITHUB_CLIENT_ID     # GitHub OAuth App
+wrangler secret put GITHUB_CLIENT_SECRET
+```
+
+GitHub OAuth App settings:
+
+| Field | Value |
+|---|---|
+| Homepage URL | `https://<worker>/` |
+| Authorization callback URL | `https://<worker>/api/onboarding/github/callback` |
+| Scopes requested | `repo read:user` |
+
+The wizard calls the running container's OpenCode API (`/api/integration`) for provider
+sign-in, so provider OAuth must complete while the onboarding container is warm. Completing
+the wizard snapshots `/workspace/.state` (OpenCode config + credential database) to R2 as
+`account/state.tar.gz`; new conversations seed that state before cloning, so onboarding is
+performed once.
+
+Provider credentials and the GitHub token are stored in the Settings Durable Object through
+`@chester-hill-solutions/vault`, encrypted with `VAULT_MASTER_KEY`. They never appear in
+`GET /api/settings`.
+
 ## Lifecycle phases
 
 | Phase | Meaning | What to check |
@@ -65,6 +95,10 @@ state should move `admitting → running → settling → idle`.
 | Slack `401 invalid signature` | Wrong signing secret, or a proxy rewriting the body | Re-check the secret and request URL |
 | `202 queued` repeatedly, then an SSE `error` | Container capacity or a broken image | Check `queue.failed`, container logs |
 | `error: workspace checkpoint failed` | R2/tar failure | Check R2 binding and disk; the turn is not durable |
+| SSE `error` with `Model unavailable: <ref>` | Provider has no credential for that model | Connect the provider in `/onboarding/`, or change the model |
+| `VAULT_MASTER_KEY is not configured` | Missing secret | `wrangler secret put VAULT_MASTER_KEY` (64 hex chars) |
+| `GitHub OAuth is not configured` | OAuth App secrets missing | Set `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` |
+| `workspace clone failed … Could not resolve host` | Container egress disabled | Ensure `container.start({ enableInternet: true })` |
 | Slack replies duplicated | At-least-once delivery after a failed post | Expected on failure; check for 429s |
 
 ## Logs and metrics

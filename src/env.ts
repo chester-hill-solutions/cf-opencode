@@ -14,6 +14,13 @@ export interface Env {
   CONTAINER_URL?: string
   /** Bearer token for the HTTP/SSE adapter. */
   API_TOKEN?: string
+  /** GitHub OAuth App, used by the onboarding wizard to clone private repos. */
+  GITHUB_CLIENT_ID?: string
+  GITHUB_CLIENT_SECRET?: string
+  /** 64 hex characters; encrypts provider and GitHub credentials at rest. */
+  VAULT_MASTER_KEY?: string
+  /** Tenant key for stored credentials. Defaults to "default" (single tenant). */
+  WORKSPACE_ID?: string
 }
 
 /** Model reference in provider/model[#variant] form. */

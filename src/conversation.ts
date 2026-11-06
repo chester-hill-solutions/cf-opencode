@@ -13,7 +13,13 @@ import {
   type SlackContextMessage,
   type SlackEventEnvelope,
 } from "./adapters/slack"
-import { isSettled, latestAssistantReply, type MessageInfo } from "./messages"
+import {
+  failureKey,
+  isSettled,
+  latestAssistantReply,
+  turnFailure,
+  type MessageInfo,
+} from "./messages"
 import { formatSse, isSlowSubscriber, type ConversationEvent } from "./events"
 import { createSseParser } from "./sse"
 import { parseModelRef, type Env } from "./env"
@@ -21,6 +27,7 @@ import { withRetries } from "./retry"
 import { retryAfterSeconds } from "./backoff"
 import { logEvent } from "./log"
 import type { HarnessSettings } from "./settings"
+import { GITHUB_TOKEN_KEY } from "./vault"
 
 /** The fields of a pending permission the harness forwards. */
 interface PermissionSummary {
@@ -32,6 +39,9 @@ interface PermissionSummary {
 const OPENCODE_PORT = 4000
 const CONTROL_PORT = 4001
 const POLL_MS = 2000
+
+/** R2 key holding the account's OpenCode state (config + provider credentials). */
+export const ACCOUNT_STATE_KEY = "account/state.tar.gz"
 
 export interface MessageRequest {
   text: string
@@ -80,8 +90,11 @@ export class Conversation extends DurableObject<Env> {
     if (url.pathname === "/slack") return this.onSlackEvent((await request.json()) as SlackEventRequest)
     if (url.pathname === "/permission") return this.onPermission((await request.json()) as PermissionRequest)
     if (url.pathname === "/events") return this.onEvents(request)
+    if (url.pathname === "/context") return this.onContext()
     if (url.pathname === "/state") return Response.json(await this.store.get())
     if (url.pathname === "/health") return Response.json({ ok: true })
+    if (url.pathname.startsWith("/onboarding")) return this.onOnboarding(url.pathname, request)
+    if (url.pathname === "/reset" && request.method === "POST") return this.onReset()
     return new Response("not found", { status: 404 })
   }
 
@@ -121,6 +134,68 @@ export class Conversation extends DurableObject<Env> {
   private async settings(): Promise<HarnessSettings> {
     const res = await this.env.SETTINGS.getByName("global").fetch("https://settings/get")
     return (await res.json()) as HarnessSettings
+  }
+
+  /** Decrypt one stored credential through the Settings DO. */
+  private async secret(key: string): Promise<string | undefined> {
+    try {
+      const res = await this.env.SETTINGS.getByName("global").fetch("https://settings/secrets/get", {
+        method: "POST",
+        body: JSON.stringify({ key }),
+      })
+      if (!res.ok) return undefined
+      const body = (await res.json()) as { value?: string | null }
+      return body.value ?? undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * Onboarding traffic: provider integrations, OAuth attempts, live models and
+   * the account-state snapshot. Paths beyond `/onboarding` mirror the control
+   * server, so the Worker only forwards the authenticated request.
+   */
+  private async onOnboarding(pathname: string, request: Request): Promise<Response> {
+    const path = pathname.slice("/onboarding".length) || "/"
+    try {
+      await this.ensureReady()
+      const control = await this.port(CONTROL_PORT)
+      const body =
+        request.method === "GET" || request.method === "HEAD" ? undefined : await request.text()
+      const res = await control.fetch(`http://container${path}`, {
+        method: request.method,
+        ...(body === undefined ? {} : { body }),
+        signal: AbortSignal.timeout(120_000),
+      })
+      // The state snapshot pauses OpenCode; the next call must start it again.
+      if (path === "/state-checkpoint" && res.ok) {
+        this.ready = false
+        this.opencodePort = undefined
+      }
+      return new Response(res.body, { status: res.status, headers: res.headers })
+    } catch (error) {
+      // A cold start can outlast the port wait. Report it so the wizard can
+      // retry instead of surfacing an opaque Worker exception.
+      return Response.json(
+        { error: errorMessage(error), retryable: true },
+        { status: 503 },
+      )
+    }
+  }
+
+  /** Hard reset: drop the container and this conversation's stored state. */
+  private async onReset(): Promise<Response> {
+    try {
+      await this.ctx.container?.destroy()
+    } catch {
+      /* already stopped */
+    }
+    this.ready = false
+    this.opencodePort = undefined
+    this.opencodePassword = undefined
+    await this.ctx.storage.deleteAll()
+    return Response.json({ ok: true })
   }
 
   /** A phase where a new prompt must wait for the current turn. */
@@ -207,6 +282,20 @@ export class Conversation extends DurableObject<Env> {
     )
     await this.store.clearPermission(input.requestID)
     return Response.json({ ok: true })
+  }
+
+  /** Diagnostics: the raw OpenCode message context for this conversation. */
+  private async onContext(): Promise<Response> {
+    const state = await this.store.get()
+    if (!state.sessionID) return Response.json({ error: "no session" }, { status: 404 })
+    try {
+      const messages = await this.withClient((client) =>
+        client.session.context({ sessionID: state.sessionID as string }),
+      )
+      return Response.json({ sessionID: state.sessionID, messages })
+    } catch (err) {
+      return Response.json({ error: errorMessage(err) }, { status: 502 })
+    }
   }
 
   // -------------------------------------------------------------------- SSE
@@ -473,6 +562,9 @@ export class Conversation extends DurableObject<Env> {
       ])
       const reply = latestAssistantReply(messages, state.turnBaseline)
       const settled = isSettled(messages, state.turnBaseline)
+      // A terminal `idle` error means the turn is over even though no assistant
+      // message completed, so it must settle, checkpoint and go idle.
+      const failure = settled ? undefined : turnFailure(messages, state.turnBaseline, state.runStartedAt)
 
       if (reply && reply !== state.lastReply) {
         // SSE streams every change; Slack gets one message per turn, at settle.
@@ -482,12 +574,20 @@ export class Conversation extends DurableObject<Env> {
 
       await this.pollPermissions(sessionID, pending)
 
-      if (settled) {
+      if (settled || failure) {
         await this.store.advance("settling")
-        logEvent("turn.settled", {
+        logEvent(failure ? "turn.failed" : "turn.settled", {
           ...(state.runStartedAt ? { durationMs: Date.now() - state.runStartedAt } : {}),
+          ...(failure ? { error: failure.message.slice(0, 200) } : {}),
           queued: Boolean(state.queued),
         })
+        if (failure) {
+          const key = failureKey(failure)
+          if (key !== state.reportedError) {
+            await this.deliver({ type: "error", message: failure.message })
+            await this.store.patch({ reportedError: key })
+          }
+        }
         if (reply && reply !== state.lastSlackReply) {
           // At-least-once: persist only after delivery so a failed post is retried.
           await this.deliverToSlack({ type: "assistant", text: reply })
@@ -495,7 +595,7 @@ export class Conversation extends DurableObject<Env> {
         }
         await this.deliver({ type: "settled" })
         const saved = await this.checkpoint()
-        if (!saved) {
+        if (!saved && !failure) {
           await this.deliver({ type: "error", message: "workspace checkpoint failed; this turn is not durable" })
         }
         if ((await this.store.get()).queued) {
@@ -573,7 +673,9 @@ export class Conversation extends DurableObject<Env> {
     }
     const container = this.ctx.container
     if (!container) throw new Error("no container bound")
-    if (!container.running) container.start()
+    // The direct Container API defaults internet access off; OpenCode needs
+    // DNS and outbound HTTPS for the workspace clone and model providers.
+    if (!container.running) container.start({ enableInternet: true })
     const port = container.getTcpPort(number)
     const path = number === OPENCODE_PORT ? "/api/info" : "/health"
     const headers =
@@ -672,15 +774,28 @@ export class Conversation extends DurableObject<Env> {
           signal: AbortSignal.timeout(60_000),
         })
         await this.store.patch({ checkpointFingerprint: undefined })
+      } else {
+        // A fresh conversation inherits the account's provider credentials, so
+        // onboarding only has to happen once.
+        const seed = await this.env.CHECKPOINTS.get(ACCOUNT_STATE_KEY)
+        if (seed?.body) {
+          const seeded = await control.fetch("http://container/seed-state", {
+            method: "POST",
+            body: seed.body,
+            signal: AbortSignal.timeout(60_000),
+          })
+          if (!seeded.ok) logEvent("account.seed.failed", { status: seeded.status })
+        }
       }
     }
 
     // Configure after restore: /restore replaces /workspace, including the config.
     // A warm container on the same spec already has its config.
     if (!status.initialized || versionChanged) {
+      const githubToken = await this.secret(GITHUB_TOKEN_KEY)
       await control.fetch("http://container/configure", {
         method: "POST",
-        body: JSON.stringify(settings),
+        body: JSON.stringify({ ...settings, ...(githubToken ? { githubToken } : {}) }),
         signal: AbortSignal.timeout(10_000),
       })
     }

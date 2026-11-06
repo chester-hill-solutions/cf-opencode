@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test"
-import { isSettled, latestAssistantReply, turnMessages, type MessageInfo } from "../src/messages"
+import {
+  failureKey,
+  isSettled,
+  latestAssistantReply,
+  turnFailure,
+  turnMessages,
+  type MessageInfo,
+} from "../src/messages"
 
 let nextID = 0
 const user = (text: string): MessageInfo => ({
@@ -102,5 +109,59 @@ describe("isSettled", () => {
 
   test("empty history is not settled", () => {
     expect(isSettled([])).toBe(false)
+  })
+})
+
+describe("turnFailure", () => {
+  const idle = (error?: unknown, created?: number): MessageInfo => ({
+    type: "idle",
+    ...(created ? { time: { created } } : {}),
+    ...(error ? { error: error as MessageInfo["error"] } : {}),
+  })
+
+  test("reports a provider error on the terminal idle message", () => {
+    const messages = [
+      user("go"),
+      idle({ type: "provider.no-route", message: "Model unavailable: opencode/deepseek-v4.1-flash" }, 20),
+    ]
+    expect(turnFailure(messages)).toEqual({
+      message: "Model unavailable: opencode/deepseek-v4.1-flash",
+      at: 20,
+    })
+  })
+
+  test("accepts a plain string error", () => {
+    expect(turnFailure([user("go"), idle("boom", 5)])?.message).toBe("boom")
+  })
+
+  test("falls back to the error type and then to a generic message", () => {
+    expect(turnFailure([user("go"), idle({ type: "rate_limited" })])?.message).toBe("rate_limited")
+    expect(turnFailure([user("go"), idle({})])?.message).toBe("run failed")
+    expect(turnFailure([user("go"), idle({ message: "" }, 1)])?.message).toBe("run failed")
+  })
+
+  test("ignores an idle message without an error", () => {
+    expect(turnFailure([user("go"), idle(undefined, 5)])).toBeUndefined()
+  })
+
+  test("ignores a failure from before this run started", () => {
+    const old = assistant(["previous answer"], true)
+    const messages = [user("one"), old, idle({ message: "stale" }, 10), user("two")]
+    expect(turnFailure(messages, old.id, 50)).toBeUndefined()
+  })
+
+  test("reports a failure created during this run", () => {
+    const old = assistant(["previous answer"], true)
+    const messages = [user("one"), old, idle({ message: "fresh" }, 60), user("two")]
+    expect(turnFailure(messages, old.id, 50)?.message).toBe("fresh")
+  })
+
+  test("keys a failure by time and message so a repeat poll is deduped", () => {
+    const first = turnFailure([idle({ message: "boom" }, 20)])
+    const same = turnFailure([idle({ message: "boom" }, 20)])
+    const later = turnFailure([idle({ message: "boom" }, 21)])
+    expect(first && same && later).toBeTruthy()
+    expect(failureKey(first!)).toBe(failureKey(same!))
+    expect(failureKey(first!)).not.toBe(failureKey(later!))
   })
 })

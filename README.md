@@ -85,7 +85,14 @@ Without the Slack secrets the Slack routes return 503 and the harness is HTTP-on
 
 ## Settings UI
 
-`/` serves the Aboiteau settings page, built from the dedicated [`@aboiteau/ui`](packages/ui/README.md) package. `/ui-kit/` is the live component and brand gallery.
+`/` serves the Aboiteau settings page, built from the dedicated [`@aboiteau/ui`](packages/ui/README.md) package. `/ui-kit/` is the live component and brand gallery. `/onboarding/` is the first-run wizard.
+
+Onboarding connects a model provider through the running OpenCode instance (OAuth where the
+provider offers it, API key otherwise), connects GitHub through an OAuth App, and sets the
+workspace repository, branch and model. Completing it snapshots the OpenCode state to R2 so
+new conversations start connected. Credentials live in the Settings Durable Object encrypted
+by [`@chester-hill-solutions/vault`](vendor/chester-hill-solutions/vault); see
+[`docs/runbook.md`](docs/runbook.md#onboarding) for the required secrets and callback URL.
 
 - workspace repo + branch, model, poll seconds, streaming toggle
 - **model selector**: a curated catalogue grouped by provider, with a recommended default
