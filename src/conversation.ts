@@ -398,8 +398,15 @@ export class Conversation extends DurableObject<Env> {
     } catch (err) {
       console.warn("pump failed", err)
     }
+    const state = await this.store.get()
     const settings = await this.settings().catch(() => undefined)
-    await this.ctx.storage.setAlarm(Date.now() + (this.streaming ? 30_000 : (settings?.pollSeconds ?? 2) * 1000))
+    // A queued admission retries on its own backoff; do not shorten it to the poll interval.
+    const delay = this.streaming
+      ? 30_000
+      : state.queued
+        ? Math.min(5000 * (state.queued.attempts + 1), 30_000)
+        : (settings?.pollSeconds ?? 2) * 1000
+    await this.ctx.storage.setAlarm(Date.now() + delay)
   }
 
   private async pollPermissions(sessionID: string): Promise<void> {
