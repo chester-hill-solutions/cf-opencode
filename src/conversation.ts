@@ -10,6 +10,7 @@ import {
 } from "./adapters/slack"
 import { isSettled, latestAssistantReply, type MessageInfo } from "./messages"
 import { formatSse, type ConversationEvent } from "./events"
+import { createSseParser } from "./sse"
 import { parseModelRef, type Env } from "./env"
 
 const OPENCODE_PORT = 4000
@@ -43,6 +44,8 @@ export class Conversation extends DurableObject<Env> {
   private readonly store: ConversationStore
   private readonly subscribers = new Set<ReadableStreamDefaultController<Uint8Array>>()
   private heartbeat: ReturnType<typeof setInterval> | undefined
+  private streaming = false
+  private pumping = false
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
@@ -70,6 +73,7 @@ export class Conversation extends DurableObject<Env> {
     const prompt = input.user ? `${input.user}: ${text}` : text
     await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
     await this.startRun()
+    this.ctx.waitUntil(this.startStream(sessionID))
     return Response.json({ ok: true, sessionID })
   }
 
@@ -90,6 +94,7 @@ export class Conversation extends DurableObject<Env> {
     const prompt = await this.buildPrompt(event.channel, event.ts, event.thread_ts, text)
     await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
     await this.startRun()
+    this.ctx.waitUntil(this.startStream(sessionID))
     return Response.json({ ok: true, sessionID })
   }
 
@@ -251,29 +256,79 @@ export class Conversation extends DurableObject<Env> {
 
   // -------------------------------------------------------------- reply pump
 
-  /** One poll per alarm; re-arms itself until the run settles. */
+  /**
+   * Warm stream: read OpenCode's event stream while the container is up and
+   * pump on completion. Alarms remain the fallback if the stream drops.
+   */
+  private async startStream(sessionID: string): Promise<void> {
+    if (this.streaming) return
+    this.streaming = true
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 10 * 60_000)
+    try {
+      const port = await this.ensureReady()
+      const res = await port.fetch("http://container/api/event", {
+        headers: { accept: "text/event-stream" },
+        signal: controller.signal,
+      })
+      if (!res.ok || !res.body) return
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      const parse = createSseParser((message) => {
+        if (message.event === "session.execution.succeeded") void this.pumpOnce()
+        if (message.event === "session.execution.failed") void this.pumpOnce()
+        if (message.event === "session.execution.interrupted") void this.pumpOnce()
+      })
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        parse(decoder.decode(value, { stream: true }))
+      }
+    } catch {
+      /* fall back to the alarm pump */
+    } finally {
+      clearTimeout(timeout)
+      this.streaming = false
+      await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
+    }
+  }
+
+  /** One poll: deliver new assistant text, permissions, settle + checkpoint. */
+  private async pumpOnce(): Promise<boolean> {
+    if (this.pumping) return false
+    this.pumping = true
+    try {
+      const state = await this.store.get()
+      if (!state.sessionID) return true
+
+      const sessionID = state.sessionID
+      const messages = (await this.withClient((client) => client.session.context({ sessionID }))) as MessageInfo[]
+      const reply = latestAssistantReply(messages)
+
+      if (reply && reply !== state.lastReply) {
+        state.lastReply = reply
+        await this.store.save(state)
+        await this.deliver({ type: "assistant", text: reply })
+      }
+
+      await this.pollPermissions(sessionID, state)
+
+      if (isSettled(messages)) {
+        await this.deliver({ type: "settled" })
+        await this.checkpoint()
+        return true
+      }
+      return false
+    } finally {
+      this.pumping = false
+    }
+  }
+
+  /** Alarm fallback: poll while a stream is not covering the run. */
   async alarm(): Promise<void> {
-    const state = await this.store.get()
-    if (!state.sessionID) return
-
-    const sessionID = state.sessionID
-    const messages = (await this.withClient((client) => client.session.context({ sessionID }))) as MessageInfo[]
-    const reply = latestAssistantReply(messages)
-
-    if (reply && reply !== state.lastReply) {
-      state.lastReply = reply
-      await this.store.save(state)
-      await this.deliver({ type: "assistant", text: reply })
-    }
-
-    await this.pollPermissions(sessionID, state)
-
-    if (isSettled(messages)) {
-      await this.deliver({ type: "settled" })
-      await this.checkpoint()
-      return
-    }
-    await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
+    const settled = await this.pumpOnce()
+    if (settled) return
+    await this.ctx.storage.setAlarm(Date.now() + (this.streaming ? 30_000 : POLL_MS))
   }
 
   private async pollPermissions(sessionID: string, state: Awaited<ReturnType<ConversationStore["get"]>>): Promise<void> {

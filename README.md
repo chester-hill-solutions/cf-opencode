@@ -112,7 +112,7 @@ Local numbers (workerd): `/health` p50 1.0 ms / p95 1.0 ms; DO state p50 1.0 ms 
 
 ## Limits and open work
 
-- The reply pump polls (2s) while a run is active; the warm-stream half is not built.
+- The reply pump uses a warm event stream while the container is up, with a 2s alarm poll as fallback.
 - One container (`max_instances: 1`); extra conversations queue on alarms.
 - Checkpoints are per settled prompt; a crash mid-turn loses that turn.
 - Channel-level engagement (`!leave`) lives in the Slack adapter and is not ported.
