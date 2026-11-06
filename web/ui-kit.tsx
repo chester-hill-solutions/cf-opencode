@@ -7,18 +7,19 @@ import { Inputs } from "./ui-kit/forms"
 import { Navigation } from "./ui-kit/navigation"
 import { Overlays } from "./ui-kit/overlays"
 import { Structure } from "./ui-kit/structure"
+import type { BrandAccent } from "@aboiteau/ui"
 
-const sections = [
-  ["identity", "Identity"],
-  ["colour", "Colour"],
-  ["typography", "Typography"],
-  ["actions", "Actions"],
-  ["inputs", "Forms"],
-  ["navigation", "Navigation"],
-  ["overlays", "Overlays"],
-  ["data", "Data"],
-  ["structure", "Structure"],
-] as const
+const sections: ReadonlyArray<{ id: string; number: string; label: string; accent: BrandAccent }> = [
+  { id: "identity", number: "01", label: "Identity", accent: "ultramarine" },
+  { id: "colour", number: "02", label: "Colour", accent: "pink" },
+  { id: "typography", number: "03", label: "Typography", accent: "ink" },
+  { id: "actions", number: "04", label: "Actions", accent: "ultramarine" },
+  { id: "inputs", number: "05", label: "Forms", accent: "vermilion" },
+  { id: "navigation", number: "06", label: "Navigation", accent: "yellow" },
+  { id: "overlays", number: "07", label: "Overlays", accent: "pink" },
+  { id: "data", number: "08", label: "Data", accent: "vermilion" },
+  { id: "structure", number: "09", label: "Structure", accent: "ink" },
+]
 
 function UiKit() {
   return (
@@ -43,9 +44,10 @@ function UiKit() {
           and this gallery cannot drift apart.
         </p>
         <nav className="catalog-nav" aria-label="UI kit sections">
-          {sections.map(([id, label]) => (
-            <a key={id} href={`#${id}`}>
-              {label}
+          {sections.map((section) => (
+            <a key={section.id} href={`#${section.id}`} data-accent={section.accent}>
+              <span aria-hidden="true">{section.number}</span>
+              {section.label}
             </a>
           ))}
         </nav>

@@ -291,29 +291,56 @@ if (import.meta.main) Bun.serve({
     }
 
     if (url.pathname === "/checkpoint") {
-      // Check identity before pausing OpenCode: a no-op turn must not cost a
-      // restart. Only an actual archive needs a consistent, paused workspace.
+      // Check identity before archiving: a no-op turn must not cost a write.
       const fingerprint = await workspaceFingerprint()
       if (url.searchParams.get("since") === fingerprint) {
         return new Response(null, { status: 204 })
       }
 
-      // Pause OpenCode so the archive is a consistent snapshot; /start resumes it.
-      if (opencode) {
-        opencode.kill()
-        await opencode.exited.catch(() => {})
-        opencode = undefined
-        opencodePassword = ""
+      // Copy the live SQLite database with the backup API so OpenCode can keep
+      // running. The tar excludes the live DB files and carries the backup
+      // instead, which restores as a consistent database.
+      const backupDir = "/tmp/cf-opencode-ckpt"
+      rmSync(backupDir, { recursive: true, force: true })
+      mkdirSync(backupDir, { recursive: true })
+      const backup = `${backupDir}/opencode.db`
+      let database = false
+      if (existsSync(`${STATE_DIR}/opencode.db`)) {
+        const copied = await run(["sqlite3", `${STATE_DIR}/opencode.db`, `.backup '${backup}'`])
+        database = copied === 0 && existsSync(backup)
       }
-      try {
-        await run(["sqlite3", `${STATE_DIR}/opencode.db`, "PRAGMA wal_checkpoint(TRUNCATE)"])
-      } catch {
-        /* DB may not exist yet */
-      }
+
       // Archive to a file so the response carries a content length. R2 will
       // not accept an unknown-length stream.
       const archive = "/tmp/cf-opencode-checkpoint.tar.gz"
-      const code = await run(["tar", "czf", archive, "-C", WORKSPACE, "--exclude", "node_modules", "."])
+      const args = [
+        "czf",
+        archive,
+        "-C",
+        WORKSPACE,
+        "--exclude",
+        "node_modules",
+        "--exclude",
+        ".stow",
+        "--exclude",
+        ".state/cache",
+        "--exclude",
+        ".state/data/opencode.db*",
+        ".",
+      ]
+      if (database) {
+        // The exclude above would also drop the backup, so it is added from a
+        // separate root as `opencode.db` and renamed into place by transform.
+        args.push(
+          "-C",
+          backupDir,
+          "--transform",
+          "s|^opencode.db$|.state/data/opencode.db|",
+          "opencode.db",
+        )
+      }
+      const code = await run(["tar", ...args])
+      rmSync(backupDir, { recursive: true, force: true })
       if (code !== 0) return Response.json({ error: "checkpoint failed" }, { status: 500 })
       const file = Bun.file(archive)
       return new Response(file, {
@@ -397,7 +424,18 @@ if (import.meta.main) Bun.serve({
         return Response.json({ error: "no account state yet" }, { status: 404 })
       }
       const archive = "/tmp/cf-opencode-state.tar.gz"
-      const code = await run(["tar", "czf", archive, "-C", WORKSPACE, ".state"])
+      const code = await run([
+        "tar",
+        "czf",
+        archive,
+        "-C",
+        WORKSPACE,
+        "--exclude",
+        ".state/cache",
+        "--exclude",
+        ".state/log",
+        ".state",
+      ])
       if (code !== 0) return Response.json({ error: "state checkpoint failed" }, { status: 500 })
       const file = Bun.file(archive)
       return new Response(file, {

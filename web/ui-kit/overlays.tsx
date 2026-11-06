@@ -123,6 +123,8 @@ export function Overlays() {
   return (
     <GallerySection
       id="overlays"
+      number="07"
+      accent="pink"
       title="Overlays & menus"
       description="Overlays carry brief, focused work. Focus is trapped where the interaction is modal, and every surface can be dismissed from the keyboard."
     >

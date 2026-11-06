@@ -108,10 +108,12 @@ Provider credentials and the GitHub token are stored in the Settings Durable Obj
 | Event | Fields |
 |---|---|
 | `turn.settled` | `durationMs`, `queued` |
+| `turn.failed` / `turn.timedout` | `durationMs`, `error` |
 | `container.ready` | `durationMs` |
 | `queue.enqueued` / `queue.drained` / `queue.failed` | `transport`, `attempts` |
 | `checkpoint.saved` / `checkpoint.skipped` / `checkpoint.failed` | `bytes` |
-| `admission.failed` / `admission.stale` | `transport` |
+| `checkpoint.retry` / `checkpoint.recovered` / `checkpoint.abandoned` | `attempts` |
+| `admission.failed` / `admission.stale` / `settlement.stale` | `transport`, `durationMs` |
 | `container.recycled` | — |
 
 ```sh
@@ -131,14 +133,17 @@ restore checkpoints from R2. Checkpoint keys are `workspaces/<id>.tar.gz` until 
 
 ## Data
 
-- R2 bucket `cf-opencode-checkpoints` — one tar.gz per conversation, written after each settled turn.
+- R2 bucket `cf-opencode-checkpoints` — checkpoint versions per conversation at `workspaces/<id>/<timestamp>.tar.gz`, newest five kept. The archive is produced without stopping OpenCode: the live SQLite database is copied with `.backup` and substituted into the tar, so a checkpoint costs a copy and a compress, not a server restart.
 - Container workspace — ephemeral; restored from R2 on cold start.
-- DO SQLite — conversation state, event log (last 200), pending permissions.
+- DO SQLite — conversation state, event log (last 200), pending permissions, checkpoint size and retry state.
 - Deleting a conversation's checkpoint is safe only when no turn is running.
+
+A checkpoint that fails is retried from the alarm up to three times (`checkpoint.retry` / `checkpoint.recovered` / `checkpoint.abandoned`). `checkpointSize` on the conversation state reports the last successful archive size.
 
 ## Known limitations
 
-- One container (`max_instances: 1`); extra conversations queue.
+- `max_instances: 2`; the onboarding workspace holds one slot, so one conversation runs at a time and extra messages queue.
 - Shared admin token; no tenants yet.
-- No model credential injection; the sandbox uses whatever OpenCode can reach.
+- `.stow` (the local S3 view) and `.state/cache` are excluded from checkpoints: files survive a restore, cached/provider state is rebuilt.
 - A crash mid-turn loses that turn (the checkpoint is written after settle).
+- Snapshots are not used: they require the `durable_object` scheduling policy, and we deploy with `default`.

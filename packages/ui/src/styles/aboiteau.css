@@ -11,6 +11,10 @@
   --abo-paper: #f6eedd;
   --abo-ink: #212722;
   --abo-pink: #ed5798;
+  --abo-accent: var(--abo-ultramarine);
+  --abo-accent-strong: var(--abo-ultramarine);
+  --abo-accent-ink: #ffffff;
+  --abo-accent-soft: color-mix(in oklab, var(--abo-accent) 12%, var(--card));
   --style-font-brand: "DM Sans Variable", "Arial", sans-serif;
   --style-font-heading: "DM Sans Variable", "Arial", sans-serif;
   --style-font-sans: "DM Sans Variable", "Arial", sans-serif;
@@ -63,6 +67,42 @@
   --font-size-base: 1rem;
   --font-size-sm: 0.875rem;
   --font-size-xs: 0.75rem;
+}
+
+/*
+ * Brand accents are an encoding, not decoration. A surface opts in with
+ * data-accent and every child can use --abo-accent, --abo-accent-strong and
+ * --abo-accent-soft. The strong pair is contrast-checked for small text.
+ */
+[data-accent="ultramarine"] {
+  --abo-accent: var(--abo-ultramarine);
+  --abo-accent-strong: var(--abo-ultramarine);
+  --abo-accent-ink: #ffffff;
+}
+[data-accent="vermilion"] {
+  --abo-accent: var(--abo-vermilion);
+  --abo-accent-strong: #cf3f28;
+  --abo-accent-ink: #ffffff;
+}
+[data-accent="yellow"] {
+  --abo-accent: var(--abo-yellow);
+  --abo-accent-strong: var(--abo-yellow);
+  --abo-accent-ink: var(--abo-ink);
+}
+[data-accent="pink"] {
+  --abo-accent: var(--abo-pink);
+  --abo-accent-strong: var(--abo-pink);
+  --abo-accent-ink: var(--abo-ink);
+}
+[data-accent="paper"] {
+  --abo-accent: var(--abo-paper);
+  --abo-accent-strong: var(--abo-paper);
+  --abo-accent-ink: var(--abo-ink);
+}
+[data-accent="ink"] {
+  --abo-accent: var(--abo-ink);
+  --abo-accent-strong: var(--abo-ink);
+  --abo-accent-ink: var(--abo-paper);
 }
 
 @layer base {

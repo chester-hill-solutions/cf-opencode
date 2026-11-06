@@ -73,6 +73,8 @@ export function Navigation() {
   return (
     <GallerySection
       id="navigation"
+      number="06"
+      accent="yellow"
       title="Navigation & structure"
       description="Wayfinding stays quiet and predictable: a location trail, page controls, tabs, and a shell that can frame a whole workspace."
     >

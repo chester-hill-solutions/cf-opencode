@@ -19,13 +19,30 @@ The host compiles Tailwind v4 and includes this package in its source scan. Aboi
 
 ## Ownership
 
-- `src/components/ui/` contains unmodified source vendored from CHS UI kit 0.4.0, including React Aria behaviour. The registry manifest is `.chs-ui.json`.
+- `src/components/ui/` contains the complete component set vendored unmodified from CHS UI kit 0.4.0, including React Aria behaviour, the i18n foundation and the optional chart, carousel, drawer and resizer primitives. The registry manifest is `.chs-ui.json`.
 - `src/styles/base.css` and `foundation.css` are the shared CHS foundation. Update them from upstream, not by adding Aboiteau-specific rules.
 - `src/styles/aboiteau.css` owns Aboiteau’s colours, typography, spacing, control dimensions, borders and slot treatments. Change the theme before changing a primitive.
 - `src/components/brand.tsx`, `status.tsx` and `src/brand.ts` are Aboiteau compositions. They add brand/display behaviour without replacing control semantics.
 - Product layout and API logic stay in `web/`, outside the kit.
 
-Upstream: [CHS UI kit](https://github.com/chester-hill-solutions/chester-hill-solutions/tree/main/packages/ui-kit). Add primitives through its registry/CLI, then export the required public API from `src/index.ts`. There are no behaviour forks in this first version.
+Upstream: [CHS UI kit](https://github.com/chester-hill-solutions/chester-hill-solutions/tree/main/packages/ui-kit). Add new primitives through its registry/CLI, then export the public API from `src/index.ts`. There are no behaviour forks in this version. `StatusTone` is exported from the Aboiteau `Status`; the CHS status-badge tone is re-exported as `StatusBadgeTone` to avoid the collision.
+
+## Brand accents
+
+Colour is an encoding, not a finish. Any surface can opt into a brand accent with `data-accent` and every descendant receives the matching tokens:
+
+```html
+<section data-accent="vermilion">…</section>
+```
+
+```css
+--abo-accent        /* the brand colour, for rules, dots and series */
+--abo-accent-strong /* contrast-checked surface for small text */
+--abo-accent-ink    /* ink or paper for text on the strong surface */
+--abo-accent-soft   /* a tint for quiet backgrounds */
+```
+
+Tones: `ultramarine`, `vermilion`, `yellow`, `pink`, `paper`, `ink`. The settings page, onboarding steps, gallery sections and chart series use the same set. Always pair an accent with a written label or number; colour never carries meaning alone. The theme also defines `--chart-1`–`--chart-5` and `--sidebar-*`, so those primitives inherit the palette rather than falling back to black or transparent.
 
 ## Visual rules
 

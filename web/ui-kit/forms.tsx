@@ -121,6 +121,8 @@ export function Inputs() {
   return (
     <GallerySection
       id="inputs"
+      number="05"
+      accent="vermilion"
       title="Forms & controls"
       description="Native validation, React Aria behaviour and Aboiteau surfaces. Labels stay visible, help sits beside the field it explains and drafts survive an error."
     >

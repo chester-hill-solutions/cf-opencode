@@ -23,6 +23,8 @@ export function Actions() {
   return (
     <GallerySection
       id="actions"
+      number="04"
+      accent="ultramarine"
       title="Actions"
       description="Ultramarine carries the primary action. Every control has a complete border, visible focus and a target of at least 44px on touch."
     >

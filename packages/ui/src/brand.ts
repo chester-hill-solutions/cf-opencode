@@ -5,6 +5,8 @@ export const logoPaths = [
   "M225 868L905 590L1085 970Q1098 997 1069 997H904Q881 997 871 975L801 806Q795 789 778 789H515Q498 789 491 805L420 975Q411 997 388 997H194Q163 997 176 971Z",
 ] as const
 
+export type BrandAccent = keyof typeof brandColors
+
 export const brandColors = {
   ultramarine: "#1746D1",
   vermilion: "#F04B32",

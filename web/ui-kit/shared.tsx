@@ -1,22 +1,36 @@
 import type { ReactNode } from "react"
-import { cn } from "@aboiteau/ui"
+import { cn, type BrandAccent } from "@aboiteau/ui"
 
-/** A titled band in the live gallery. Mirrors the settings page's section rhythm. */
+/** A titled band in the live gallery. The accent is a section identity, not ornament. */
 export function GallerySection({
   id,
+  number,
+  accent,
   title,
   description,
   children,
 }: {
   id: string
+  number: string
+  accent: BrandAccent
   title: string
   description?: ReactNode
   children: ReactNode
 }) {
   return (
-    <section id={id} className="catalog-section" aria-labelledby={`${id}-title`}>
+    <section
+      id={id}
+      data-accent={accent}
+      className="catalog-section"
+      aria-labelledby={`${id}-title`}
+    >
       <div className="catalog-section-heading">
-        <h2 id={`${id}-title`}>{title}</h2>
+        <div className="catalog-section-title">
+          <span className="catalog-section-number" aria-hidden="true">
+            {number}
+          </span>
+          <h2 id={`${id}-title`}>{title}</h2>
+        </div>
         {description ? <p className="catalog-section-description">{description}</p> : null}
       </div>
       <div className="component-grid">{children}</div>

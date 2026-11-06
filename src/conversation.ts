@@ -45,6 +45,8 @@ const POLL_MS = 2000
 /** Delay before retrying a checkpoint that failed after a turn. */
 const CHECKPOINT_RETRY_MS = 30_000
 const CHECKPOINT_RETRY_LIMIT = 3
+/** How many checkpoint versions to keep per conversation. */
+const CHECKPOINT_KEEP = 5
 
 /** R2 key holding the account's OpenCode state (config + provider credentials). */
 export const ACCOUNT_STATE_KEY = "account/state.tar.gz"
@@ -812,7 +814,7 @@ export class Conversation extends DurableObject<Env> {
     ).json()) as { initialized?: boolean }
 
     if (!status.initialized) {
-      const checkpoint = await this.env.CHECKPOINTS.get(this.checkpointKey())
+      const checkpoint = await this.latestCheckpoint()
       if (checkpoint?.body) {
         await control.fetch("http://container/restore", {
           method: "POST",
@@ -854,6 +856,9 @@ export class Conversation extends DurableObject<Env> {
     if (!started.ok) throw new Error(`container start failed: ${await started.text()}`)
     const startedBody = (await started.json()) as { password?: string }
     if (startedBody.password) this.opencodePassword = startedBody.password
+    await this.store.patch({
+      containerStarts: ((await this.store.get()).containerStarts ?? 0) + 1,
+    })
 
     if (state.settingsVersion !== settings.version) {
       await this.store.patch({ settingsVersion: settings.version })
@@ -937,8 +942,28 @@ export class Conversation extends DurableObject<Env> {
     }
   }
 
-  private checkpointKey(): string {
-    return `workspaces/${this.ctx.id.toString()}.tar.gz`
+  private checkpointPrefix(): string {
+    return `workspaces/${this.ctx.id.toString()}/`
+  }
+
+  /** Newest checkpoint, with a fallback to the pre-versioning single object. */
+  private async latestCheckpoint(): Promise<R2ObjectBody | null> {
+    const list = await this.env.CHECKPOINTS.list({ prefix: this.checkpointPrefix() })
+    const newest = list.objects
+      .map((object) => object.key)
+      .sort()
+      .at(-1)
+    if (newest) return this.env.CHECKPOINTS.get(newest)
+    return this.env.CHECKPOINTS.get(`workspaces/${this.ctx.id.toString()}.tar.gz`)
+  }
+
+  /** Drop old versions, keeping the most recent few for recovery. */
+  private async pruneCheckpoints(): Promise<void> {
+    const list = await this.env.CHECKPOINTS.list({ prefix: this.checkpointPrefix() })
+    const keys = list.objects.map((object) => object.key).sort()
+    const stale = keys.slice(0, Math.max(0, keys.length - CHECKPOINT_KEEP))
+    for (const key of stale) await this.env.CHECKPOINTS.delete(key)
+    if (stale.length) logEvent("checkpoint.pruned", { count: stale.length })
   }
 
   /** Retry a checkpoint that failed at settle time, with a bounded attempt count. */
@@ -964,9 +989,9 @@ export class Conversation extends DurableObject<Env> {
   }
 
   private async checkpoint(): Promise<boolean> {
-    // The container pauses OpenCode to archive a consistent workspace. Once
-    // that happens this instance can no longer reuse its cached port.
-    let archived = false
+    // The control server archives the workspace without stopping OpenCode, so
+    // the cached port stays valid across a checkpoint.
+    const key = `${this.checkpointPrefix()}${Date.now()}.tar.gz`
     try {
       await withRetries(
         async () => {
@@ -982,27 +1007,27 @@ export class Conversation extends DurableObject<Env> {
             return
           }
           if (!response.ok || !response.body) throw new Error(`checkpoint returned ${response.status}`)
-          // From here on OpenCode may be paused even if the upload fails.
-          archived = true
+          // From here on a failure is a failed upload, not a paused server.
           const length = Number(response.headers.get("content-length"))
           if (Number.isFinite(length) && length > 0) {
             // R2 needs a stream of known length; the control server sends one.
             const counted = countedStream(response.body)
             const fixed = new FixedLengthStream(length)
             const piping = counted.stream.pipeTo(fixed.writable).catch(() => {})
-            await this.env.CHECKPOINTS.put(this.checkpointKey(), fixed.readable)
+            await this.env.CHECKPOINTS.put(key, fixed.readable)
             await piping
             logEvent("checkpoint.saved", { bytes: counted.bytes() })
             await this.store.patch({ checkpointSize: counted.bytes() })
           } else {
             // Older control servers streamed without a length.
             const bytes = await response.arrayBuffer()
-            await this.env.CHECKPOINTS.put(this.checkpointKey(), bytes)
+            await this.env.CHECKPOINTS.put(key, bytes)
             logEvent("checkpoint.saved", { bytes: bytes.byteLength })
             await this.store.patch({ checkpointSize: bytes.byteLength })
           }
           const fingerprint = response.headers.get("x-workspace-fingerprint")
           if (fingerprint) await this.store.patch({ checkpointFingerprint: fingerprint })
+          await this.pruneCheckpoints()
         },
         { attempts: 3, delayMs: 1000 },
       )
@@ -1018,11 +1043,7 @@ export class Conversation extends DurableObject<Env> {
       // turn's work silently.
       await this.store.patch({ checkpointPending: true })
       await this.ctx.storage.setAlarm(Date.now() + CHECKPOINT_RETRY_MS)
-      // The container may have been paused before the failure.
-      this.invalidateOpenCode()
       return false
-    } finally {
-      if (archived) this.invalidateOpenCode()
     }
   }
 

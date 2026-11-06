@@ -16,6 +16,8 @@ export function Structure() {
   return (
     <GallerySection
       id="structure"
+      number="09"
+      accent="ink"
       title="Page structure"
       description="Small layout primitives and the shared page frame. These keep reading surfaces quiet and boundaries explicit."
     >

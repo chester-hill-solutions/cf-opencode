@@ -144,6 +144,8 @@ export function DataDisplay() {
   return (
     <GallerySection
       id="data"
+      number="08"
+      accent="vermilion"
       title="Data display"
       description="Cards, status, tables, charts and progress. Colour supports the written label; it never replaces it."
     >

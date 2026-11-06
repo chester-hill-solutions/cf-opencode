@@ -1,4 +1,4 @@
-export { brandColors } from "./brand"
+export { brandColors, type BrandAccent } from "./brand"
 export { cn } from "./lib/utils"
 export { BrandLockup, InkField, Logo } from "./components/brand"
 export { Status, type StatusTone } from "./components/status"

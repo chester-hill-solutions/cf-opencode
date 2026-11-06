@@ -87,6 +87,8 @@ Without the Slack secrets the Slack routes return 503 and the harness is HTTP-on
 
 `/` serves the Aboiteau settings page, built from the dedicated [`@aboiteau/ui`](packages/ui/README.md) package. `/ui-kit/` is the live component and brand gallery. `/onboarding/` is the first-run wizard.
 
+The kit carries the complete CHS UI set — actions, forms, navigation, overlays, data display and conversation surfaces — plus an accent system that codes settings sections, onboarding steps and gallery sections with the same brand palette. Colour is always paired with a number or written label; see [`packages/ui/README.md`](packages/ui/README.md#brand-accents).
+
 Onboarding connects a model provider through the running OpenCode instance (OAuth where the
 provider offers it, API key otherwise), connects GitHub through an OAuth App, and sets the
 workspace repository, branch and model. Completing it snapshots the OpenCode state to R2 so

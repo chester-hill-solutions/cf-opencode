@@ -11,6 +11,7 @@ import {
   Input,
   NativeSelect,
   Status,
+  type BrandAccent,
   type StatusTone,
 } from "@aboiteau/ui"
 
@@ -85,21 +86,35 @@ async function api<T>(token: string, path: string, init?: { method?: string; bod
   return payload as T
 }
 
+const setupSteps: ReadonlyArray<{ id: string; number: string; title: string; accent: BrandAccent }> = [
+  { id: "step-01", number: "01", title: "Provider", accent: "ultramarine" },
+  { id: "step-02", number: "02", title: "GitHub", accent: "vermilion" },
+  { id: "step-03", number: "03", title: "Workspace", accent: "yellow" },
+  { id: "step-04", number: "04", title: "Finish", accent: "pink" },
+]
+
 function Step({
   number,
+  accent,
   title,
   description,
   status,
   children,
 }: {
   number: string
+  accent: BrandAccent
   title: string
   description: string
   status?: { label: string; tone: StatusTone }
   children: ReactNode
 }) {
   return (
-    <section className="settings-section" aria-labelledby={`step-${number}`}>
+    <section
+      className="settings-section"
+      id={`step-${number}`}
+      data-accent={accent}
+      aria-labelledby={`step-${number}`}
+    >
       <div className="section-heading">
         <span className="section-number" aria-hidden="true">
           {number}
@@ -409,6 +424,16 @@ export function OnboardingApp() {
             Three connections and the harness is ready: a model provider, GitHub, and the repository the agent
             works in.
           </p>
+          <nav className="heading-spectrum" aria-label="Setup steps">
+            {setupSteps.map((step) => (
+              <a key={step.id} href={`#${step.id}`} data-accent={step.accent}>
+                <span className="heading-spectrum-chip" aria-hidden="true">
+                  {step.number}
+                </span>
+                <span>{step.title}</span>
+              </a>
+            ))}
+          </nav>
         </div>
 
         {error ? (
@@ -434,6 +459,7 @@ export function OnboardingApp() {
 
         <Step
           number="01"
+          accent="ultramarine"
           title="Connect a model provider"
           description="OpenCode stores the credential in this workspace; every conversation uses it."
           status={
@@ -524,6 +550,7 @@ export function OnboardingApp() {
 
         <Step
           number="02"
+          accent="vermilion"
           title="Connect GitHub"
           description="Used to clone the workspace repository, including private repositories."
           status={
@@ -546,6 +573,7 @@ export function OnboardingApp() {
 
         <Step
           number="03"
+          accent="yellow"
           title="Choose the workspace"
           description="The repository the agent works in, and the model it uses."
           status={
@@ -596,6 +624,7 @@ export function OnboardingApp() {
 
         <Step
           number="04"
+          accent="pink"
           title="Finish"
           description="Save the connected state so new conversations start ready."
           status={

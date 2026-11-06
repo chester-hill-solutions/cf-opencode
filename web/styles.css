@@ -95,6 +95,11 @@
   color: var(--primary);
   font: 0.6875rem var(--style-font-mono);
 }
+.section-nav a .section-nav-number {
+  color: var(--abo-accent-ink);
+  font-family: var(--style-font-mono);
+  font-weight: 700;
+}
 .section-nav .gallery-link {
   margin-top: 1.5rem;
   padding-top: 1.5rem;
@@ -135,19 +140,32 @@
   font-size: 0.9375rem;
   color: var(--muted-foreground);
 }
-.heading-art {
-  position: absolute;
-  right: 0;
-  top: -0.5rem;
-  width: 32%;
-  height: 8rem;
-  object-position: 67% 43%;
-  mix-blend-mode: multiply;
+.heading-spectrum {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin-top: 1.25rem;
+}
+.heading-spectrum a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.45rem 0 0.45rem 0;
+  border-top: 3px solid var(--abo-accent);
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  text-decoration: none;
+}
+.heading-spectrum a:hover {
+  color: var(--abo-ink);
 }
 .settings-section {
   margin-bottom: 1.5rem;
   padding: 1.5rem;
   border: 1px solid var(--border);
+  border-top: 3px solid var(--abo-accent);
   border-radius: var(--radius);
   background: var(--card);
   scroll-margin-top: 2rem;
@@ -155,12 +173,27 @@
 .section-heading {
   display: flex;
   gap: 0.75rem;
-  align-items: baseline;
+  align-items: flex-start;
   margin-bottom: 1.25rem;
 }
-.section-number {
-  color: var(--primary);
-  font: 0.6875rem var(--style-font-mono);
+.section-number,
+.section-nav-number,
+.heading-spectrum-chip {
+  display: inline-flex;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.25rem;
+  background: var(--abo-accent-strong);
+  color: var(--abo-accent-ink);
+  font: 700 0.6875rem/1 var(--style-font-mono);
+}
+.section-nav a .section-nav-number {
+  width: 1.35rem;
+  height: 1.35rem;
+  font-size: 0.625rem;
 }
 .section-heading h2 {
   margin: 0;
@@ -323,18 +356,36 @@
 }
 .catalog-section {
   padding: 2.5rem 0;
+  border-top: 3px solid var(--abo-accent);
+  scroll-margin-top: 6rem;
+}
+.catalog-section:last-child {
   border-bottom: 1px solid var(--border);
 }
 .catalog-section h2 {
-  margin: 0 0 1.5rem;
+  margin: 0;
   font-size: 1.5rem;
   font-weight: 750;
   letter-spacing: -0.035em;
 }
 .swatch-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 1rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.25rem;
+}
+.swatch-card {
+  min-width: 0;
+}
+.swatch-role {
+  margin-top: 0.35rem;
+  font-size: 0.8125rem;
+  font-weight: 650;
+}
+.swatch-usage {
+  margin: 0.15rem 0 0;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  line-height: 1.5;
 }
 .swatch-block {
   aspect-ratio: 1.5;
@@ -433,10 +484,6 @@
   .page-heading .lead {
     max-width: 68%;
   }
-  .heading-art {
-    width: 29%;
-    height: 7rem;
-  }
   .settings-section {
     padding: 1.25rem;
   }
@@ -462,13 +509,14 @@
     padding: 2rem 1.25rem;
   }
   .swatch-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 @media (max-width: 32rem) {
   .fields-grid,
   .runtime-grid,
-  .specimen-grid {
+  .specimen-grid,
+  .swatch-grid {
     grid-template-columns: 1fr;
   }
   .connect-row {
@@ -501,6 +549,23 @@
   gap: 0.35rem;
   margin-bottom: 1.5rem;
 }
+.catalog-section-title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.catalog-section-number {
+  display: inline-flex;
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.25rem;
+  background: var(--abo-accent-strong);
+  color: var(--abo-accent-ink);
+  font: 700 0.75rem/1 var(--style-font-mono);
+}
 .catalog-section-heading h2 {
   margin: 0;
 }
@@ -526,10 +591,21 @@
   grid-column: 1 / -1;
 }
 .component-demo-header h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
   margin: 0;
   font-size: 0.9375rem;
   font-weight: 700;
   letter-spacing: -0.02em;
+}
+.component-demo-header h3::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: 0 0 auto;
+  border-radius: 0.125rem;
+  background: var(--abo-accent);
 }
 .component-demo-header p {
   margin: 0.15rem 0 0;
@@ -580,12 +656,25 @@
   margin: 1.5rem 0 0;
   padding: 1rem 0;
   border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
   font-size: 0.8125rem;
 }
 .catalog-nav a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
   color: var(--muted-foreground);
   text-decoration: none;
+}
+.catalog-nav a span {
+  display: inline-flex;
+  min-width: 1.35rem;
+  height: 1.35rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.125rem;
+  background: var(--abo-accent-strong);
+  color: var(--abo-accent-ink);
+  font: 700 0.625rem/1 var(--style-font-mono);
 }
 .catalog-nav a:hover {
   color: var(--primary);

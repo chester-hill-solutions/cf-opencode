@@ -1,7 +1,6 @@
 import { useState, type ReactNode } from "react"
 import {
   BrandLockup,
-  InkField,
   Button,
   Checkbox,
   Field,
@@ -14,32 +13,40 @@ import {
   Alert,
   AlertTitle,
   AlertDescription,
+  type BrandAccent,
   type StatusTone,
 } from "@aboiteau/ui"
 import { useSettings, ruleLines, type PermissionKind } from "./use-settings"
 
-const sections = [
-  ["connection", "01", "Connection"],
-  ["workspace", "02", "Workspace"],
-  ["model-runtime", "03", "Model & runtime"],
-  ["permissions", "04", "Permissions"],
-] as const
+const sections: ReadonlyArray<{ id: string; number: string; title: string; accent: BrandAccent }> = [
+  { id: "connection", number: "01", title: "Connection", accent: "ultramarine" },
+  { id: "workspace", number: "02", title: "Workspace", accent: "vermilion" },
+  { id: "model-runtime", number: "03", title: "Model & runtime", accent: "yellow" },
+  { id: "permissions", number: "04", title: "Permissions", accent: "pink" },
+]
 
 function Section({
   id,
   number,
+  accent,
   title,
   description,
   children,
 }: {
   id: string
   number: string
+  accent: BrandAccent
   title: string
   description: string
   children: ReactNode
 }) {
   return (
-    <section className="settings-section" id={id} aria-labelledby={id + "-heading"}>
+    <section
+      className="settings-section"
+      id={id}
+      data-accent={accent}
+      aria-labelledby={id + "-heading"}
+    >
       <div className="section-heading">
         <span className="section-number" aria-hidden="true">
           {number}
@@ -110,10 +117,12 @@ export function SettingsApp() {
       <div className="app-layout">
         <nav className="section-nav" aria-label="Settings sections">
           <p className="nav-label">Configure</p>
-          {sections.map(([id, number, title]) => (
-            <a href={"#" + id} key={id}>
-              <span aria-hidden="true">{number}</span>
-              {title}
+          {sections.map((section) => (
+            <a href={"#" + section.id} key={section.id} data-accent={section.accent}>
+              <span className="section-nav-number" aria-hidden="true">
+                {section.number}
+              </span>
+              {section.title}
             </a>
           ))}
           <a className="gallery-link" href="/onboarding/">
@@ -128,10 +137,20 @@ export function SettingsApp() {
             <p className="eyebrow">Your workspace. Your rules.</p>
             <h1>Settings</h1>
             <p className="lead">Choose how your coding agent works.</p>
-            <InkField className="heading-art" />
+            <nav className="heading-spectrum" aria-label="Settings sections">
+              {sections.map((section) => (
+                <a key={section.id} href={"#" + section.id} data-accent={section.accent}>
+                  <span className="heading-spectrum-chip" aria-hidden="true">
+                    {section.number}
+                  </span>
+                  <span>{section.title}</span>
+                </a>
+              ))}
+            </nav>
           </div>
           <Section
             id="connection"
+            accent="ultramarine"
             number="01"
             title="Connection"
             description="Load the current settings for your deployment."
@@ -192,6 +211,7 @@ export function SettingsApp() {
             >
               <Section
                 id="workspace"
+                accent="vermilion"
                 number="02"
                 title="Workspace"
                 description="The repository and branch your agent starts from."
@@ -240,6 +260,7 @@ export function SettingsApp() {
               </Section>
               <Section
                 id="model-runtime"
+                accent="yellow"
                 number="03"
                 title="Model & runtime"
                 description="Choose a model and how you receive its progress."
@@ -349,6 +370,7 @@ export function SettingsApp() {
               </Section>
               <Section
                 id="permissions"
+                accent="pink"
                 number="04"
                 title="Permissions"
                 description="Decide what your agent can run. One shell pattern per line."
