@@ -50,7 +50,9 @@ Targets and the results format live in [`bench/README.md`](../bench/README.md).
 
 ```sh
 bun install --frozen-lockfile
+bun run check:config
 bun run typecheck
+bun run build:ui
 bun test tests
 bun run test:workers
 ```

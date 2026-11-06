@@ -156,7 +156,7 @@ Apple `container` needs macOS 26+ on Apple silicon. `wrangler dev` with containe
 ## Testing and measurements
 
 - `bun test tests` — 102 unit tests (signature, conversation keys, permissions, state, SSE formatting, retry/backoff, helpers, UI kit registry).
-- `bun run test:workers` — 18 integration tests in workerd (Worker surface, DO state, Slack signature/routing, SSE, concurrency and admission-queue regressions, a latency guard).
+- `bun run test:workers` — 30 integration tests in workerd (Worker surface, DO state, Slack signature/routing, SSE, concurrency and admission-queue regressions, a latency guard).
 - `bun run check:config` — fails CI when the prod and test Wrangler configs drift on bindings, exports or vars.
 - `bench/measure.ts` — deployed Worker/SSE/turn latency.
 - `bench/container.sh` — cold start, checkpoint size/time, restore time.

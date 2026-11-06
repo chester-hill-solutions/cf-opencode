@@ -119,6 +119,30 @@ Set `dailyBudgetUSD` in settings (0 disables). Once today's total reaches it,
 `{"error":"daily budget reached","spentUSD":…}`. Queued messages admitted
 before the cap are still allowed to run.
 
+## Metrics
+
+`GET /api/metrics` returns today's counters, incremented by the conversation DOs:
+
+```json
+{"date":"2026-11-06","metrics":{"turn.settled":8,"checkpoint.saved":8,"queue.enqueued":1,"container.recycled":1}}
+```
+
+Counters: `turn.settled`, `turn.failed`, `turn.timedout`, `checkpoint.saved`,
+`checkpoint.skipped`, `checkpoint.failed`, `queue.enqueued`, `queue.drained`,
+`queue.failed`, `admission.failed`, `container.recycled`. Pass `?date=YYYY-MM-DD`
+for another UTC day.
+
+## Deleting a conversation
+
+```sh
+curl -X DELETE https://<worker>/api/conversations/<key> \
+  -H "authorization: Bearer $TOKEN"
+```
+
+Removes every checkpoint version, the legacy archive and the DO state, and stops
+the container. The next message on that key starts from scratch (seeded from the
+account state).
+
 ## Lifecycle phases
 
 | Phase | Meaning | What to check |

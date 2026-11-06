@@ -123,6 +123,10 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return Response.json({ ...usage, budgetUSD: current.dailyBudgetUSD ?? 0 })
   }
 
+  if (parts[1] === "metrics" && request.method === "GET") {
+    return settingsDo(env, `/metrics${url.search}`)
+  }
+
   if (parts[1] === "models" && request.method === "GET") {
     return Response.json({ models: MODEL_CATALOG, recommended: recommendModel().ref })
   }
@@ -183,6 +187,10 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
 
   if (request.method === "POST" && suffix.length === 1 && suffix[0] === "recycle") {
     return conversation.fetch("https://conversation/recycle", { method: "POST" })
+  }
+
+  if (request.method === "DELETE" && suffix.length === 0) {
+    return conversation.fetch("https://conversation/delete", { method: "DELETE" })
   }
 
   if (request.method === "GET" && suffix.length === 0) {

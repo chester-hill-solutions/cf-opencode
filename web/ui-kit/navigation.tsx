@@ -203,7 +203,7 @@ export function Navigation() {
       <Demo name="Sidebar" note="Inline navigation rail with grouped menus and a footer." wide surface={false}>
         <div className="specimen-stack" style={{ height: "22rem", overflow: "hidden" }}>
           <SidebarProvider className="min-h-0 h-full">
-            <Sidebar collapsible="none" className="border-r border-border">
+            <Sidebar collapsible="none">
               <SidebarHeader>
                 <span className="px-2 text-sm font-semibold">Workbench</span>
                 <SidebarInput placeholder="Search tokens…" />

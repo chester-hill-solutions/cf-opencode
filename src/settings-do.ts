@@ -69,6 +69,27 @@ export class Settings extends DurableObject<Env> {
       return Response.json({ date, costUSD, input, output, conversations: entries.size })
     }
 
+    // Lightweight counters, bucketed by UTC day. `GET /api/metrics` exposes them
+    // for a dashboard or an external scrape.
+    if (url.pathname === "/metrics" && request.method === "POST") {
+      const body = (await request.json()) as { name?: string; value?: number }
+      if (!body.name) return Response.json({ error: "name is required" }, { status: 400 })
+      const date = new Date().toISOString().slice(0, 10)
+      const key = `metric:${date}:${body.name}`
+      const current = (await this.ctx.storage.get<number>(key)) ?? 0
+      await this.ctx.storage.put(key, current + (Number(body.value ?? 1) || 1))
+      return Response.json({ ok: true })
+    }
+
+    if (url.pathname === "/metrics" && request.method === "GET") {
+      const date = url.searchParams.get("date") ?? new Date().toISOString().slice(0, 10)
+      const prefix = `metric:${date}:`
+      const entries = await this.ctx.storage.list<number>({ prefix })
+      const metrics: Record<string, number> = {}
+      for (const [key, value] of entries) metrics[key.slice(prefix.length)] = value
+      return Response.json({ date, metrics })
+    }
+
     // Secrets are encrypted with the CHS vault. Values never leave the DO
     // unless a trusted caller asks for a specific key by name.
     if (url.pathname === "/secrets" && request.method === "GET") {

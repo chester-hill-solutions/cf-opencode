@@ -28,8 +28,8 @@
 .app-header {
   position: relative;
   z-index: 10;
-  border-bottom: 1px solid var(--border);
   background: var(--card);
+  box-shadow: 0 14px 24px -22px rgb(33 39 34 / 0.5);
 }
 .app-header-inner {
   max-width: 80rem;
@@ -103,7 +103,6 @@
 .section-nav .gallery-link {
   margin-top: 1.5rem;
   padding-top: 1.5rem;
-  border-top: 1px solid var(--border);
   color: var(--primary);
   font-weight: 650;
 }
@@ -116,7 +115,6 @@
   min-height: 9.25rem;
   padding: 0 0 2rem;
   margin-bottom: 1.75rem;
-  border-bottom: 1px solid var(--border);
 }
 .page-heading h1 {
   position: relative;
@@ -152,8 +150,7 @@
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
-  padding: 0.45rem 0 0.45rem 0;
-  border-top: 3px solid var(--abo-accent);
+  padding: 0.45rem 0;
   color: var(--muted-foreground);
   font-size: 0.75rem;
   text-decoration: none;
@@ -165,7 +162,6 @@
   margin-bottom: 1.5rem;
   padding: 1.5rem;
   border: 1px solid var(--border);
-  border-top: 3px solid var(--abo-accent);
   border-radius: var(--radius);
   background: var(--card);
   scroll-margin-top: 2rem;
@@ -238,16 +234,12 @@
 .connection-feedback {
   margin-top: 1rem;
 }
-.runtime-divider {
-  margin: 1.5rem 0;
-  border: 0;
-  border-top: 1px solid var(--border);
-}
 .runtime-grid {
   display: grid;
   grid-template-columns: 10rem minmax(0, 1fr);
   align-items: start;
   gap: 2rem;
+  margin-top: 1.5rem;
 }
 .streaming-field {
   padding-top: 1.5rem;
@@ -297,8 +289,8 @@
   z-index: 20;
   bottom: 0;
   inset-inline: 0;
-  border-top: 1px solid var(--border);
   background: var(--card);
+  box-shadow: 0 -16px 32px -24px rgb(33 39 34 / 0.55);
   padding-bottom: env(safe-area-inset-bottom);
 }
 .save-footer-inner {
@@ -355,12 +347,8 @@
   color: var(--muted-foreground);
 }
 .catalog-section {
-  padding: 2.5rem 0;
-  border-top: 3px solid var(--abo-accent);
+  padding: 3rem 0;
   scroll-margin-top: 6rem;
-}
-.catalog-section:last-child {
-  border-bottom: 1px solid var(--border);
 }
 .catalog-section h2 {
   margin: 0;
@@ -655,7 +643,6 @@
   gap: 0.5rem 1.25rem;
   margin: 1.5rem 0 0;
   padding: 1rem 0;
-  border-top: 1px solid var(--border);
   font-size: 0.8125rem;
 }
 .catalog-nav a {

@@ -293,6 +293,81 @@
   background: var(--muted);
 }
 
+
+/*
+ * Aboiteau uses complete borders, surface contrast or spacing. A border on one
+ * side reads as a seam rather than a boundary, so these primitives are brought
+ * back to a full border (or no border at all) and tone moves into the content.
+ */
+[data-slot="metric-card"] {
+  border-width: 1px;
+  border-color: var(--border);
+}
+[data-slot="metric-card"][data-tone="ok"] [data-slot="metric-card-value"] {
+  color: var(--success);
+}
+[data-slot="metric-card"][data-tone="warn"] [data-slot="metric-card-value"] {
+  color: var(--warning);
+}
+[data-slot="metric-card"][data-tone="danger"] [data-slot="metric-card-value"] {
+  color: var(--destructive);
+}
+[data-slot="metric-card"][data-tone="action"] [data-slot="metric-card-value"] {
+  color: var(--info);
+}
+[data-slot="table-header"] tr,
+[data-slot="table-row"],
+[data-slot="table-footer"] {
+  border-width: 0;
+}
+[data-slot="table-body"] [data-slot="table-row"]:nth-child(even):not([data-selected]):not(:hover) {
+  background: color-mix(in oklab, var(--muted) 55%, transparent);
+}
+[data-slot="table-footer"] {
+  background: var(--muted);
+}
+[data-slot="accordion-item"] {
+  border-bottom-width: 0;
+}
+[data-slot="accordion-item"] + [data-slot="accordion-item"] {
+  margin-top: 0.25rem;
+}
+[data-slot="page-section"][data-variant="divided"] {
+  border-bottom-width: 0;
+}
+[data-slot="selection-picker-options"] fieldset {
+  border-bottom-width: 0;
+}
+[data-slot="selection-picker-options"] fieldset + fieldset {
+  padding-top: 0.75rem;
+}
+[data-slot="typography"][data-variant="quote"] {
+  border-inline-start-width: 0;
+  padding-inline-start: 0;
+}
+[data-slot="sheet-content"],
+[data-slot="sidebar-container"] {
+  border-width: 0;
+}
+[data-slot="app-shell-header"] {
+  border-bottom-width: 0;
+  box-shadow: 0 14px 24px -22px rgb(33 39 34 / 0.5);
+}
+[data-slot="message-scroller"] > .border-b {
+  border-bottom-width: 0;
+  background: var(--muted);
+}
+[data-slot="code-block-header"] {
+  border-bottom-width: 0;
+  background: var(--muted);
+}
+[data-slot="trace"] ol > li {
+  border-top-width: 0;
+}
+[data-slot="trace"] ol > li + li {
+  margin-top: 0.25rem;
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;

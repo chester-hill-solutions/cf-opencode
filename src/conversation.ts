@@ -119,6 +119,7 @@ export class Conversation extends DurableObject<Env> {
         events: Object.fromEntries(this.seenEvents),
       })
     }
+    if (url.pathname === "/delete" && request.method === "DELETE") return this.onDelete()
     return new Response("not found", { status: 404 })
   }
 
@@ -160,6 +161,7 @@ export class Conversation extends DurableObject<Env> {
       await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
       await this.startRun(baseline)
     } catch (err) {
+      void this.count("admission.failed")
       logEvent("admission.failed", { transport: "http" })
       const queued = await this.enqueue(prompt, undefined)
       if (!queued) {
@@ -255,6 +257,37 @@ export class Conversation extends DurableObject<Env> {
     this.opencodePort = undefined
     this.opencodePassword = undefined
     return Response.json({ ok: true })
+  }
+
+  /** Remove the workspace archives and this conversation's stored state. */
+  private async onDelete(): Promise<Response> {
+    try {
+      await this.ctx.container?.destroy()
+    } catch {
+      /* already stopped */
+    }
+    this.ready = false
+    this.opencodePort = undefined
+    this.opencodePassword = undefined
+    const id = this.ctx.id.toString()
+    const list = await this.env.CHECKPOINTS.list({ prefix: this.checkpointPrefix() })
+    for (const object of list.objects) await this.env.CHECKPOINTS.delete(object.key)
+    await this.env.CHECKPOINTS.delete(`workspaces/${id}.tar.gz`)
+    await this.ctx.storage.deleteAll()
+    logEvent("conversation.deleted")
+    return Response.json({ ok: true })
+  }
+
+  /** Increment a harness counter; counting must never fail a turn. */
+  private async count(name: string): Promise<void> {
+    try {
+      await this.env.SETTINGS.getByName("global").fetch("https://settings/metrics", {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      })
+    } catch {
+      /* counters are advisory */
+    }
   }
 
   /** A phase where a new prompt must wait for the current turn. */
@@ -680,6 +713,7 @@ export class Conversation extends DurableObject<Env> {
     failure?: TurnFailure,
   ): Promise<void> {
     await this.store.advance("settling")
+    void this.count(failure ? "turn.failed" : "turn.settled")
     logEvent(failure ? "turn.failed" : "turn.settled", {
       ...(state.runStartedAt ? { durationMs: Date.now() - state.runStartedAt } : {}),
       ...(failure ? { error: failure.message.slice(0, 200) } : {}),
@@ -782,6 +816,7 @@ export class Conversation extends DurableObject<Env> {
       } else if (action === "timeout") {
         // No terminal message and no error: abandon the turn so the container
         // is not pinned forever.
+        void this.count("turn.timedout")
         logEvent("turn.timedout", {
           ...(before.runStartedAt ? { durationMs: Date.now() - before.runStartedAt } : {}),
         })
@@ -883,6 +918,7 @@ export class Conversation extends DurableObject<Env> {
       // Two consecutive failures: assume the container is wedged and recycle it.
       if (this.consecutiveFailures >= 2) {
         this.consecutiveFailures = 0
+        void this.count("container.recycled")
         logEvent("container.recycled")
         await this.ctx.container?.destroy().catch(() => {})
       }
@@ -1005,6 +1041,7 @@ export class Conversation extends DurableObject<Env> {
       queued: { text, ...(slack ? { slack } : {}), attempts: 0, nextAttemptAt },
     })
     await this.store.advance("queued")
+    void this.count("queue.enqueued")
     logEvent("queue.enqueued", { transport: slack ? "slack" : "http" })
     if (slack) {
       await this.postChunked(slack.channel, "⏳ Container busy — queued; I'll retry shortly.", slack.replyTs).catch(() => {})
@@ -1032,6 +1069,7 @@ export class Conversation extends DurableObject<Env> {
       const baseline = await this.turnBaseline(sessionID)
       await this.withClient((client) => client.session.prompt({ sessionID, text: queued.text }))
       await this.store.patch({ queued: undefined })
+      void this.count("queue.drained")
       logEvent("queue.drained", { attempts: queued.attempts })
       await this.startRun(baseline)
       const settings = await this.settings()
@@ -1042,6 +1080,7 @@ export class Conversation extends DurableObject<Env> {
       if (attempts >= 5) {
         await this.store.patch({ queued: undefined, lastTurnError: errorMessage(err) })
         await this.store.advance("idle")
+        void this.count("queue.failed")
         logEvent("queue.failed", { attempts })
         await this.deliver({ type: "error", message: `queued message could not start: ${errorMessage(err)}` })
         if (queued.slack) {
@@ -1128,6 +1167,7 @@ export class Conversation extends DurableObject<Env> {
             { signal: AbortSignal.timeout(120_000) },
           )
           if (response.status === 204) {
+            void this.count("checkpoint.skipped")
             logEvent("checkpoint.skipped")
             return
           }
@@ -1141,12 +1181,14 @@ export class Conversation extends DurableObject<Env> {
             const piping = counted.stream.pipeTo(fixed.writable).catch(() => {})
             await this.env.CHECKPOINTS.put(key, fixed.readable)
             await piping
+            void this.count("checkpoint.saved")
             logEvent("checkpoint.saved", { bytes: counted.bytes() })
             await this.store.patch({ checkpointSize: counted.bytes() })
           } else {
             // Older control servers streamed without a length.
             const bytes = await response.arrayBuffer()
             await this.env.CHECKPOINTS.put(key, bytes)
+            void this.count("checkpoint.saved")
             logEvent("checkpoint.saved", { bytes: bytes.byteLength })
             await this.store.patch({ checkpointSize: bytes.byteLength })
           }
@@ -1163,6 +1205,7 @@ export class Conversation extends DurableObject<Env> {
       return true
     } catch (err) {
       console.warn("checkpoint failed", err)
+      void this.count("checkpoint.failed")
       logEvent("checkpoint.failed")
       // Keep the failure visible and retry from the alarm instead of losing the
       // turn's work silently.

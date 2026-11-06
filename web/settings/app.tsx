@@ -325,7 +325,6 @@ export function SettingsApp() {
                     </Field>
                   )}
                 </div>
-                <hr className="runtime-divider" />
                 <div className="runtime-grid">
                   <Field>
                     <FieldLabel htmlFor="pollSeconds">Poll interval</FieldLabel>
