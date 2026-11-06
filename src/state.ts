@@ -35,6 +35,8 @@ export interface ConversationState {
   phase?: ConversationPhase
   /** When the current run was admitted, for turn-duration metrics. */
   runStartedAt?: number
+  /** Last assistant message id before the current prompt; the turn boundary. */
+  turnBaseline?: string
   sessionID?: string
   transport?: Transport
   slack?: SlackTarget

@@ -24,6 +24,7 @@ RUN curl -fsSL -o /usr/local/bin/stow-s3 \
 
 WORKDIR /app
 COPY control-server.ts entrypoint.sh ./
+COPY src/permissions.ts ./src/permissions.ts
 RUN chmod +x entrypoint.sh
 
 ENV HOME=/workspace/.state \

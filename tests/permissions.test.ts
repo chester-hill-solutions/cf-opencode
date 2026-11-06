@@ -1,57 +1,45 @@
 import { describe, expect, test } from "bun:test"
-import { DENY_COMMANDS, isSafeShellCommand, smartAllowRules } from "../src/permissions"
+import { buildPermissionRules, DENY_COMMANDS } from "../src/permissions"
 
-describe("smartAllowRules", () => {
+describe("buildPermissionRules", () => {
   test("allows workspace edits and web access", () => {
-    const rules = smartAllowRules("/workspace")
+    const rules = buildPermissionRules({}, "/workspace")
     expect(rules).toContainEqual({ action: "edit", resource: "/workspace/**", effect: "allow" })
     expect(rules).toContainEqual({ action: "read", resource: "/workspace/**", effect: "allow" })
     expect(rules).toContainEqual({ action: "webfetch", resource: "*", effect: "allow" })
+    expect(rules).toContainEqual({ action: "websearch", resource: "*", effect: "allow" })
   })
 
-  test("asks for arbitrary shell and denies dangerous commands last", () => {
-    const rules = smartAllowRules()
+  test("uses the configured workspace", () => {
+    const rules = buildPermissionRules({}, "/srv/repo")
+    expect(rules).toContainEqual({ action: "edit", resource: "/srv/repo/**", effect: "allow" })
+  })
+
+  test("asks for arbitrary shell and puts denials last", () => {
+    const rules = buildPermissionRules({
+      allow: ["bun test *"],
+      ask: ["git push *"],
+      deny: ["sudo *"],
+    })
     const askIndex = rules.findIndex((rule) => rule.action === "shell" && rule.resource === "*")
     const denyIndex = rules.findIndex((rule) => rule.action === "shell" && rule.resource === "sudo *")
     expect(askIndex).toBeGreaterThan(-1)
     expect(denyIndex).toBeGreaterThan(askIndex)
+    expect(rules).toContainEqual({ action: "shell", resource: "bun test *", effect: "allow" })
+    expect(rules).toContainEqual({ action: "shell", resource: "git push *", effect: "ask" })
   })
 
-  test("denies reading secrets", () => {
-    const rules = smartAllowRules()
+  test("denies reading secrets and the metadata endpoint", () => {
+    const rules = buildPermissionRules()
     expect(rules.some((rule) => rule.effect === "deny" && rule.resource.includes(".ssh"))).toBe(true)
     expect(rules.some((rule) => rule.effect === "deny" && rule.resource.includes(".env"))).toBe(true)
+    expect(rules.some((rule) => rule.effect === "deny" && rule.resource.includes("169.254.169.254"))).toBe(true)
   })
 
-  test("every deny command is represented", () => {
-    const rules = smartAllowRules()
+  test("every default deny command is represented when supplied", () => {
+    const rules = buildPermissionRules({ deny: [...DENY_COMMANDS] })
     for (const command of DENY_COMMANDS) {
       expect(rules).toContainEqual({ action: "shell", resource: command, effect: "deny" })
-    }
-  })
-})
-
-describe("isSafeShellCommand", () => {
-  test("allows read-only and build commands", () => {
-    for (const command of ["ls -la", "cat file.txt", "rg TODO", "git status", "git diff --stat", "bun test", "node --version"]) {
-      expect(isSafeShellCommand(command)).toBe(true)
-    }
-  })
-
-  test("asks for unknown binaries", () => {
-    expect(isSafeShellCommand("terraform apply")).toBe(false)
-    expect(isSafeShellCommand("./deploy.sh")).toBe(false)
-  })
-
-  test("rejects shell metacharacters and redirection", () => {
-    for (const command of ["ls | sh", "cat a > b", "echo $(whoami)", "git status && rm -rf /", "ls; whoami"]) {
-      expect(isSafeShellCommand(command)).toBe(false)
-    }
-  })
-
-  test("rejects destructive commands", () => {
-    for (const command of ["sudo ls", "rm -rf /workspace", "chmod 777 file", "dd if=/dev/zero of=/dev/sda"]) {
-      expect(isSafeShellCommand(command)).toBe(false)
     }
   })
 })

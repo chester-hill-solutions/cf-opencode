@@ -16,6 +16,7 @@
 import { spawn } from "bun"
 import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { buildPermissionRules, type PermissionLists } from "./src/permissions"
 
 const WORKSPACE = process.env.WORKSPACE ?? "/workspace"
 const STATE_DIR = process.env.XDG_DATA_HOME ?? `${WORKSPACE}/.state/data`
@@ -88,29 +89,13 @@ async function startOpencode(): Promise<void> {
   await waitFor(`http://127.0.0.1:${OPENCODE_PORT}/api/info`)
 }
 
-function buildPermissions(lists: { allow?: string[]; ask?: string[]; deny?: string[] } = {}) {
-  return [
-    { action: "read", resource: "/workspace/**", effect: "allow" },
-    { action: "edit", resource: "/workspace/**", effect: "allow" },
-    { action: "webfetch", resource: "*", effect: "allow" },
-    { action: "websearch", resource: "*", effect: "allow" },
-    ...(lists.allow ?? []).map((resource) => ({ action: "shell", resource, effect: "allow" })),
-    { action: "shell", resource: "*", effect: "ask" },
-    ...(lists.ask ?? []).map((resource) => ({ action: "shell", resource, effect: "ask" })),
-    { action: "edit", resource: "/**", effect: "ask" },
-    ...(lists.deny ?? []).map((resource) => ({ action: "shell", resource, effect: "deny" })),
-    { action: "read", resource: "**/.ssh/**", effect: "deny" },
-    { action: "read", resource: "**/.env", effect: "deny" },
-  ]
-}
-
-function writeOpencodeConfig(model?: string, permissions?: { allow?: string[]; ask?: string[]; deny?: string[] }) {
+function writeOpencodeConfig(model?: string, permissions?: PermissionLists) {
   const dir = `${process.env.XDG_CONFIG_HOME ?? `${WORKSPACE}/.state/config`}/opencode`
   mkdirSync(dir, { recursive: true })
   const config = {
     $schema: "https://opencode.ai/config.json",
     ...(model ? { model } : {}),
-    permissions: buildPermissions(permissions),
+    permissions: buildPermissionRules(permissions),
   }
   writeFileSync(`${dir}/opencode.json`, JSON.stringify(config, null, 2))
 }
@@ -131,18 +116,31 @@ async function runCapture(command: string[]): Promise<string> {
   return text
 }
 
-/** Cheap workspace identity: HEAD plus porcelain status, or the top-level entries. */
-async function workspaceFingerprint(): Promise<string> {
-  if (existsSync(`${WORKSPACE}/.git`)) {
-    const head = await runCapture(["git", "-C", WORKSPACE, "rev-parse", "HEAD"])
-    const status = await runCapture(["git", "-C", WORKSPACE, "status", "--porcelain"])
-    return createHash("sha256").update(`${head}\n${status}`).digest("hex")
+/**
+ * Workspace identity for checkpoint dedupe. Status names alone are not enough:
+ * editing an already-modified file leaves them unchanged, which would skip the
+ * checkpoint and silently lose the edit. Hash the diff and untracked contents.
+ */
+export async function workspaceFingerprint(workspace = WORKSPACE): Promise<string> {
+  if (existsSync(`${workspace}/.git`)) {
+    const head = await runCapture(["git", "-C", workspace, "rev-parse", "HEAD"])
+    const status = await runCapture(["git", "-C", workspace, "status", "--porcelain"])
+    const diff = await runCapture(["git", "-C", workspace, "diff", "HEAD", "--binary", "--no-color"])
+    const untracked = await runCapture(["git", "-C", workspace, "ls-files", "--others", "--exclude-standard", "-z"])
+    const files: string[] = []
+    for (const path of untracked.split("\0").filter(Boolean).sort()) {
+      // Derived harness data: the source diff already covers workspace edits.
+      if (path.startsWith(".stow/") || path.startsWith("node_modules/")) continue
+      const hash = await runCapture(["git", "-C", workspace, "hash-object", "--", path])
+      files.push(`${path}:${hash.trim()}`)
+    }
+    return createHash("sha256").update(`${head}\n${status}\n${diff}\n${files.join("\n")}`).digest("hex")
   }
-  const entries = existsSync(WORKSPACE) ? readdirSync(WORKSPACE).sort().join(",") : ""
+  const entries = existsSync(workspace) ? readdirSync(workspace).sort().join(",") : ""
   return createHash("sha256").update(`nogit:${entries}`).digest("hex")
 }
 
-Bun.serve({
+if (import.meta.main) Bun.serve({
   port: CONTROL_PORT,
   async fetch(request) {
     const url = new URL(request.url)
@@ -154,7 +152,7 @@ Bun.serve({
         workspaceRepo?: string
         workspaceBranch?: string
         model?: string
-        permissions?: { allow?: string[]; ask?: string[]; deny?: string[] }
+        permissions?: PermissionLists
       }
       if (settings.workspaceRepo) workspaceRepo = settings.workspaceRepo
       if (settings.workspaceBranch) workspaceBranch = settings.workspaceBranch
@@ -192,6 +190,13 @@ Bun.serve({
     }
 
     if (url.pathname === "/checkpoint") {
+      // Check identity before pausing OpenCode: a no-op turn must not cost a
+      // restart. Only an actual archive needs a consistent, paused workspace.
+      const fingerprint = await workspaceFingerprint()
+      if (url.searchParams.get("since") === fingerprint) {
+        return new Response(null, { status: 204 })
+      }
+
       // Pause OpenCode so the archive is a consistent snapshot; /start resumes it.
       if (opencode) {
         opencode.kill()
@@ -203,18 +208,16 @@ Bun.serve({
       } catch {
         /* DB may not exist yet */
       }
-
-      const fingerprint = await workspaceFingerprint()
-      if (url.searchParams.get("since") === fingerprint) {
-        return new Response(null, { status: 204 })
-      }
-      const tar = spawn(["tar", "czf", "-", "-C", WORKSPACE, "--exclude", "node_modules", "."], {
-        stdout: "pipe",
-        stderr: "inherit",
-      })
-      return new Response(tar.stdout as ReadableStream, {
+      // Archive to a file so the response carries a content length. R2 will
+      // not accept an unknown-length stream.
+      const archive = "/tmp/cf-opencode-checkpoint.tar.gz"
+      const code = await run(["tar", "czf", archive, "-C", WORKSPACE, "--exclude", "node_modules", "."])
+      if (code !== 0) return Response.json({ error: "checkpoint failed" }, { status: 500 })
+      const file = Bun.file(archive)
+      return new Response(file, {
         headers: {
           "content-type": "application/gzip",
+          "content-length": String(file.size),
           "x-workspace-fingerprint": fingerprint,
         },
       })
@@ -224,4 +227,4 @@ Bun.serve({
   },
 })
 
-console.log(`control server listening on :${CONTROL_PORT} (local S3 on :${STOW_PORT})`)
+if (import.meta.main) console.log(`control server listening on :${CONTROL_PORT} (local S3 on :${STOW_PORT})`)

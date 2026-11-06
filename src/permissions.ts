@@ -1,10 +1,10 @@
 /**
- * "Smart allow" permission policy for the containerised OpenCode.
+ * Permission policy shared by the Worker and the container.
  *
- * Rules are written into the container's opencode config (last match wins).
+ * The container writes these rules into OpenCode's config (last match wins).
  * Reads/edits inside the workspace and web access are allowed; shell commands
- * are allowed only when they match the safe list, otherwise they ask through
- * the Slack approval buttons. Destructive commands are denied outright.
+ * are allowed only when they match the configured safe list, otherwise they ask
+ * through the Slack approval buttons. Destructive commands are denied outright.
  */
 
 export type PermissionEffect = "allow" | "ask" | "deny"
@@ -13,6 +13,13 @@ export interface PermissionRule {
   action: string
   resource: string
   effect: PermissionEffect
+}
+
+/** Settings-supplied shell patterns. */
+export interface PermissionLists {
+  allow?: string[]
+  ask?: string[]
+  deny?: string[]
 }
 
 /** Read-only / build commands that do not need a Slack round trip. */
@@ -49,34 +56,23 @@ export const DENY_COMMANDS = [
   "wget * | sh",
 ] as const
 
-export function smartAllowRules(workspace = "/workspace"): PermissionRule[] {
+/**
+ * Build the complete rule list for the container config. Order matters: the
+ * catch-all asks and configured denials come last so they win.
+ */
+export function buildPermissionRules(lists: PermissionLists = {}, workspace = "/workspace"): PermissionRule[] {
   return [
     { action: "read", resource: `${workspace}/**`, effect: "allow" },
     { action: "edit", resource: `${workspace}/**`, effect: "allow" },
     { action: "webfetch", resource: "*", effect: "allow" },
     { action: "websearch", resource: "*", effect: "allow" },
-    ...SAFE_COMMANDS.map((command) => ({ action: "shell", resource: `${command} *`, effect: "allow" as const })),
+    ...(lists.allow ?? []).map((resource) => ({ action: "shell", resource, effect: "allow" as const })),
     { action: "shell", resource: "*", effect: "ask" },
+    ...(lists.ask ?? []).map((resource) => ({ action: "shell", resource, effect: "ask" as const })),
     { action: "edit", resource: "/**", effect: "ask" },
-    ...DENY_COMMANDS.map((command) => ({ action: "shell", resource: command, effect: "deny" as const })),
+    ...(lists.deny ?? []).map((resource) => ({ action: "shell", resource, effect: "deny" as const })),
     { action: "shell", resource: "*169.254.169.254*", effect: "deny" },
     { action: "read", resource: "**/.ssh/**", effect: "deny" },
     { action: "read", resource: "**/.env", effect: "deny" },
   ]
-}
-
-/**
- * Whether a shell command is safe to run without asking. Conservative: any
- * shell metacharacter, redirection or unknown binary makes it ask.
- */
-export function isSafeShellCommand(command: string): boolean {
-  const trimmed = command.trim()
-  if (!trimmed) return false
-  if (/[;&|`$<>\n]/.test(trimmed)) return false
-  if (/\b(sudo|rm|mv|cp|chmod|chown|dd|mkfs|shutdown|reboot)\b/.test(trimmed)) return false
-
-  const normalized = trimmed.replace(/\s+/g, " ")
-  return SAFE_COMMANDS.some(
-    (safe) => normalized === safe || normalized.startsWith(`${safe} `),
-  )
 }

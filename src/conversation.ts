@@ -88,8 +88,9 @@ export class Conversation extends DurableObject<Env> {
     await this.store.advance("admitting")
     try {
       const sessionID = await this.ensureSession(text, input.transport ?? "http", input.slack)
+      const baseline = await this.turnBaseline(sessionID)
       await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
-      await this.startRun()
+      await this.startRun(baseline)
       const settings = await this.settings()
       if (settings.streaming) this.ctx.waitUntil(this.startStream(sessionID))
       return Response.json({ ok: true, sessionID })
@@ -127,8 +128,9 @@ export class Conversation extends DurableObject<Env> {
     try {
       prompt = await this.buildPrompt(event.channel, event.ts, event.thread_ts, text)
       const sessionID = await this.ensureSession(text, "slack", target)
+      const baseline = await this.turnBaseline(sessionID)
       await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
-      await this.startRun()
+      await this.startRun(baseline)
       const settings = await this.settings()
       if (settings.streaming) this.ctx.waitUntil(this.startStream(sessionID))
       return Response.json({ ok: true, sessionID })
@@ -290,11 +292,31 @@ export class Conversation extends DurableObject<Env> {
     return sessionID
   }
 
-  private async startRun(): Promise<void> {
+  /**
+   * The last assistant message id before a prompt. Everything after it belongs
+   * to the next turn, even before OpenCode has recorded the new user message.
+   */
+  private async turnBaseline(sessionID: string): Promise<string | undefined> {
+    try {
+      const messages = (await this.withClient((client) =>
+        client.session.context({ sessionID }),
+      )) as MessageInfo[]
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const message = messages[i]
+        if (message?.type === "assistant" && message.id) return message.id
+      }
+    } catch {
+      /* no baseline: fall back to last-user scoping */
+    }
+    return undefined
+  }
+
+  private async startRun(turnBaseline?: string): Promise<void> {
     await this.store.patch({
       lastReply: undefined,
       lastSlackReply: undefined,
       runStartedAt: Date.now(),
+      turnBaseline,
     })
     await this.store.advance("running")
     await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
@@ -386,6 +408,11 @@ export class Conversation extends DurableObject<Env> {
         await this.store.advance("idle")
         return true
       }
+      // A late alarm or stream event can arrive after the turn settled. Do not
+      // re-deliver or checkpoint an idle conversation. `settling` is allowed so
+      // a restart in the middle of a settle can finish it.
+      const phase = state.phase ?? "idle"
+      if (phase !== "running" && phase !== "settling") return true
 
       const sessionID = state.sessionID
       // Context and permissions are independent: fetch them in one round-trip window.
@@ -395,8 +422,8 @@ export class Conversation extends DurableObject<Env> {
           () => [] as PermissionSummary[],
         ),
       ])
-      const reply = latestAssistantReply(messages)
-      const settled = isSettled(messages)
+      const reply = latestAssistantReply(messages, state.turnBaseline)
+      const settled = isSettled(messages, state.turnBaseline)
 
       if (reply && reply !== state.lastReply) {
         // SSE streams every change; Slack gets one message per turn, at settle.
@@ -520,8 +547,7 @@ export class Conversation extends DurableObject<Env> {
       return result
     } catch (error) {
       this.consecutiveFailures++
-      this.ready = false
-      this.opencodePort = undefined
+      this.invalidateOpenCode()
       // Two consecutive failures: assume the container is wedged and recycle it.
       if (this.consecutiveFailures >= 2) {
         this.consecutiveFailures = 0
@@ -635,10 +661,11 @@ export class Conversation extends DurableObject<Env> {
 
     try {
       const sessionID = await this.ensureSession(queued.text, queued.slack ? "slack" : "http", queued.slack)
+      const baseline = await this.turnBaseline(sessionID)
       await this.withClient((client) => client.session.prompt({ sessionID, text: queued.text }))
       await this.store.patch({ queued: undefined })
       logEvent("queue.drained", { attempts: queued.attempts })
-      await this.startRun()
+      await this.startRun(baseline)
       const settings = await this.settings()
       if (settings.streaming) this.ctx.waitUntil(this.startStream(sessionID))
       return true
@@ -669,6 +696,9 @@ export class Conversation extends DurableObject<Env> {
   }
 
   private async checkpoint(): Promise<boolean> {
+    // The container pauses OpenCode to archive a consistent workspace. Once
+    // that happens this instance can no longer reuse its cached port.
+    let archived = false
     try {
       await withRetries(
         async () => {
@@ -684,11 +714,25 @@ export class Conversation extends DurableObject<Env> {
             return
           }
           if (!response.ok || !response.body) throw new Error(`checkpoint returned ${response.status}`)
-          const counted = countedStream(response.body)
-          await this.env.CHECKPOINTS.put(this.checkpointKey(), counted.stream)
+          // From here on OpenCode may be paused even if the upload fails.
+          archived = true
+          const length = Number(response.headers.get("content-length"))
+          if (Number.isFinite(length) && length > 0) {
+            // R2 needs a stream of known length; the control server sends one.
+            const counted = countedStream(response.body)
+            const fixed = new FixedLengthStream(length)
+            const piping = counted.stream.pipeTo(fixed.writable).catch(() => {})
+            await this.env.CHECKPOINTS.put(this.checkpointKey(), fixed.readable)
+            await piping
+            logEvent("checkpoint.saved", { bytes: counted.bytes() })
+          } else {
+            // Older control servers streamed without a length.
+            const bytes = await response.arrayBuffer()
+            await this.env.CHECKPOINTS.put(this.checkpointKey(), bytes)
+            logEvent("checkpoint.saved", { bytes: bytes.byteLength })
+          }
           const fingerprint = response.headers.get("x-workspace-fingerprint")
           if (fingerprint) await this.store.patch({ checkpointFingerprint: fingerprint })
-          logEvent("checkpoint.saved", { bytes: counted.bytes() })
         },
         { attempts: 3, delayMs: 1000 },
       )
@@ -696,8 +740,18 @@ export class Conversation extends DurableObject<Env> {
     } catch (err) {
       console.warn("checkpoint failed", err)
       logEvent("checkpoint.failed")
+      // The container may have been paused before the failure.
+      this.invalidateOpenCode()
       return false
+    } finally {
+      if (archived) this.invalidateOpenCode()
     }
+  }
+
+  /** Drop the cached port so the next call re-checks and restarts OpenCode. */
+  private invalidateOpenCode(): void {
+    this.ready = false
+    this.opencodePort = undefined
   }
 
   // -------------------------------------------------------------------- Slack

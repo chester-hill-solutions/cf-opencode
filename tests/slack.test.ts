@@ -1,8 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import {
   chunkText,
-  conversationKey,
-  formatCheckin,
   formatSlackContext,
   mrkdwnEscape,
   verifySlackSignature,
@@ -64,47 +62,10 @@ describe("verifySlackSignature", () => {
   })
 })
 
-describe("conversationKey", () => {
-  test("DMs are one conversation", () => {
-    expect(conversationKey({ channel: "D1", ts: "1", isDm: true }, () => false)).toEqual({ key: "D1:dm" })
-  })
-
-  test("a mention in a thread uses that thread", () => {
-    expect(
-      conversationKey(
-        { channel: "C1", ts: "2", threadTs: "1", isDm: false, engageChannel: true },
-        () => false,
-      ),
-    ).toEqual({ key: "C1:1", replyTs: "1" })
-  })
-
-  test("a mapped thread keeps its own conversation", () => {
-    expect(
-      conversationKey({ channel: "C1", ts: "3", threadTs: "1", isDm: false }, (key) => key === "C1:1"),
-    ).toEqual({ key: "C1:1", replyTs: "1" })
-  })
-
-  test("an engaged channel catches unmapped threads", () => {
-    expect(
-      conversationKey({ channel: "C1", ts: "4", isDm: false }, (key) => key === "C1:channel"),
-    ).toEqual({ key: "C1:channel" })
-  })
-
-  test("a new top-level mention roots a thread at itself", () => {
-    expect(
-      conversationKey({ channel: "C1", ts: "5", isDm: false, engageChannel: true }, () => false),
-    ).toEqual({ key: "C1:5", replyTs: "5" })
-  })
-})
-
 describe("text helpers", () => {
   test("chunkText splits long input", () => {
     const chunks = chunkText("word ".repeat(2000), 1000)
     for (const chunk of chunks) expect(chunk.length).toBeLessThanOrEqual(1000)
-  })
-
-  test("formatCheckin includes steps and elapsed", () => {
-    expect(formatCheckin(2, 12_000, "bash")).toBe("⏳ OpenCode working — 2 steps · 12s · last tool: `bash`")
   })
 
   test("formatSlackContext skips bots and the answered message", () => {

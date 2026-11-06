@@ -30,14 +30,6 @@ export interface SlackInteractionPayload {
   actions?: Array<{ action_id?: string; value?: string }>
 }
 
-export interface Incoming {
-  channel: string
-  ts: string
-  threadTs?: string
-  isDm: boolean
-  engageChannel?: boolean
-}
-
 /** Verify Slack's `X-Slack-Signature` over the raw request body. */
 export async function verifySlackSignature(options: {
   signingSecret: string
@@ -75,30 +67,6 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0
 }
 
-/**
- * Which conversation a message belongs to. Thread sessions win over channel
- * sessions; a mention in a new thread prefers that thread.
- */
-export function conversationKey(
-  input: Incoming,
-  lookup: (key: string) => boolean,
-): { key: string; replyTs?: string } {
-  if (input.isDm) return { key: `${input.channel}:dm` }
-
-  const threadKey = input.threadTs ? `${input.channel}:${input.threadTs}` : undefined
-  if (threadKey && (input.engageChannel || lookup(threadKey))) {
-    return { key: threadKey, replyTs: input.threadTs }
-  }
-
-  const channelKey = `${input.channel}:channel`
-  if (lookup(channelKey)) return { key: channelKey }
-
-  if (threadKey) return { key: threadKey, replyTs: input.threadTs }
-  // A top-level mention roots a thread at its own timestamp.
-  if (input.engageChannel) return { key: `${input.channel}:${input.ts}`, replyTs: input.ts }
-  return { key: channelKey, replyTs: input.ts }
-}
-
 export function parseInteractionBody(body: string): SlackInteractionPayload | undefined {
   const params = new URLSearchParams(body)
   const raw = params.get("payload")
@@ -127,15 +95,6 @@ export function chunkText(text: string, limit = 3900): string[] {
 
 export function mrkdwnEscape(text: string): string {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-}
-
-export function formatCheckin(steps: number, elapsedMs: number, tool?: string): string {
-  const seconds = Math.max(0, Math.round(elapsedMs / 1000))
-  const elapsed =
-    seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`
-  const parts = [`⏳ OpenCode working — ${steps} step${steps === 1 ? "" : "s"}`, elapsed]
-  if (tool) parts.push(`last tool: \`${tool}\``)
-  return parts.join(" · ")
 }
 
 export interface SlackContextMessage {
