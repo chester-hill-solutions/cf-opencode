@@ -70,7 +70,19 @@ const SEEN_LIMIT = 200
 const EVENT_LIMIT = 200
 
 export class ConversationStore {
+  /** Serializes event-log read-modify-write cycles within this Durable Object. */
+  private eventTail: Promise<unknown> = Promise.resolve()
+
   constructor(private readonly storage: KeyValueStorage) {}
+
+  private serial<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.eventTail.then(task, task)
+    this.eventTail = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
 
   async get(): Promise<ConversationState> {
     const state = await this.storage.get<ConversationState>("state")
@@ -123,18 +135,20 @@ export class ConversationStore {
     await this.save(state)
   }
 
-  /** Monotonic sequence for SSE ids; survives restarts. */
-  async nextSeq(): Promise<number> {
-    const current = (await this.storage.get<number>("seq")) ?? 0
-    const next = current + 1
-    await this.storage.put("seq", next)
-    return next
-  }
-
-  async appendEvent(entry: StoredEventEntry): Promise<void> {
-    const log = (await this.storage.get<StoredEventEntry[]>("events")) ?? []
-    log.push(entry)
-    await this.storage.put("events", log.slice(-EVENT_LIMIT))
+  /**
+   * Assign the next SSE sequence and append the event as one serialized step,
+   * so concurrent deliveries cannot duplicate an id or reorder the log.
+   */
+  async appendEvent(event: import("./events").ConversationEvent): Promise<number> {
+    return this.serial(async () => {
+      const current = (await this.storage.get<number>("seq")) ?? 0
+      const seq = current + 1
+      await this.storage.put("seq", seq)
+      const log = (await this.storage.get<StoredEventEntry[]>("events")) ?? []
+      log.push({ seq, event })
+      await this.storage.put("events", log.slice(-EVENT_LIMIT))
+      return seq
+    })
   }
 
   async eventsAfter(lastID: number): Promise<StoredEventEntry[]> {

@@ -93,10 +93,8 @@ describe("ConversationStore", () => {
 
   test("sequences SSE events and replays after an id", async () => {
     const store = new ConversationStore(fakeStorage())
-    const first = await store.nextSeq()
-    await store.appendEvent({ seq: first, event: { type: "assistant", text: "one" } })
-    const second = await store.nextSeq()
-    await store.appendEvent({ seq: second, event: { type: "settled" } })
+    const first = await store.appendEvent({ type: "assistant", text: "one" })
+    const second = await store.appendEvent({ type: "settled" })
 
     expect([first, second]).toEqual([1, 2])
     expect((await store.eventsAfter(0)).map((entry) => entry.seq)).toEqual([1, 2])
@@ -104,12 +102,23 @@ describe("ConversationStore", () => {
     expect(await store.eventsAfter(2)).toEqual([])
   })
 
+  test("serializes concurrent appends without duplicating ids or reordering", async () => {
+    const store = new ConversationStore(fakeStorage())
+    const seqs = await Promise.all([
+      store.appendEvent({ type: "assistant", text: "one" }),
+      store.appendEvent({ type: "settled" }),
+      store.appendEvent({ type: "assistant", text: "two" }),
+    ])
+
+    expect(seqs).toEqual([1, 2, 3])
+    const log = await store.eventsAfter(0)
+    expect(log.map((entry) => entry.seq)).toEqual([1, 2, 3])
+    expect(log.map((entry) => entry.event.type)).toEqual(["assistant", "settled", "assistant"])
+  })
+
   test("caps the event log", async () => {
     const store = new ConversationStore(fakeStorage())
-    for (let i = 0; i < 250; i++) {
-      const seq = await store.nextSeq()
-      await store.appendEvent({ seq, event: { type: "settled" } })
-    }
+    for (let i = 0; i < 250; i++) await store.appendEvent({ type: "settled" })
     const all = await store.eventsAfter(0)
     expect(all.length).toBe(200)
     expect(all[all.length - 1]!.seq).toBe(250)

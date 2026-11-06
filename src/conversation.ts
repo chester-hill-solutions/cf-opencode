@@ -1,6 +1,11 @@
 import { DurableObject } from "cloudflare:workers"
 import { makeClient, portFetch, type ContainerPort } from "./opencode"
-import { ConversationStore, type SlackTarget, type Transport } from "./state"
+import {
+  ConversationStore,
+  type ConversationPhase,
+  type SlackTarget,
+  type Transport,
+} from "./state"
 import {
   chunkText,
   formatSlackContext,
@@ -85,15 +90,17 @@ export class Conversation extends DurableObject<Env> {
     if (!text) return Response.json({ ok: false, error: "empty message" }, { status: 400 })
 
     const prompt = input.user ? `${input.user}: ${text}` : text
-    await this.store.advance("admitting")
+    if (!(await this.claimAdmission())) {
+      const queued = await this.enqueue(prompt, undefined)
+      if (!queued) return Response.json({ ok: false, error: "busy" }, { status: 503 })
+      return Response.json({ ok: true, queued: true }, { status: 202 })
+    }
+    let sessionID = ""
     try {
-      const sessionID = await this.ensureSession(text, input.transport ?? "http", input.slack)
+      sessionID = await this.ensureSession(text, input.transport ?? "http", input.slack)
       const baseline = await this.turnBaseline(sessionID)
       await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
       await this.startRun(baseline)
-      const settings = await this.settings()
-      if (settings.streaming) this.ctx.waitUntil(this.startStream(sessionID))
-      return Response.json({ ok: true, sessionID })
     } catch (err) {
       logEvent("admission.failed", { transport: "http" })
       const queued = await this.enqueue(prompt, undefined)
@@ -103,11 +110,41 @@ export class Conversation extends DurableObject<Env> {
       }
       return Response.json({ ok: true, queued: true, error: errorMessage(err) }, { status: 202 })
     }
+    // The prompt is accepted; a settings/stream failure must not re-enqueue it.
+    const settings = await this.settings().catch(() => undefined)
+    if (settings?.streaming) this.ctx.waitUntil(this.startStream(sessionID))
+    return Response.json({ ok: true, sessionID })
   }
 
   private async settings(): Promise<HarnessSettings> {
     const res = await this.env.SETTINGS.getByName("global").fetch("https://settings/get")
     return (await res.json()) as HarnessSettings
+  }
+
+  /** A phase where a new prompt must wait for the current turn. */
+  private isBusy(phase: ConversationPhase | undefined): boolean {
+    return phase === "admitting" || phase === "running" || phase === "settling" || phase === "queued"
+  }
+
+  /** Serializes check-then-claim steps so two requests cannot both admit. */
+  private admissionTail: Promise<unknown> = Promise.resolve()
+
+  private withAdmissionLock<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.admissionTail.then(task, task)
+    this.admissionTail = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
+  private claimAdmission(): Promise<boolean> {
+    return this.withAdmissionLock(async () => {
+      const state = await this.store.get()
+      if (state.queued || this.isBusy(state.phase)) return false
+      await this.store.advance("admitting")
+      return true
+    })
   }
 
   // -------------------------------------------------------------- Slack adapter
@@ -124,21 +161,32 @@ export class Conversation extends DurableObject<Env> {
 
     const target: SlackTarget = { channel: event.channel, ...(input.replyTs ? { replyTs: input.replyTs } : {}) }
     let prompt = text
-    await this.store.advance("admitting")
     try {
       prompt = await this.buildPrompt(event.channel, event.ts, event.thread_ts, text)
+      if (!(await this.claimAdmission())) {
+        const queued = await this.enqueue(prompt, target)
+        if (!queued) {
+          await this.postChunked(
+            target.channel,
+            "⚠️ Container busy and a message is already queued.",
+            target.replyTs,
+          ).catch(() => {})
+        }
+        return Response.json({ ok: true, queued })
+      }
       const sessionID = await this.ensureSession(text, "slack", target)
       const baseline = await this.turnBaseline(sessionID)
       await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
       await this.startRun(baseline)
-      const settings = await this.settings()
-      if (settings.streaming) this.ctx.waitUntil(this.startStream(sessionID))
+      const settings = await this.settings().catch(() => undefined)
+      if (settings?.streaming) this.ctx.waitUntil(this.startStream(sessionID))
       return Response.json({ ok: true, sessionID })
     } catch (err) {
       if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
       logEvent("admission.failed", { transport: "slack" })
       const queued = await this.enqueue(prompt, target)
       if (!queued) {
+        await this.store.advance("idle")
         await this.postChunked(
           target.channel,
           `⚠️ Container busy and a message is already queued: ${errorMessage(err)}`,
@@ -244,8 +292,7 @@ export class Conversation extends DurableObject<Env> {
 
   /** Emit to SSE and, when the conversation has a Slack target, post there too. */
   private async deliver(event: ConversationEvent, options: { slack?: boolean } = {}): Promise<void> {
-    const seq = await this.store.nextSeq()
-    await this.store.appendEvent({ seq, event })
+    const seq = await this.store.appendEvent(event)
     this.broadcast(event, seq)
     if (options.slack === false) return
     await this.deliverToSlack(event)
@@ -365,8 +412,8 @@ export class Conversation extends DurableObject<Env> {
    */
   private async startStream(sessionID: string): Promise<void> {
     if (this.streaming) return
-    const settings = await this.settings()
-    if (!settings.streaming) return
+    const settings = await this.settings().catch(() => undefined)
+    if (!settings?.streaming) return
     this.streaming = true
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 10 * 60_000)
@@ -577,7 +624,13 @@ export class Conversation extends DurableObject<Env> {
     if (!container && !this.env.CONTAINER_URL && !this.transport) throw new Error("no container bound")
 
     const versionChanged = state.settingsVersion !== undefined && state.settingsVersion !== settings.version
-    const busy = this.pumping || this.streaming
+    // A warm event stream can stay open across idle turns; only a live turn
+    // should protect the container from a settings-driven restart.
+    const busy =
+      this.pumping ||
+      state.phase === "admitting" ||
+      state.phase === "running" ||
+      state.phase === "settling"
 
     // A settings change is applied between runs: destroying mid-run loses the turn.
     if (container && versionChanged && container.running && busy) {
@@ -655,9 +708,18 @@ export class Conversation extends DurableObject<Env> {
   }
 
   private async drainQueue(): Promise<boolean> {
-    const state = await this.store.get()
-    if (!state.queued || this.pumping || this.streaming) return false
-    const queued = state.queued
+    // Claim the queued work under the same lock as admissions, so a new
+    // message cannot start while the queue is being drained.
+    const queued = await this.withAdmissionLock(async () => {
+      const state = await this.store.get()
+      // The warm stream stays connected while idle; it must not block the queue.
+      if (!state.queued || this.pumping) return undefined
+      const phase = state.phase ?? "idle"
+      if (phase === "running" || phase === "settling" || phase === "admitting") return undefined
+      await this.store.advance("admitting")
+      return state.queued
+    })
+    if (!queued) return false
 
     try {
       const sessionID = await this.ensureSession(queued.text, queued.slack ? "slack" : "http", queued.slack)
@@ -686,6 +748,7 @@ export class Conversation extends DurableObject<Env> {
         return false
       }
       await this.store.patch({ queued: { ...queued, attempts } })
+      await this.store.advance("queued")
       await this.ctx.storage.setAlarm(Date.now() + Math.min(5000 * attempts, 30_000))
       return false
     }

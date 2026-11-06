@@ -17,6 +17,7 @@ interface Counters {
 }
 
 function fakeContainer(counters: Counters) {
+  let prompted = false
   return (port: number) => ({
     async fetch(input: Request | string | URL): Promise<Response> {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url)
@@ -37,6 +38,7 @@ function fakeContainer(counters: Counters) {
           counters.start++
           return json({ ok: true })
         }
+        if (url.pathname === "/checkpoint") return new Response(null, { status: 204 })
         return json({ error: "not found" }, 404)
       }
 
@@ -48,9 +50,25 @@ function fakeContainer(counters: Counters) {
       if (url.pathname === "/api/session/ses_1/model") return new Response(null, { status: 204 })
       if (url.pathname === "/api/session/ses_1/prompt") {
         counters.prompt++
+        prompted = true
         return json({ data: {} })
       }
-      if (url.pathname === "/api/session/ses_1/context") return json({ data: [] })
+      if (url.pathname === "/api/session/ses_1/context") {
+        return json({
+          data: prompted
+            ? [
+                { id: "u1", type: "user", content: [{ type: "text", text: "hello" }] },
+                {
+                  id: "a1",
+                  type: "assistant",
+                  time: { created: 1, completed: 2 },
+                  finish: "stop",
+                  content: [{ type: "text", text: "done" }],
+                },
+              ]
+            : [],
+        })
+      }
       if (url.pathname === "/api/session/ses_1/permission") return json({ data: [] })
       if (url.pathname === "/api/event") {
         return new Response("", { status: 200, headers: { "content-type": "text/event-stream" } })
@@ -71,6 +89,8 @@ describe("container readiness", () => {
       const first = await instance.fetch(
         new Request("https://conversation/message", { method: "POST", body }),
       )
+      // Let the first turn settle so the second message is admitted, not queued.
+      await instance.alarm()
       const second = await instance.fetch(
         new Request("https://conversation/message", { method: "POST", body }),
       )
