@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { ConversationStore, type KeyValueStorage } from "../src/state"
+import { canTransition, ConversationStore, type KeyValueStorage } from "../src/state"
 
 function fakeStorage(): KeyValueStorage & { map: Map<string, unknown> } {
   const map = new Map<string, unknown>()
@@ -38,6 +38,28 @@ describe("ConversationStore", () => {
     expect(state.lastReply).toBe("hello")
     expect(state.pending).toEqual({ req_1: "ses_1" })
     expect(state.sessionID).toBe("ses_1")
+  })
+
+  test("guards lifecycle transitions", async () => {
+    const store = new ConversationStore(fakeStorage())
+    // A run cannot start before it is admitted.
+    expect(await store.advance("running")).toBe(false)
+    expect(await store.advance("admitting")).toBe(true)
+    expect(await store.advance("running")).toBe(true)
+    // A running turn cannot be demoted to the queue.
+    expect(await store.advance("queued")).toBe(false)
+    expect(await store.advance("settling")).toBe(true)
+    expect(await store.advance("idle")).toBe(true)
+  })
+
+  test("transition table", () => {
+    expect(canTransition("idle", "admitting")).toBe(true)
+    expect(canTransition("admitting", "running")).toBe(true)
+    expect(canTransition("running", "settling")).toBe(true)
+    expect(canTransition("settling", "idle")).toBe(true)
+    expect(canTransition("idle", "running")).toBe(false)
+    expect(canTransition("running", "queued")).toBe(false)
+    expect(canTransition("settling", "admitting")).toBe(false)
   })
 
   test("records a batch of pending permissions with one write", async () => {

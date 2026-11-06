@@ -57,9 +57,9 @@ not multi-tenancy. R3 is the *configurability* layer on top of that isolation. A
 | R0-2 | First real turn: `POST /messages` + `curl -N /events`, verify settle and checkpoint | S | agent | blocked on R0-1 |
 | R0-3 | `bench/measure.ts` + `bench/container.sh`: cold start, checkpoint size/time, restore, turn latency | S | agent | blocked on R0-1 |
 | R0-4 | Slack cutover: Event Subscriptions + Interactivity URLs, Socket Mode off, stop launchd bot | S | both | blocked on R0-2 |
-| R0-5 | Audit 22: explicit conversation state machine (`idle → starting → running → settling → idle`, guarded transitions) | M | agent | todo |
+| R0-5 | Audit 22: explicit conversation state machine (`idle → admitting → running → settling → idle`, guarded transitions) | M | agent | **done** |
 | R0-6 | Audit cluster 1: performance pass (hot paths, SSE fan-out, R2 sizes) | S | agent | **done** (findings 25–28) |
-| R0-7 | Finish audit 23: turn latency, queue depth, checkpoint bytes, failure classes; OTel export | M | agent | todo |
+| R0-7 | Finish audit 23: turn latency, queue depth, checkpoint bytes, failure classes | M | agent | **done** (OTel export deferred) |
 | R0-8 | Handover: README limits, runbook, cost-per-turn note | S | agent | todo |
 | R0-9 | ~~Audit 24~~ | — | — | moved to R1-4 |
 

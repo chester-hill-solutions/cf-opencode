@@ -85,6 +85,7 @@ export class Conversation extends DurableObject<Env> {
     if (!text) return Response.json({ ok: false, error: "empty message" }, { status: 400 })
 
     const prompt = input.user ? `${input.user}: ${text}` : text
+    await this.store.advance("admitting")
     try {
       const sessionID = await this.ensureSession(text, input.transport ?? "http", input.slack)
       await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
@@ -95,7 +96,10 @@ export class Conversation extends DurableObject<Env> {
     } catch (err) {
       logEvent("admission.failed", { transport: "http" })
       const queued = await this.enqueue(prompt, undefined)
-      if (!queued) return Response.json({ ok: false, error: "busy" }, { status: 503 })
+      if (!queued) {
+        await this.store.advance("idle")
+        return Response.json({ ok: false, error: "busy" }, { status: 503 })
+      }
       return Response.json({ ok: true, queued: true, error: errorMessage(err) }, { status: 202 })
     }
   }
@@ -119,6 +123,7 @@ export class Conversation extends DurableObject<Env> {
 
     const target: SlackTarget = { channel: event.channel, ...(input.replyTs ? { replyTs: input.replyTs } : {}) }
     let prompt = text
+    await this.store.advance("admitting")
     try {
       prompt = await this.buildPrompt(event.channel, event.ts, event.thread_ts, text)
       const sessionID = await this.ensureSession(text, "slack", target)
@@ -286,7 +291,12 @@ export class Conversation extends DurableObject<Env> {
   }
 
   private async startRun(): Promise<void> {
-    await this.store.patch({ lastReply: undefined, lastSlackReply: undefined })
+    await this.store.patch({
+      lastReply: undefined,
+      lastSlackReply: undefined,
+      runStartedAt: Date.now(),
+    })
+    await this.store.advance("running")
     await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
   }
 
@@ -372,7 +382,10 @@ export class Conversation extends DurableObject<Env> {
     this.pumping = true
     try {
       const state = await this.store.get()
-      if (!state.sessionID) return true
+      if (!state.sessionID) {
+        await this.store.advance("idle")
+        return true
+      }
 
       const sessionID = state.sessionID
       // Context and permissions are independent: fetch them in one round-trip window.
@@ -394,7 +407,11 @@ export class Conversation extends DurableObject<Env> {
       await this.pollPermissions(sessionID, pending)
 
       if (settled) {
-        logEvent("turn.settled")
+        await this.store.advance("settling")
+        logEvent("turn.settled", {
+          ...(state.runStartedAt ? { durationMs: Date.now() - state.runStartedAt } : {}),
+          queued: Boolean(state.queued),
+        })
         if (reply && reply !== state.lastSlackReply) {
           // At-least-once: persist only after delivery so a failed post is retried.
           await this.deliverToSlack({ type: "assistant", text: reply })
@@ -408,6 +425,7 @@ export class Conversation extends DurableObject<Env> {
         if ((await this.store.get()).queued) {
           await this.ctx.storage.setAlarm(Date.now() + 1000)
         }
+        await this.store.advance("idle")
         return true
       }
       return false
@@ -419,6 +437,12 @@ export class Conversation extends DurableObject<Env> {
   /** Alarm fallback: poll while a stream is not covering the run. */
   async alarm(): Promise<void> {
     try {
+      const before = await this.store.get()
+      if ((before.phase ?? "idle") === "admitting" && !this.pumping) {
+        // The request that was admitting died with the previous DO instance.
+        await this.store.advance("idle")
+        logEvent("admission.stale")
+      }
       if (await this.drainQueue()) return
       const settled = await this.pumpOnce()
       if (settled) return
@@ -572,6 +596,7 @@ export class Conversation extends DurableObject<Env> {
       })
     }
 
+    const startedAt = Date.now()
     const started = await control.fetch("http://container/start", {
       method: "POST",
       signal: AbortSignal.timeout(60_000),
@@ -583,6 +608,7 @@ export class Conversation extends DurableObject<Env> {
     }
 
     const port = await this.port(OPENCODE_PORT)
+    logEvent("container.ready", { durationMs: Date.now() - startedAt })
     this.opencodePort = port
     this.ready = true
     return port
@@ -593,6 +619,8 @@ export class Conversation extends DurableObject<Env> {
     const state = await this.store.get()
     if (state.queued) return false
     await this.store.patch({ queued: { text, ...(slack ? { slack } : {}), attempts: 0 } })
+    await this.store.advance("queued")
+    logEvent("queue.enqueued", { transport: slack ? "slack" : "http" })
     if (slack) {
       await this.postChunked(slack.channel, "⏳ Container busy — queued; I'll retry shortly.", slack.replyTs).catch(() => {})
     }
@@ -609,6 +637,7 @@ export class Conversation extends DurableObject<Env> {
       const sessionID = await this.ensureSession(queued.text, queued.slack ? "slack" : "http", queued.slack)
       await this.withClient((client) => client.session.prompt({ sessionID, text: queued.text }))
       await this.store.patch({ queued: undefined })
+      logEvent("queue.drained", { attempts: queued.attempts })
       await this.startRun()
       const settings = await this.settings()
       if (settings.streaming) this.ctx.waitUntil(this.startStream(sessionID))
@@ -617,6 +646,8 @@ export class Conversation extends DurableObject<Env> {
       const attempts = queued.attempts + 1
       if (attempts >= 5) {
         await this.store.patch({ queued: undefined })
+        await this.store.advance("idle")
+        logEvent("queue.failed", { attempts })
         await this.deliver({ type: "error", message: `queued message could not start: ${errorMessage(err)}` })
         if (queued.slack) {
           await this.postChunked(
@@ -653,10 +684,11 @@ export class Conversation extends DurableObject<Env> {
             return
           }
           if (!response.ok || !response.body) throw new Error(`checkpoint returned ${response.status}`)
-          await this.env.CHECKPOINTS.put(this.checkpointKey(), response.body)
+          const counted = countedStream(response.body)
+          await this.env.CHECKPOINTS.put(this.checkpointKey(), counted.stream)
           const fingerprint = response.headers.get("x-workspace-fingerprint")
           if (fingerprint) await this.store.patch({ checkpointFingerprint: fingerprint })
-          logEvent("checkpoint.saved")
+          logEvent("checkpoint.saved", { bytes: counted.bytes() })
         },
         { attempts: 3, delayMs: 1000 },
       )
@@ -761,6 +793,21 @@ function errorMessage(err: unknown): string {
   } catch {
     return String(err)
   }
+}
+
+/** Pass a stream through unchanged while counting its bytes. */
+function countedStream(stream: ReadableStream<Uint8Array>): {
+  stream: ReadableStream<Uint8Array>
+  bytes: () => number
+} {
+  let bytes = 0
+  const transform = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      bytes += chunk.byteLength
+      controller.enqueue(chunk)
+    },
+  })
+  return { stream: stream.pipeThrough(transform), bytes: () => bytes }
 }
 
 function sleep(ms: number): Promise<void> {

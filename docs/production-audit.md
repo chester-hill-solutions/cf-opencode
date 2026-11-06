@@ -51,6 +51,8 @@ interleavings across `await` on non-storage I/O (DO→DO fetch, container HTTP, 
 | 26 | Context and permissions are fetched concurrently |
 | 27 | Pending permissions are recorded in one batched write |
 | 28 | Slack gets one reply per turn; SSE keeps the live stream |
+| 22 | Persisted lifecycle phase with guarded transitions |
+| 23 | Turn duration, container ready time, queue events and checkpoint bytes are logged |
 
 Findings 5 and 10's control-server changes take effect when the container image is rebuilt; findings 1–9
 ship in the Worker.
@@ -80,8 +82,8 @@ ship in the Worker.
 |---|---|---|---|---|---|
 | 20 | **Model catalogue duplicated** | `src/models.ts`, `public/index.html` `FALLBACK_MODELS` | A model added to one list and not the other drifts; the UI offers a model the API does not know (or misses one) | **Fixed:** the embedded catalogue is gone. `/api/models` is the only source; when it is unreachable the UI hides the select and keeps the free-text field visible | `public/index.html` `renderModels` |
 | 21 | **Prod/test config drift** | `wrangler.jsonc` vs `wrangler.test.jsonc` | Different compatibility dates, containers only in prod, `CONTAINER_URL` only in tests; a new prod binding can be missing in tests and vice versa | **Fixed:** `bun run check:config` compares entrypoint, flags, DO classes/bindings, R2 bindings, exports, assets and vars; CI runs it before typecheck. Test-only bindings live in `vitest.config.ts` | `scripts/check-config.mjs` + CI |
-| 22 | **Implicit conversation state machine** | `src/conversation.ts` | Lifecycle is inferred from `sessionID?`, `settingsVersion?`, `lastReply?`, `pumping`, `streaming`, `readying`, `consecutiveFailures`; "starting", "running" and "settling" are not named states | Reported: explicit state + guarded transitions (prompt 37, separate session) | Field list |
-| 23 | **Observability gaps** | whole Worker | No metrics or traces; only `console.warn`; no turn latency, queue depth, checkpoint bytes or failure classes | **Partly fixed:** one-line JSON `logEvent` records admission failures, turn settle, checkpoint saved/skipped/failed and container recycle. Turn latency, queue depth and OTel export remain open | `src/log.ts` + call sites |
+| 22 | **Implicit conversation state machine** | `src/conversation.ts` | Lifecycle was inferred from `sessionID?`, `settingsVersion?`, `lastReply?`, `pumping`, `streaming`, `readying`, `consecutiveFailures`; "starting", "running" and "settling" were not named states | **Fixed:** persisted `phase` (`idle → admitting → running → settling → idle`, plus `queued`) with a transition table; invalid transitions are ignored. A stale `admitting` after a DO restart resets to idle on the next alarm | `src/state.ts` + `tests/state.test.ts` + `test/lifecycle.test.ts` |
+| 23 | **Observability gaps** | whole Worker | No metrics or traces; only `console.warn`; no turn latency, queue depth, checkpoint bytes or failure classes | **Fixed:** one-line JSON events for admission, queue enqueue/drain/fail, turn settle with `durationMs`, container ready time, checkpoint saved with `bytes` and skipped/failed. OTel export remains a follow-up; Workers Logs can query these fields today | `src/log.ts` + call sites |
 | 24 | **Mixed responsibilities** | `src/conversation.ts` (~500 lines) | Slack delivery, SSE fan-out, container lifecycle, pump and permissions live in one class | Reported (prompt 36): extract `ContainerRuntime` and `EventStream`; do not restructure in the audit | File size and imports |
 
 ## Cluster 1 · Performance & efficiency (fourth pass)
@@ -99,8 +101,8 @@ ship in the Worker.
   pass) is deliberately deferred to its own session.
 - Findings 2, 3 and 7 are cited interleavings. A workerd regression test now drives two concurrent
   deliveries of the same Slack event through the DO (`test/concurrency.test.ts`); the settings-restart and
-  stale-pump interleavings still lack a live harness. Findings 16–21 are fixed and covered by tests; 22 (implicit state machine) and 24 (mixed responsibilities) are
-reported and deferred to their own sessions; 23 is partly fixed (structured logs, no metrics yet).
+  stale-pump interleavings still lack a live harness. Findings 16–23 are fixed and covered by tests. Finding 24 (mixed responsibilities) is folded into the R1
+runtime split so the refactor happens once, alongside the container-policy migration.
 - Light mode, 200% zoom, and Slack-specific rate limits are outside this pass.
 
 ## Verification notes

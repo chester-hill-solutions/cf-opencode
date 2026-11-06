@@ -5,6 +5,25 @@
 
 export type Transport = "slack" | "http"
 
+/**
+ * Persisted conversation lifecycle. Execution guards (`pumping`, `streaming`)
+ * stay in memory; this is the state a restarted DO can reason about.
+ */
+export type ConversationPhase = "idle" | "admitting" | "running" | "settling" | "queued"
+
+/** Target phase → phases it may be entered from. */
+export const ALLOWED_FROM: Record<ConversationPhase, ConversationPhase[]> = {
+  idle: ["idle", "admitting", "running", "settling", "queued"],
+  admitting: ["idle", "queued"],
+  running: ["admitting", "queued", "running"],
+  settling: ["running", "admitting"],
+  queued: ["idle", "admitting"],
+}
+
+export function canTransition(from: ConversationPhase, to: ConversationPhase): boolean {
+  return ALLOWED_FROM[to].includes(from)
+}
+
 export interface SlackTarget {
   channel: string
   /** Thread root replies are posted under. Absent for DMs. */
@@ -12,6 +31,10 @@ export interface SlackTarget {
 }
 
 export interface ConversationState {
+  /** Lifecycle phase; absent means "idle" for conversations from older builds. */
+  phase?: ConversationPhase
+  /** When the current run was admitted, for turn-duration metrics. */
+  runStartedAt?: number
   sessionID?: string
   transport?: Transport
   slack?: SlackTarget
@@ -70,6 +93,16 @@ export class ConversationStore {
     const state = await this.get()
     state.seen = state.seen.filter((id) => id !== eventID)
     await this.save(state)
+  }
+
+  /** Move the lifecycle forward; an invalid transition is ignored, not thrown. */
+  async advance(to: ConversationPhase): Promise<boolean> {
+    const state = await this.get()
+    const from = state.phase ?? "idle"
+    if (from === to) return true
+    if (!canTransition(from, to)) return false
+    await this.save({ ...state, phase: to })
+    return true
   }
 
   /** Merge fields into the latest state instead of writing a stale snapshot. */
