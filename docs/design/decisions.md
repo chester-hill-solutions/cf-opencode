@@ -13,6 +13,8 @@
 - The approved mark is traced as shared SVG paths in `packages/ui/src/brand.ts`, used by the React logo and generated favicon.
 - The working type family is self-hosted DM Sans. UI type, spacing, colour roles and responsive layouts are proposed implementation choices, not separately approved identity decisions.
 - The source-vendored CHS controls supply behaviour. Aboiteau owns the theme and product compositions.
+- No single-sided borders. A boundary is a complete border, a surface difference, spacing or a shadow. Tone moves into content (metric values, numbered accents) rather than a one-edge strip.
+- Stateful product surfaces use one named status union, not sibling boolean flags. Settings runs through `reduceSettings` (`empty | loading | ready | saving | saved | load-error | save-error`) with one `settingsPresentation` mapping; onboarding names its operation phase with `OnboardingPhase`. `tests/state-machine-ratchet.test.ts` rejects status booleans and empty-string phase state.
 - Colour is an encoding, not a finish. `data-accent` maps the six brand colours to `--abo-accent`, `--abo-accent-strong`, `--abo-accent-ink` and `--abo-accent-soft`. Settings sections, onboarding steps, gallery sections and chart series share the same set; every accent is paired with a number or written label. Decorative artwork is not used as a page banner.
 - Settings keeps repo, branch, model catalogue/custom reference, polling, streaming, and allow/ask/deny editing. The token storage key stays compatible with the previous page.
 

@@ -53,13 +53,16 @@ describe("@aboiteau/ui registry", () => {
       join(root, "packages/ui/src/styles/aboiteau.css"),
     ]
     const declaration =
-      /border-(?:top|right|bottom|left)(?:-(?:width|color|style))?\s*:\s*(?!0(?:[;\s]|$))/
+      /border-(?:top|right|bottom|left)(?:-(?:width|color|style))?\s*:\s*([^;]+)/
     const utility = /\bborder-(?:t|r|b|l)(?:\s|["'`]|$)/
     const utilityWidth = /\bborder-(?:t|r|b|l)-(?!0(?:[;\s]|$))[a-z0-9[]/
     const offenders: string[] = []
     for (const source of sources) {
+      const isTsx = source.endsWith(".tsx")
       for (const [lineNumber, line] of readFileSync(source, "utf8").split("\n").entries()) {
-        if (declaration.test(line) || utility.test(line) || utilityWidth.test(line)) {
+        const declared = line.match(declaration)
+        const nonZero = declared ? !/^0(?:\s|$)/.test(declared[1].trim()) : false
+        if (nonZero || (isTsx && (utility.test(line) || utilityWidth.test(line)))) {
           offenders.push(`${relative(root, source)}:${lineNumber + 1}: ${line.trim()}`)
         }
       }

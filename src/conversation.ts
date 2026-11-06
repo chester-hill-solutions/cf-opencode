@@ -93,6 +93,10 @@ export class Conversation extends DurableObject<Env> {
   private seenEvents = new Map<string, number>()
   /** Last state of the warm stream: opened, an error, or idle. */
   private streamState = "idle"
+  /** How the current container was started, for diagnostics. */
+  private startMode: "image" | "snapshot" | "none" = "none"
+  /** An admission is in flight in this instance; alarms must not reset it. */
+  private admitting = false
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
@@ -116,6 +120,8 @@ export class Conversation extends DurableObject<Env> {
         streamState: this.streamState,
         streaming: this.streaming,
         ready: this.ready,
+        startMode: this.startMode,
+        snapshot: Boolean(await this.snapshotHandle()),
         events: Object.fromEntries(this.seenEvents),
       })
     }
@@ -161,6 +167,7 @@ export class Conversation extends DurableObject<Env> {
       await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
       await this.startRun(baseline)
     } catch (err) {
+      this.admitting = false
       void this.count("admission.failed")
       logEvent("admission.failed", { transport: "http" })
       const queued = await this.enqueue(prompt, undefined)
@@ -279,7 +286,7 @@ export class Conversation extends DurableObject<Env> {
   }
 
   /** Increment a harness counter; counting must never fail a turn. */
-  private async count(name: string): Promise<void> {
+  protected async count(name: string): Promise<void> {
     try {
       await this.env.SETTINGS.getByName("global").fetch("https://settings/metrics", {
         method: "POST",
@@ -288,6 +295,71 @@ export class Conversation extends DurableObject<Env> {
     } catch {
       /* counters are advisory */
     }
+  }
+
+  // ------------------------------------------------------------ container start
+
+  /** Startup options for the scheduling policy in use. */
+  protected startOptions(): ContainerStartupOptions {
+    const images = (this.ctx.container as unknown as { images?: Record<string, string> } | undefined)
+      ?.images
+    return {
+      enableInternet: true,
+      image: images?.base,
+      // `basic` has no exact equivalent on this policy; standard-1 is the
+      // closest size with enough memory for OpenCode plus stow.
+      instance: "standard-1",
+    } as ContainerStartupOptions
+  }
+
+  /** A snapshot to restore instead of a fresh start, when supported. */
+  protected async snapshotHandle(): Promise<ContainerSnapshot | undefined> {
+    return this.ctx.storage.get<ContainerSnapshot>("snapshot")
+  }
+
+  /** Drop a snapshot that cannot be used (image change, corruption). */
+  protected async clearSnapshot(): Promise<boolean> {
+    const existing = await this.ctx.storage.get<ContainerSnapshot>("snapshot")
+    await this.ctx.storage.delete("snapshot")
+    return Boolean(existing)
+  }
+
+  /**
+   * Capture a filesystem snapshot after a durable checkpoint. Snapshots are a
+   * fast restore cache: they are bound to the image they were taken from, so
+   * the R2 archive remains the portable source of truth.
+   */
+  protected async captureSnapshot(): Promise<void> {
+    try {
+      const snapshot = await this.ctx.container?.snapshotContainer({ name: "turn" })
+      if (!snapshot) return
+      await this.ctx.storage.put("snapshot", snapshot)
+      logEvent("snapshot.saved", { bytes: snapshot.size })
+      await this.count("snapshot.saved")
+    } catch {
+      logEvent("snapshot.failed")
+      void this.count("snapshot.failed")
+    }
+  }
+
+  /** Start the container, preferring a snapshot when one is available. */
+  private async startContainer(): Promise<boolean> {
+    const container = this.ctx.container
+    if (!container) throw new Error("no container bound")
+    const snapshot = await this.snapshotHandle()
+    if (snapshot) {
+      try {
+        container.start({ ...this.startOptions(), image: undefined, containerSnapshot: snapshot } as ContainerStartupOptions)
+        this.startMode = "snapshot"
+        logEvent("snapshot.restored")
+        return true
+      } catch {
+        await this.clearSnapshot()
+      }
+    }
+    container.start(this.startOptions())
+    this.startMode = "image"
+    return false
   }
 
   /** A phase where a new prompt must wait for the current turn. */
@@ -312,6 +384,7 @@ export class Conversation extends DurableObject<Env> {
       const state = await this.store.get()
       if (state.queued || this.isBusy(state.phase)) return false
       await this.store.advance("admitting")
+      this.admitting = true
       return true
     })
   }
@@ -542,13 +615,18 @@ export class Conversation extends DurableObject<Env> {
   }
 
   private async startRun(turnBaseline?: string): Promise<void> {
+    this.admitting = false
     await this.store.patch({
       lastReply: undefined,
       lastSlackReply: undefined,
       runStartedAt: Date.now(),
       turnBaseline,
     })
-    await this.store.advance("running")
+    if (!(await this.store.advance("running"))) {
+      // A concurrent alarm may have reset the admission; the prompt is already
+      // sent, so force the phase rather than leaving the turn invisible.
+      await this.store.save({ ...(await this.store.get()), phase: "running" })
+    }
     await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
   }
 
@@ -802,7 +880,7 @@ export class Conversation extends DurableObject<Env> {
   async alarm(): Promise<void> {
     try {
       const before = await this.store.get()
-      const action = staleAction(before, Date.now(), this.pumping)
+      const action = staleAction(before, Date.now(), this.pumping || this.admitting)
       if (action === "admission") {
         // The request that was admitting died with the previous DO instance.
         await this.store.advance("idle")
@@ -880,24 +958,40 @@ export class Conversation extends DurableObject<Env> {
     if (!container) throw new Error("no container bound")
     // The direct Container API defaults internet access off; OpenCode needs
     // DNS and outbound HTTPS for the workspace clone and model providers.
-    if (!container.running) container.start({ enableInternet: true })
+    let usedSnapshot = false
+    if (!container.running) usedSnapshot = await this.startContainer()
     const port = container.getTcpPort(number)
     const path = number === OPENCODE_PORT ? "/api/info" : "/health"
     const headers =
       number === OPENCODE_PORT && this.opencodePassword
         ? { authorization: basicAuth(this.opencodePassword) }
         : undefined
-    for (let attempt = 0; attempt < 300; attempt++) {
-      try {
-        const res = await port.fetch(`http://container${path}`, {
-          headers,
-          signal: AbortSignal.timeout(2000),
-        })
-        if (res.ok) return port
-      } catch {
-        /* not ready yet */
+    const ready = async (limit: number): Promise<boolean> => {
+      for (let attempt = 0; attempt < limit; attempt++) {
+        try {
+          const res = await port.fetch(`http://container${path}`, {
+            headers,
+            signal: AbortSignal.timeout(2000),
+          })
+          if (res.ok) return true
+        } catch {
+          /* not ready yet */
+        }
+        await sleep(200)
       }
-      await sleep(200)
+      return false
+    }
+    // A snapshot restore should be quick; do not burn the long cold-start
+    // window before falling back to the image.
+    if (await ready(usedSnapshot ? 90 : 300)) return port
+    // A snapshot is tied to the image it was taken from. If restoring it never
+    // becomes ready, drop it and start from the current image instead.
+    if (usedSnapshot) {
+      logEvent("snapshot.stale")
+      await this.clearSnapshot()
+      await container.destroy().catch(() => {})
+      await this.startContainer()
+      if (await ready(300)) return port
     }
     throw new Error(`container port ${number} did not become ready`)
   }
@@ -1060,6 +1154,7 @@ export class Conversation extends DurableObject<Env> {
       const phase = state.phase ?? "idle"
       if (phase === "running" || phase === "settling" || phase === "admitting") return undefined
       await this.store.advance("admitting")
+      this.admitting = true
       return state.queued
     })
     if (!queued) return false
@@ -1076,6 +1171,7 @@ export class Conversation extends DurableObject<Env> {
       if (settings.streaming) this.ctx.waitUntil(this.startStream(sessionID))
       return true
     } catch (err) {
+      this.admitting = false
       const attempts = queued.attempts + 1
       if (attempts >= 5) {
         await this.store.patch({ queued: undefined, lastTurnError: errorMessage(err) })
@@ -1202,6 +1298,7 @@ export class Conversation extends DurableObject<Env> {
         checkpointPending: undefined,
         checkpointAttempts: undefined,
       })
+      await this.captureSnapshot()
       return true
     } catch (err) {
       console.warn("checkpoint failed", err)

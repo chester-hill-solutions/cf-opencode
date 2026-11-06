@@ -5,9 +5,10 @@ Three layers, plus measurements.
 ## 1. Unit — `bun test tests`
 
 Pure logic, no runtime: signature verification, conversation keys, permission
-rules, conversation state, message/reply helpers, SSE formatting, port fetch, and the
-UI kit registry/export/theme contract.
-102 tests, milliseconds.
+rules, conversation state, message/reply helpers, SSE formatting, port fetch, the
+UI kit registry/export/theme contract, and the settings state-machine/implicit-state
+ratchet.
+116 tests, milliseconds.
 
 ## 2. Integration — `bun run test:workers`
 

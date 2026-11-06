@@ -1,50 +1,29 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useReducer, useRef } from "react"
 import { validateSettings, type HarnessSettings } from "../../src/settings"
 import type { ModelOption } from "../../src/models"
+import {
+  DEFAULT_MODEL,
+  initialSettingsState,
+  isAuthenticated,
+  isDirty,
+  isLoaded,
+  isPending,
+  isTokenChanged,
+  reduceSettings,
+  settingsPresentation,
+  type SettingsDraft,
+  type SettingsError,
+} from "./machine"
+
+export type { PermissionKind, SettingsDraft } from "./machine"
 
 const TOKEN_KEY = "cfopencode.token"
-const DEFAULT_MODEL = "opencode/deepseek-v4.1-flash"
-export type PermissionKind = "allow" | "ask" | "deny"
-export type SettingsDraft = {
-  workspaceRepo: string
-  workspaceBranch: string
-  model: string
-  pollSeconds: string
-  streaming: boolean
-  dailyBudgetUSD: string
-  permissions: Record<PermissionKind, string>
-}
 
 export const ruleLines = (value: string) =>
   value
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
-const emptyDraft: SettingsDraft = {
-  workspaceRepo: "",
-  workspaceBranch: "",
-  model: DEFAULT_MODEL,
-  pollSeconds: "2",
-  streaming: true,
-  dailyBudgetUSD: "0",
-  permissions: { allow: "", ask: "", deny: "" },
-}
-
-function toDraft(settings: HarnessSettings): SettingsDraft {
-  return {
-    workspaceRepo: settings.workspaceRepo,
-    workspaceBranch: settings.workspaceBranch,
-    model: settings.model,
-    pollSeconds: String(settings.pollSeconds),
-    streaming: settings.streaming,
-    dailyBudgetUSD: String(settings.dailyBudgetUSD ?? 0),
-    permissions: {
-      allow: settings.permissions.allow.join("\n"),
-      ask: settings.permissions.ask.join("\n"),
-      deny: settings.permissions.deny.join("\n"),
-    },
-  }
-}
 
 function readToken() {
   try {
@@ -118,37 +97,38 @@ async function request<T>(token: string, path: string, body?: unknown): Promise<
 }
 
 export function useSettings() {
-  const [token, setToken] = useState(readToken)
-  const [activeToken, setActiveToken] = useState("")
-  const [draft, setDraft] = useState<SettingsDraft>(emptyDraft)
-  const [saved, setSaved] = useState<HarnessSettings | null>(null)
-  const [loaded, setLoaded] = useState(false)
-  const [phase, setPhase] = useState<"idle" | "loading" | "loaded" | "saving" | "saved">("idle")
-  const [error, setError] = useState<{
-    scope: "load" | "save"
-    message: string
-    offline: boolean
-  } | null>(null)
-  const [models, setModels] = useState<ModelOption[]>([])
-  const [recommended, setRecommended] = useState(DEFAULT_MODEL)
-  const [catalogueAvailable, setCatalogueAvailable] = useState(false)
-  const [storageAvailable, setStorageAvailable] = useState(true)
+  const [state, dispatch] = useReducer(reduceSettings, readToken(), initialSettingsState)
   const busy = useRef(false)
-  const dirty = loaded && saved !== null && JSON.stringify(draft) !== JSON.stringify(toDraft(saved))
-  const pending = phase === "loading" || phase === "saving"
-  const authenticated = loaded && !!token.trim()
-  const tokenChanged = loaded && token.trim() !== activeToken
+  const {
+    token,
+    draft,
+    saved,
+    models,
+    recommended,
+    catalogueAvailable,
+    storageAvailable,
+    status,
+    error,
+  } = state
+  const loaded = isLoaded(state)
+  const pending = isPending(state)
+  const dirty = isDirty(state)
+  const authenticated = isAuthenticated(state)
+  const tokenChanged = isTokenChanged(state)
+  const presentation = settingsPresentation(state)
+
+  function setToken(value: string) {
+    dispatch({ type: "token", token: value })
+  }
 
   function update<K extends keyof SettingsDraft>(key: K, value: SettingsDraft[K]) {
-    setDraft((current) => ({ ...current, [key]: value }))
-    setError(null)
+    dispatch({ type: "patch-draft", patch: { [key]: value } as Partial<SettingsDraft> })
   }
 
   async function load() {
     if (busy.current || dirty || !token.trim()) return
     busy.current = true
-    setPhase("loading")
-    setError(null)
+    dispatch({ type: "load-start" })
     const currentToken = token.trim()
     try {
       const [settingsResult, catalogueResult] = await Promise.allSettled([
@@ -160,36 +140,34 @@ export function useSettings() {
       // Defaults may be incomplete until the first save; check shape, not input validity.
       if (!isSettings(settings))
         throw new SettingsRequestError("The saved settings could not be read. Try loading again.")
-      setSaved(settings)
-      setDraft(toDraft(settings))
-      setActiveToken(currentToken)
-      setLoaded(true)
-      if (
+      const catalogue =
         catalogueResult.status === "fulfilled" &&
         Array.isArray(catalogueResult.value.models) &&
         catalogueResult.value.models.length
-      ) {
-        setModels(catalogueResult.value.models)
-        setRecommended(catalogueResult.value.recommended || DEFAULT_MODEL)
-        setCatalogueAvailable(true)
-      } else {
-        setModels([])
-        setCatalogueAvailable(false)
-      }
+          ? {
+              models: catalogueResult.value.models,
+              recommended: catalogueResult.value.recommended || DEFAULT_MODEL,
+            }
+          : { models: [], recommended: DEFAULT_MODEL }
+      dispatch({
+        type: "load-success",
+        settings,
+        models: catalogue.models,
+        recommended: catalogue.recommended,
+        token: currentToken,
+      })
       try {
         localStorage.setItem(TOKEN_KEY, currentToken)
       } catch {
-        setStorageAvailable(false)
+        dispatch({ type: "storage-unavailable" })
       }
-      setPhase("loaded")
     } catch (cause) {
-      setLoaded(false)
-      setPhase("idle")
-      setError({
+      const failure: SettingsError = {
         scope: "load",
         message: cause instanceof Error ? cause.message : "Couldn’t load settings. Try again.",
         offline: cause instanceof SettingsRequestError && cause.offline,
-      })
+      }
+      dispatch({ type: "load-failure", error: failure })
     } finally {
       busy.current = false
     }
@@ -212,37 +190,36 @@ export function useSettings() {
     }
     const validated = validateSettings(payload, saved)
     if (!validated.ok) {
-      setError({ scope: "save", message: validated.error, offline: false })
+      dispatch({
+        type: "save-failure",
+        error: { scope: "save", message: validated.error, offline: false },
+      })
       return
     }
     busy.current = true
-    setPhase("saving")
-    setError(null)
+    dispatch({ type: "save-start" })
     try {
       const settings = await request<HarnessSettings>(token.trim(), "/api/settings", payload)
       if (!isSettings(settings))
         throw new SettingsRequestError(
           "The save response could not be read. Reload settings to check the saved values."
         )
-      setSaved(settings)
-      setDraft(toDraft(settings))
-      setActiveToken(token.trim())
+      dispatch({ type: "save-success", settings, token: token.trim() })
       try {
         localStorage.setItem(TOKEN_KEY, token.trim())
       } catch {
-        setStorageAvailable(false)
+        dispatch({ type: "storage-unavailable" })
       }
-      setPhase("saved")
     } catch (cause) {
-      setPhase("loaded")
-      setError({
+      const failure: SettingsError = {
         scope: "save",
         message:
           cause instanceof Error
             ? cause.message
             : "Couldn’t save settings. Your changes are still here.",
         offline: cause instanceof SettingsRequestError && cause.offline,
-      })
+      }
+      dispatch({ type: "save-failure", error: failure })
     } finally {
       busy.current = false
     }
@@ -259,7 +236,7 @@ export function useSettings() {
     update,
     saved,
     loaded,
-    phase,
+    status,
     error,
     dirty,
     pending,
@@ -269,6 +246,7 @@ export function useSettings() {
     recommended,
     catalogueAvailable,
     storageAvailable,
+    presentation,
     load,
     save,
   }

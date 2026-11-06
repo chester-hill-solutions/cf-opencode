@@ -61,6 +61,16 @@ type OnboardingStatus = {
   secrets: { github: boolean }
 }
 
+type OnboardingPhase =
+  | "idle"
+  | "loading-status"
+  | "begin-oauth"
+  | "complete-oauth"
+  | "connect-key"
+  | "connect-github"
+  | "save-workspace"
+  | "finish"
+
 function readToken() {
   try {
     return localStorage.getItem(TOKEN_KEY) ?? ""
@@ -143,7 +153,7 @@ export function OnboardingApp() {
   const [repo, setRepo] = useState("")
   const [branch, setBranch] = useState("main")
   const [model, setModel] = useState("")
-  const [busy, setBusy] = useState("")
+  const [phase, setPhase] = useState<OnboardingPhase>("idle")
   const [error, setError] = useState("")
   const [message, setMessage] = useState("")
   const poll = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
@@ -183,7 +193,7 @@ export function OnboardingApp() {
   useEffect(() => {
     if (!token) return
     void (async () => {
-      setBusy("load")
+      setPhase("loading-status")
       setError("")
       try {
         const next = await refresh(token.trim())
@@ -203,7 +213,7 @@ export function OnboardingApp() {
         setActiveToken("")
         setError(cause instanceof Error ? cause.message : "Could not reach Aboiteau")
       } finally {
-        setBusy("")
+        setPhase("idle")
       }
     })()
   }, [token, refresh, loadIntegrations, loadModels])
@@ -222,7 +232,7 @@ export function OnboardingApp() {
       setError("This provider does not offer OAuth; paste an API key instead.")
       return
     }
-    setBusy("oauth")
+    setPhase("begin-oauth")
     setError("")
     try {
       const started = await api<{ data: Attempt }>(
@@ -238,7 +248,7 @@ export function OnboardingApp() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not start the sign-in")
     } finally {
-      setBusy("")
+      setPhase("idle")
     }
   }
 
@@ -270,7 +280,7 @@ export function OnboardingApp() {
 
   async function completeOAuth() {
     if (!integration || !attempt || !code.trim()) return
-    setBusy("complete")
+    setPhase("complete-oauth")
     try {
       await api(
         activeToken,
@@ -282,13 +292,13 @@ export function OnboardingApp() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not finish the sign-in")
     } finally {
-      setBusy("")
+      setPhase("idle")
     }
   }
 
   async function connectKey() {
     if (!integration || !apiKey.trim()) return
-    setBusy("key")
+    setPhase("connect-key")
     setError("")
     try {
       await api(
@@ -303,24 +313,24 @@ export function OnboardingApp() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not save the key")
     } finally {
-      setBusy("")
+      setPhase("idle")
     }
   }
 
   async function connectGithub() {
-    setBusy("github")
+    setPhase("connect-github")
     setError("")
     try {
       const started = await api<{ url: string }>(activeToken, "/api/onboarding/github/start")
       window.location.assign(started.url)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not start GitHub sign-in")
-      setBusy("")
+      setPhase("idle")
     }
   }
 
   async function saveWorkspace() {
-    setBusy("save")
+    setPhase("save-workspace")
     setError("")
     try {
       await api(activeToken, "/api/settings", {
@@ -332,12 +342,12 @@ export function OnboardingApp() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not save the workspace")
     } finally {
-      setBusy("")
+      setPhase("idle")
     }
   }
 
   async function finish() {
-    setBusy("finish")
+    setPhase("finish")
     setError("")
     try {
       const res = await api<{ snapshot: boolean }>(activeToken, "/api/onboarding/finish", { body: {} })
@@ -350,7 +360,7 @@ export function OnboardingApp() {
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not finish setup")
     } finally {
-      setBusy("")
+      setPhase("idle")
     }
   }
 
@@ -385,8 +395,8 @@ export function OnboardingApp() {
             </div>
           </div>
           <div className="save-footer">
-            <Button onClick={() => setToken(token.trim())} isDisabled={!token.trim() || busy === "load"}>
-              {busy === "load" ? "Checking…" : "Continue"}
+            <Button onClick={() => setToken(token.trim())} isDisabled={!token.trim() || phase === "loading-status"}>
+              {phase === "loading-status" ? "Checking…" : "Continue"}
             </Button>
           </div>
           {error ? (
@@ -495,8 +505,8 @@ export function OnboardingApp() {
             </div>
           </div>
           <div className="connect-row">
-            <Button onClick={beginOAuth} isDisabled={!integration || busy === "oauth"}>
-              {busy === "oauth" ? "Opening…" : "Sign in"}
+            <Button onClick={beginOAuth} isDisabled={!integration || phase === "begin-oauth"}>
+              {phase === "begin-oauth" ? "Opening…" : "Sign in"}
             </Button>
             <span className="connection-note">
               {attempt ? (
@@ -521,7 +531,7 @@ export function OnboardingApp() {
           ) : null}
           {attempt?.paste ? (
             <div className="connect-row">
-              <Button onClick={completeOAuth} isDisabled={!code.trim() || busy === "complete"}>
+              <Button onClick={completeOAuth} isDisabled={!code.trim() || phase === "complete-oauth"}>
                 Complete sign-in
               </Button>
             </div>
@@ -542,7 +552,7 @@ export function OnboardingApp() {
             </div>
           </div>
           <div className="connect-row">
-            <Button variant="outline" onClick={connectKey} isDisabled={!integration || !apiKey.trim() || busy === "key"}>
+            <Button variant="outline" onClick={connectKey} isDisabled={!integration || !apiKey.trim() || phase === "connect-key"}>
               Save key
             </Button>
           </div>
@@ -560,7 +570,7 @@ export function OnboardingApp() {
           }
         >
           <div className="connect-row">
-            <Button onClick={connectGithub} isDisabled={!status?.configured.github || busy === "github"}>
+            <Button onClick={connectGithub} isDisabled={!status?.configured.github || phase === "connect-github"}>
               {githubConnected ? "Reconnect GitHub" : "Connect GitHub"}
             </Button>
             <span className="connection-note">
@@ -616,8 +626,8 @@ export function OnboardingApp() {
             </div>
           </div>
           <div className="connect-row">
-            <Button onClick={saveWorkspace} isDisabled={!repo.trim() || busy === "save"}>
-              {busy === "save" ? "Saving…" : "Save workspace"}
+            <Button onClick={saveWorkspace} isDisabled={!repo.trim() || phase === "save-workspace"}>
+              {phase === "save-workspace" ? "Saving…" : "Save workspace"}
             </Button>
           </div>
         </Step>
@@ -634,8 +644,8 @@ export function OnboardingApp() {
           }
         >
           <div className="connect-row">
-            <Button onClick={finish} isDisabled={!providerConnected || busy === "finish"}>
-              {busy === "finish" ? "Saving…" : "Finish setup"}
+            <Button onClick={finish} isDisabled={!providerConnected || phase === "finish"}>
+              {phase === "finish" ? "Saving…" : "Finish setup"}
             </Button>
             <span className="connection-note">
               {providerConnected

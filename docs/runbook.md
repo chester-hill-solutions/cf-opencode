@@ -202,6 +202,7 @@ restore checkpoints from R2. Checkpoint keys are `workspaces/<id>.tar.gz` until 
 ## Data
 
 - R2 bucket `cf-opencode-checkpoints` — checkpoint versions per conversation at `workspaces/<id>/<timestamp>.tar.gz`, newest five kept. The archive is produced without stopping OpenCode: the live SQLite database is copied with `.backup` and substituted into the tar, so a checkpoint costs a copy and a compress, not a server restart.
+- Container snapshots — captured after each successful checkpoint as a fast restore cache. They are image-bound with a 30-day TTL, so a stale or unusable snapshot is dropped (`snapshot.stale`) and the container starts from the image, restoring the R2 archive.
 - Container workspace — ephemeral; restored from R2 on cold start.
 - DO SQLite — conversation state, event log (last 200), pending permissions, checkpoint size and retry state.
 - Deleting a conversation's checkpoint is safe only when no turn is running.
@@ -210,8 +211,9 @@ A checkpoint that fails is retried from the alarm up to three times (`checkpoint
 
 ## Known limitations
 
-- `max_instances: 2`; the onboarding workspace holds one slot, so one conversation runs at a time and extra messages queue.
-- Shared admin token; no tenants yet.
+- Single container application on the `durable_object` scheduling policy. There is no per-application `max_instances`; account limits bound concurrency, so keep message throughput in mind.
+- Instance size is chosen at start (`standard-1`). `basic` has no exact equivalent on this policy.
+- Snapshots are a fast restore cache only: they are bound to the image they were taken from, have a 30-day TTL refreshed on restore, and are not portable across deploys. The R2 tar archive remains the source of truth.
 - `.stow` (the local S3 view) and `.state/cache` are excluded from checkpoints: files survive a restore, cached/provider state is rebuilt.
 - A crash mid-turn loses that turn (the checkpoint is written after settle).
-- Snapshots are not used: they require the `durable_object` scheduling policy, and we deploy with `default`.
+- Shared admin token; no tenants yet.

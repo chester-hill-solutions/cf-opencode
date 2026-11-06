@@ -50,7 +50,7 @@ Use the approved A mark with its wide, uninterrupted diagonal cut. `Logo` uses `
 
 Ultramarine carries actions and focus. Paper and ink carry reading. Vermilion, yellow and pink are expressive accents; yellow appears as an ink swatch. Keep artwork away from fields and reading. Solid semantic colours and text labels communicate status.
 
-Controls use complete borders, visible focus, and at least 44px targets. Status is written out. Forms retain drafts on error. Motion respects reduced-motion preferences.
+Controls use complete borders, visible focus, and at least 44px targets. Never use a border on only one side: use a full border, surface contrast, spacing or a shadow instead. Status is written out. Forms retain drafts on error. Motion respects reduced-motion preferences.
 
 DM Sans is self-hosted from `@fontsource-variable/dm-sans` under the SIL Open Font License. The build includes its licence. The generated wordmark studies were references; working UI type uses the real font.
 

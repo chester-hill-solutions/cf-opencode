@@ -14,7 +14,6 @@ import {
   AlertTitle,
   AlertDescription,
   type BrandAccent,
-  type StatusTone,
 } from "@aboiteau/ui"
 import { useSettings, ruleLines, type PermissionKind } from "./use-settings"
 
@@ -64,6 +63,7 @@ function Section({
 export function SettingsApp() {
   const state = useSettings()
   const { draft, update, pending } = state
+  const { label: status, tone } = state.presentation
   const [customSelected, setCustomSelected] = useState(false)
   const knownModel = state.models.some((model) => model.ref === draft.model)
   const custom = customSelected || !knownModel
@@ -74,29 +74,6 @@ export function SettingsApp() {
     state.error?.scope === "save" && state.error.message.startsWith(name)
       ? state.error.message
       : undefined
-  let status: string = state.loaded ? "loaded" : "not loaded"
-  let tone: StatusTone = state.loaded ? "success" : "neutral"
-  if (state.phase === "saved") status = "saved"
-  if (state.dirty) {
-    status = "unsaved changes"
-    tone = "warning"
-  }
-  if (state.tokenChanged) {
-    status = "token changed"
-    tone = "warning"
-  }
-  if (state.error) {
-    status = state.error.offline
-      ? "connection unavailable"
-      : state.error.scope === "save"
-        ? "save failed"
-        : "load failed"
-    tone = "error"
-  }
-  if (pending) {
-    status = state.phase === "loading" ? "loading…" : "saving…"
-    tone = "busy"
-  }
 
   return (
     <>
@@ -173,7 +150,7 @@ export function SettingsApp() {
                 id="load"
                 variant="outline"
                 onPress={() => void state.load()}
-                pending={state.phase === "loading"}
+                pending={state.status === "loading"}
                 pendingLabel="Loading…"
                 isDisabled={pending || state.dirty || !state.token.trim()}
               >
@@ -207,7 +184,7 @@ export function SettingsApp() {
               className="settings-fieldset"
               disabled={disabled}
               aria-label="Agent settings"
-              aria-busy={state.phase === "loading"}
+              aria-busy={state.status === "loading"}
             >
               <Section
                 id="workspace"
@@ -450,7 +427,7 @@ export function SettingsApp() {
             id="save"
             type="submit"
             form="settings"
-            pending={state.phase === "saving"}
+            pending={state.status === "saving"}
             pendingLabel="Saving…"
             isDisabled={disabled}
           >

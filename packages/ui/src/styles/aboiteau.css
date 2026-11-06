@@ -320,6 +320,9 @@
 [data-slot="table-footer"] {
   border-width: 0;
 }
+[data-slot="table-header"] tr {
+  background: var(--muted);
+}
 [data-slot="table-body"] [data-slot="table-row"]:nth-child(even):not([data-selected]):not(:hover) {
   background: color-mix(in oklab, var(--muted) 55%, transparent);
 }
@@ -348,6 +351,10 @@
 [data-slot="sheet-content"],
 [data-slot="sidebar-container"] {
   border-width: 0;
+}
+[data-slot="sidebar-menu-sub"] {
+  border-inline-start-width: 0;
+  padding-inline-start: 0;
 }
 [data-slot="app-shell-header"] {
   border-bottom-width: 0;
