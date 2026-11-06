@@ -1,0 +1,28 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "opencode-harness",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-05",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "vars": {
+    "WORKSPACE_REPO": "https://github.com/chester-hill-solutions/opencode-slack",
+    "OPENCODE_MODEL": "opencode/deepseek-v4.1-flash",
+    "CHECKIN_SECONDS": "45"
+  },
+  "containers": [
+    {
+      "class_name": "Conversation",
+      "image": "./Dockerfile",
+      "instance_type": "lite",
+      "max_instances": 1
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "class_name": "Conversation", "name": "CONVERSATION" }]
+  },
+  "r2_buckets": [{ "binding": "CHECKPOINTS", "bucket_name": "opencode-harness-checkpoints" }],
+  "exports": {
+    "Conversation": { "type": "durable-object", "storage": "sqlite" }
+  }
+}

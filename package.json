@@ -1,0 +1,23 @@
+{
+  "name": "opencode-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenCode harness on Cloudflare: a Durable Object per conversation, local S3 (stow-s3) for the hot workspace, R2 for cold checkpoints, and an HTTP/SSE core with pluggable adapters.",
+  "license": "MIT",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.tests.json",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@opencode/client": "latest"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20251105.0",
+    "@types/bun": "^1.4.4",
+    "typescript": "^5.9.0",
+    "wrangler": "^4.105.0"
+  }
+}
