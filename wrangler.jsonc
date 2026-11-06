@@ -1,6 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "cf-opencode",
+  "account_id": "ad5ec479b9a421faa2ed06c3d1c2b23a",
   "main": "src/index.ts",
   "compatibility_date": "2026-11-05",
   "compatibility_flags": ["nodejs_compat"],

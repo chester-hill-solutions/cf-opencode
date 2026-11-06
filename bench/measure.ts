@@ -13,6 +13,7 @@
 const base = process.env.HARNESS_URL
 const token = process.env.API_TOKEN
 const key = process.argv[2] ?? "bench"
+const skipTurn = process.env.BENCH_TURN === "0"
 
 if (!base || !token) {
   console.error("Set HARNESS_URL and API_TOKEN (and optionally a conversation key).")
@@ -104,9 +105,17 @@ async function turn(text: string): Promise<{ first: number; settled: number }> {
 
 const health = stats(await healthSamples())
 const connect = stats(await sseConnectSamples())
-const result = await turn("Reply with exactly: ok")
 
 console.log(`harness: ${base}  conversation: ${key}`)
 console.log(`/health        p50 ${ms(health.p50)}  p95 ${ms(health.p95)}  min ${ms(health.min)}  max ${ms(health.max)}`)
 console.log(`SSE connect    p50 ${ms(connect.p50)}  p95 ${ms(connect.p95)}`)
-console.log(`turn           first assistant ${ms(result.first)}  settled ${ms(result.settled)}`)
+
+if (skipTurn) {
+  console.log("turn           skipped (BENCH_TURN=0)")
+} else {
+  const result = await turn("Reply with exactly: ok")
+  console.log(`turn           first assistant ${ms(result.first)}  settled ${ms(result.settled)}`)
+}
+
+// SSE connections can keep the event loop alive after cancel.
+process.exit(0)
