@@ -3,6 +3,7 @@ import type { Env } from "./env"
 import type { MessageRequest, PermissionRequest, SlackEventRequest } from "./conversation"
 
 export { Conversation } from "./conversation"
+export { Settings } from "./settings-do"
 
 const DECISIONS = {
   oc_perm_once: "once",
@@ -97,7 +98,17 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return Response.json({ error: "unauthorized" }, { status: 401 })
   }
 
-  const parts = url.pathname.split("/").filter(Boolean) // api, conversations, :key, ...
+  const parts = url.pathname.split("/").filter(Boolean) // api, ...
+
+  if (parts[1] === "settings") {
+    const settings = env.SETTINGS.getByName("global")
+    if (request.method === "GET") return settings.fetch("https://settings/get")
+    if (request.method === "PUT" || request.method === "POST") {
+      return settings.fetch("https://settings/put", { method: "POST", body: await request.text() })
+    }
+    return Response.json({ error: "not found" }, { status: 404 })
+  }
+
   if (parts[0] !== "api" || parts[1] !== "conversations" || !parts[2]) {
     return Response.json({ error: "not found" }, { status: 404 })
   }

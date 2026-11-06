@@ -5,9 +5,10 @@ export interface Env {
   /** Bot user id, used to strip mentions and skip our own messages. */
   SLACK_BOT_USER_ID?: string
   CONVERSATION: DurableObjectNamespace
+  SETTINGS: DurableObjectNamespace
   WORKSPACE_REPO: string
   OPENCODE_MODEL: string
-  CHECKIN_SECONDS: string
+  POLL_SECONDS: string
   CHECKPOINTS: R2Bucket
   /** Bearer token for the HTTP/SSE adapter. */
   API_TOKEN?: string

@@ -17,6 +17,8 @@ export interface ConversationState {
   slack?: SlackTarget
   /** Last assistant text delivered, used to avoid duplicates. */
   lastReply?: string
+  /** Settings version the running container was configured with. */
+  settingsVersion?: number
   /** Slack event ids already handled (dedupe). */
   seen: string[]
   /** Pending permission requests: requestID -> sessionID. */

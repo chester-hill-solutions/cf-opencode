@@ -61,4 +61,5 @@ bun run test:workers
 - SSE replay/heartbeat is covered at the formatting/state level; no end-to-end
   reconnect test against a live container yet.
 - No load test: the harness runs `max_instances: 1`; extra conversations queue on alarms.
+- Settings validation is unit-tested and the API is covered in workerd; applying settings across a container restart is not e2e-tested yet.
 - The warm-stream pump is covered by the SSE parser tests; no live-stream e2e yet.

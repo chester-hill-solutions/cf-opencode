@@ -12,6 +12,7 @@ import { isSettled, latestAssistantReply, type MessageInfo } from "./messages"
 import { formatSse, type ConversationEvent } from "./events"
 import { createSseParser } from "./sse"
 import { parseModelRef, type Env } from "./env"
+import type { HarnessSettings } from "./settings"
 
 const OPENCODE_PORT = 4000
 const CONTROL_PORT = 4001
@@ -73,8 +74,14 @@ export class Conversation extends DurableObject<Env> {
     const prompt = input.user ? `${input.user}: ${text}` : text
     await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
     await this.startRun()
-    this.ctx.waitUntil(this.startStream(sessionID))
+    const settings = await this.settings()
+    if (settings.streaming) this.ctx.waitUntil(this.startStream(sessionID))
     return Response.json({ ok: true, sessionID })
+  }
+
+  private async settings(): Promise<HarnessSettings> {
+    const res = await this.env.SETTINGS.getByName("global").fetch("https://settings/get")
+    return (await res.json()) as HarnessSettings
   }
 
   // -------------------------------------------------------------- Slack adapter
@@ -94,7 +101,8 @@ export class Conversation extends DurableObject<Env> {
     const prompt = await this.buildPrompt(event.channel, event.ts, event.thread_ts, text)
     await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
     await this.startRun()
-    this.ctx.waitUntil(this.startStream(sessionID))
+    const settings = await this.settings()
+    if (settings.streaming) this.ctx.waitUntil(this.startStream(sessionID))
     return Response.json({ ok: true, sessionID })
   }
 
@@ -204,7 +212,8 @@ export class Conversation extends DurableObject<Env> {
     const sessionID = (session as { id?: string }).id
     if (!sessionID) throw new Error("session.create returned no id")
 
-    const model = parseModelRef(this.env.OPENCODE_MODEL)
+    const settings = await this.settings()
+    const model = parseModelRef(settings.model)
     if (model) {
       await this.withClient((client) => client.session.switchModel({ sessionID, model })).catch(() => {})
     }
@@ -262,6 +271,8 @@ export class Conversation extends DurableObject<Env> {
    */
   private async startStream(sessionID: string): Promise<void> {
     if (this.streaming) return
+    const settings = await this.settings()
+    if (!settings.streaming) return
     this.streaming = true
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 10 * 60_000)
@@ -328,7 +339,8 @@ export class Conversation extends DurableObject<Env> {
   async alarm(): Promise<void> {
     const settled = await this.pumpOnce()
     if (settled) return
-    await this.ctx.storage.setAlarm(Date.now() + (this.streaming ? 30_000 : POLL_MS))
+    const settings = await this.settings()
+    await this.ctx.storage.setAlarm(Date.now() + (this.streaming ? 30_000 : settings.pollSeconds * 1000))
   }
 
   private async pollPermissions(sessionID: string, state: Awaited<ReturnType<ConversationStore["get"]>>): Promise<void> {
@@ -373,7 +385,22 @@ export class Conversation extends DurableObject<Env> {
 
   /** Start the container, restore the checkpoint on first boot, start OpenCode. */
   private async ensureReady(): Promise<ContainerPort> {
+    const settings = await this.settings()
+    const state = await this.store.get()
+    const container = this.ctx.container
+    if (!container) throw new Error("no container bound")
+
+    // Saved settings apply on the next turn: restart, then restore the checkpoint.
+    if (state.settingsVersion !== undefined && state.settingsVersion !== settings.version && container.running) {
+      await container.destroy()
+    }
+
     const control = await this.port(CONTROL_PORT)
+    await control.fetch("http://container/configure", {
+      method: "POST",
+      body: JSON.stringify(settings),
+    })
+
     const status = (await (await control.fetch("http://container/status")).json()) as { initialized?: boolean }
     if (!status.initialized) {
       const checkpoint = await this.env.CHECKPOINTS.get(this.checkpointKey())
@@ -382,8 +409,11 @@ export class Conversation extends DurableObject<Env> {
       }
     }
     await control.fetch("http://container/start", { method: "POST" })
-    const container = this.ctx.container
-    if (!container) throw new Error("no container bound")
+
+    if (state.settingsVersion !== settings.version) {
+      state.settingsVersion = settings.version
+      await this.store.save(state)
+    }
     return container.getTcpPort(OPENCODE_PORT)
   }
 

@@ -80,17 +80,26 @@ Without the Slack secrets the Slack routes return 503 and the harness is HTTP-on
 - ask for everything else (Slack buttons or the SSE permission event)
 - deny `sudo`, `rm -rf`, `git push --force`, `git reset --hard`, `.ssh`, `.env`, cloud metadata
 
-## Web UI
+## Settings UI
 
-The Worker serves a single-file chat UI at `/` (static asset, no build step):
+`/` serves a single-file admin panel (static asset, no build step):
 
-- paste the API token, pick a conversation key, send a message
-- assistant text, permission cards with Approve/Deny, and `settled` state render live over SSE
-- reconnects with `Last-Event-ID`
+- workspace repo + branch, model (`provider/model[#variant]`), poll seconds, streaming toggle
+- permission lists: allow / ask / deny shell patterns (one per line)
+- API token entry, `Load settings`, `Save settings`
 
-It is a demo surface for the same HTTP/SSE core Slack uses. The token lives in
-`localStorage`; for anything beyond a demo, put an auth layer in front (Cloudflare
-Access or a session endpoint) instead of shipping a shared bearer token to the browser.
+Settings are **global**, stored in the `Settings` Durable Object and versioned.
+Saving bumps the version; a conversation restarts its container on the next turn
+and restores the workspace checkpoint, so the change applies without losing work.
+
+```
+GET  /api/settings   → current settings
+PUT  /api/settings   → validate, bump version, return settings
+```
+
+The panel is a demo surface: the token lives in `localStorage`. For shared
+deployments put Cloudflare Access in front (or add a session endpoint) instead of
+handing the shared bearer token to the browser.
 
 ## Deploy (Workers Builds, no local Docker)
 

@@ -44,6 +44,36 @@ describe("worker surface", () => {
     expect(await res.json()).toMatchObject({ seen: [], pending: {} })
   })
 
+  it("serves settings with a token", async () => {
+    const res = await SELF.fetch(`${BASE}/api/settings`, { headers: API })
+    expect(res.status).toBe(200)
+    const settings = (await res.json()) as { model: string; pollSeconds: number; version: number }
+    expect(settings.model).toContain("/")
+    expect(settings.pollSeconds).toBeGreaterThanOrEqual(2)
+    expect(settings.version).toBe(1)
+  })
+
+  it("rejects invalid settings", async () => {
+    const res = await SELF.fetch(`${BASE}/api/settings`, {
+      method: "PUT",
+      headers: { ...API, "content-type": "application/json" },
+      body: JSON.stringify({ model: "not-a-model" }),
+    })
+    expect(res.status).toBe(400)
+  })
+
+  it("saves settings and bumps the version", async () => {
+    const res = await SELF.fetch(`${BASE}/api/settings`, {
+      method: "PUT",
+      headers: { ...API, "content-type": "application/json" },
+      body: JSON.stringify({ pollSeconds: 5 }),
+    })
+    expect(res.status).toBe(200)
+    const settings = (await res.json()) as { pollSeconds: number; version: number }
+    expect(settings.pollSeconds).toBe(5)
+    expect(settings.version).toBe(2)
+  })
+
   it("rejects invalid conversation keys", async () => {
     const res = await SELF.fetch(`${BASE}/api/conversations/${encodeURIComponent("bad key!")}`, { headers: API })
     expect(res.status).toBe(400)

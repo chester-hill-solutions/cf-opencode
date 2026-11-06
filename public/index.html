@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>cf-opencode</title>
+    <title>cf-opencode · settings</title>
     <style>
       :root {
         color-scheme: dark;
@@ -22,190 +22,171 @@
         font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
         background: var(--bg);
         color: var(--text);
-        display: flex;
-        flex-direction: column;
-        height: 100vh;
       }
       header {
         display: flex;
         align-items: center;
         gap: 12px;
-        padding: 12px 16px;
+        padding: 14px 20px;
         border-bottom: 1px solid var(--border);
         background: var(--panel);
       }
       header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
-      #status {
-        margin-left: auto;
-        font-size: 12px;
-        color: var(--muted);
+      header .meta { margin-left: auto; font-size: 12px; color: var(--muted); }
+      main { max-width: 860px; margin: 0 auto; padding: 24px 20px 64px; display: flex; flex-direction: column; gap: 20px; }
+      fieldset {
         border: 1px solid var(--border);
-        border-radius: 999px;
-        padding: 2px 10px;
-      }
-      #status.working { color: var(--accent); border-color: var(--accent); }
-      #status.done { color: var(--ok); border-color: var(--ok); }
-      #status.error { color: var(--danger); border-color: var(--danger); }
-      #config {
-        display: flex;
-        gap: 8px;
-        padding: 10px 16px;
-        border-bottom: 1px solid var(--border);
+        border-radius: 12px;
         background: var(--panel);
-        flex-wrap: wrap;
+        padding: 16px 18px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
       }
-      input, textarea, button {
+      legend { padding: 0 8px; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+      label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+      .row { display: flex; gap: 12px; flex-wrap: wrap; }
+      .row > label { flex: 1; min-width: 200px; }
+      input[type="text"], input[type="password"], input[type="number"], textarea {
         font: inherit;
         color: var(--text);
         background: var(--bg);
         border: 1px solid var(--border);
         border-radius: 8px;
-        padding: 8px 10px;
-      }
-      input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-      #token { width: 260px; }
-      #key { width: 220px; }
-      button { cursor: pointer; }
-      button:hover { border-color: var(--accent); }
-      button.primary { background: var(--accent); color: #0b0d12; border-color: var(--accent); font-weight: 600; }
-      button.danger { color: var(--danger); border-color: var(--danger); }
-      main {
-        flex: 1;
-        overflow-y: auto;
-        padding: 20px 16px;
-        display: flex;
-        flex-direction: column;
-        gap: 12px;
-        max-width: 900px;
+        padding: 9px 11px;
         width: 100%;
-        margin: 0 auto;
       }
-      .bubble {
-        max-width: 85%;
-        padding: 10px 14px;
-        border-radius: 12px;
+      textarea { min-height: 120px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+      input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+      .inline { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--text); }
+      .inline input { width: auto; }
+      button {
+        font: inherit;
+        cursor: pointer;
+        color: var(--text);
+        background: var(--bg);
         border: 1px solid var(--border);
-        background: var(--panel);
-        white-space: pre-wrap;
-        word-break: break-word;
+        border-radius: 8px;
+        padding: 9px 14px;
       }
-      .bubble.user { align-self: flex-end; background: #1c2436; border-color: #2c3a58; }
-      .bubble.error { border-color: var(--danger); color: var(--danger); }
-      .meta { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
-      .permission {
-        border: 1px solid #6b5a2a;
-        background: #221d10;
-        border-radius: 12px;
-        padding: 12px 14px;
-        max-width: 85%;
-      }
-      .permission .actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
-      .permission code { background: #0b0d12; padding: 1px 5px; border-radius: 4px; }
-      form {
-        display: flex;
-        gap: 8px;
-        padding: 12px 16px;
-        border-top: 1px solid var(--border);
-        background: var(--panel);
-      }
-      textarea {
-        flex: 1;
-        resize: none;
-        min-height: 48px;
-        max-height: 160px;
-      }
-      .empty { color: var(--muted); text-align: center; margin-top: 10vh; }
+      button:hover { border-color: var(--accent); }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #0b0d12; font-weight: 600; }
+      .actions { display: flex; align-items: center; gap: 12px; }
+      #status { font-size: 13px; color: var(--muted); }
+      #status.ok { color: var(--ok); }
+      #status.error { color: var(--danger); }
+      .hint { font-size: 12px; color: var(--muted); }
     </style>
   </head>
   <body>
     <header>
-      <h1>cf-opencode</h1>
-      <span id="status">idle</span>
+      <h1>cf-opencode · settings</h1>
+      <span class="meta" id="meta">not loaded</span>
     </header>
 
-    <section id="config">
-      <input id="token" type="password" placeholder="API token" autocomplete="off" />
-      <input id="key" placeholder="conversation" />
-      <button id="connect">Connect</button>
-      <button id="new">New conversation</button>
-    </section>
+    <main>
+      <fieldset>
+        <legend>Access</legend>
+        <label>
+          API token
+          <input id="token" type="password" autocomplete="off" placeholder="Bearer token" />
+        </label>
+        <div class="actions">
+          <button id="load">Load settings</button>
+          <span id="status"></span>
+        </div>
+        <div class="hint">The token is kept in localStorage. Put Cloudflare Access in front for shared deployments.</div>
+      </fieldset>
 
-    <main id="log">
-      <div class="empty">Enter the API token, pick a conversation, then send a message.</div>
+      <form id="settings">
+        <fieldset>
+          <legend>Workspace</legend>
+          <label>
+            Repository
+            <input id="workspaceRepo" type="text" placeholder="https://github.com/owner/repo" />
+          </label>
+          <label>
+            Branch
+            <input id="workspaceBranch" type="text" placeholder="main" />
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Model</legend>
+          <label>
+            Model reference
+            <input id="model" type="text" placeholder="opencode/deepseek-v4.1-flash" />
+          </label>
+          <div class="hint">provider/model or provider/model#variant</div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Runtime</legend>
+          <div class="row">
+            <label>
+              Poll seconds
+              <input id="pollSeconds" type="number" min="2" max="60" step="1" />
+            </label>
+          </div>
+          <label class="inline">
+            <input id="streaming" type="checkbox" />
+            Stream OpenCode events while the container is warm (falls back to polling)
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Permissions</legend>
+          <label>
+            Allow (one shell pattern per line)
+            <textarea id="allow" spellcheck="false"></textarea>
+          </label>
+          <label>
+            Ask (one shell pattern per line)
+            <textarea id="ask" spellcheck="false"></textarea>
+          </label>
+          <label>
+            Deny (one shell pattern per line)
+            <textarea id="deny" spellcheck="false"></textarea>
+          </label>
+          <div class="hint">
+            Rules apply to the shell tool. Reads/edits inside the workspace and web access are always allowed;
+            edits outside the workspace ask; <code>.ssh</code> and <code>.env</code> reads are denied.
+          </div>
+        </fieldset>
+
+        <div class="actions">
+          <button class="primary" type="submit">Save settings</button>
+          <span class="hint">Saving restarts the container on the next turn; the workspace checkpoint is restored.</span>
+        </div>
+      </form>
     </main>
-
-    <form id="composer">
-      <textarea id="text" placeholder="Message the harness… (Enter to send, Shift+Enter for a newline)"></textarea>
-      <button class="primary" type="submit">Send</button>
-    </form>
 
     <script>
       const $ = (id) => document.getElementById(id)
-      const log = $("log")
       const status = $("status")
+      const meta = $("meta")
       const tokenInput = $("token")
-      const keyInput = $("key")
-      const textInput = $("text")
 
       tokenInput.value = localStorage.getItem("cfopencode.token") ?? ""
-      keyInput.value = localStorage.getItem("cfopencode.key") ?? "web-" + Math.random().toString(36).slice(2, 8)
-
-      let controller
-      let lastEventID = 0
-      let reconnectTimer
 
       const setStatus = (text, cls = "") => {
         status.textContent = text
         status.className = cls
       }
 
-      const escapeHtml = (value) =>
-        value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      const lines = (value) => value.split("\n").map((line) => line.trim()).filter(Boolean)
+      const text = (list) => (list ?? []).join("\n")
 
-      const scroll = () => {
-        log.scrollTop = log.scrollHeight
-      }
-
-      function addBubble(kind, text) {
-        log.querySelector(".empty")?.remove()
-        const el = document.createElement("div")
-        el.className = "bubble " + kind
-        el.innerHTML = `<div class="meta">${kind === "user" ? "you" : "assistant"}</div>${escapeHtml(text)}`
-        log.appendChild(el)
-        scroll()
-        return el
-      }
-
-      function addPermission(event) {
-        log.querySelector(".empty")?.remove()
-        const el = document.createElement("div")
-        el.className = "permission"
-        const resources = (event.resources ?? []).map((r) => `<code>${escapeHtml(String(r))}</code>`).join(" ")
-        el.innerHTML =
-          `<div class="meta">permission requested</div>` +
-          `<div><strong>${escapeHtml(event.action ?? "action")}</strong> ${resources}</div>` +
-          `<div class="actions"></div>`
-        const actions = el.querySelector(".actions")
-        for (const [label, decision, cls] of [
-          ["Approve once", "once", "primary"],
-          ["Always allow", "always", ""],
-          ["Deny", "reject", "danger"],
-        ]) {
-          const button = document.createElement("button")
-          button.textContent = label
-          if (cls) button.className = cls
-          button.onclick = async () => {
-            for (const b of actions.querySelectorAll("button")) b.disabled = true
-            const res = await api(
-              `/api/conversations/${encodeURIComponent(keyInput.value)}/permissions/${encodeURIComponent(event.requestID)}`,
-              { method: "POST", body: JSON.stringify({ decision }) },
-            )
-            button.textContent = res.ok ? "Recorded" : "Failed"
-          }
-          actions.appendChild(button)
-        }
-        log.appendChild(el)
-        scroll()
+      function fill(settings) {
+        $("workspaceRepo").value = settings.workspaceRepo ?? ""
+        $("workspaceBranch").value = settings.workspaceBranch ?? ""
+        $("model").value = settings.model ?? ""
+        $("pollSeconds").value = settings.pollSeconds ?? 2
+        $("streaming").checked = settings.streaming !== false
+        $("allow").value = text(settings.permissions?.allow)
+        $("ask").value = text(settings.permissions?.ask)
+        $("deny").value = text(settings.permissions?.deny)
+        meta.textContent = `v${settings.version}${settings.updatedAt ? ` · ${new Date(settings.updatedAt).toLocaleString()}` : ""}`
       }
 
       async function api(path, options = {}) {
@@ -219,116 +200,41 @@
         })
       }
 
-      function handleFrame(frame) {
-        let event = ""
-        let data = ""
-        let id = ""
-        for (const line of frame.split("\n")) {
-          if (line.startsWith(":")) continue
-          const colon = line.indexOf(":")
-          if (colon < 0) continue
-          const field = line.slice(0, colon)
-          const value = line.slice(colon + 1).replace(/^ /, "")
-          if (field === "event") event = value
-          else if (field === "data") data = value
-          else if (field === "id") id = value
-        }
-        if (id) lastEventID = Number(id) || lastEventID
-        if (!event) return
-        let payload = {}
-        try {
-          payload = JSON.parse(data)
-        } catch {}
-        if (event === "assistant") addBubble("assistant", payload.text ?? "")
-        if (event === "permission") addPermission(payload)
-        if (event === "settled") setStatus("done", "done")
-        if (event === "error") {
-          addBubble("error", payload.message ?? "error")
-          setStatus("error", "error")
-        }
-      }
-
-      async function connect() {
+      async function load() {
         localStorage.setItem("cfopencode.token", tokenInput.value)
-        localStorage.setItem("cfopencode.key", keyInput.value)
-        clearTimeout(reconnectTimer)
-        controller?.abort()
-        controller = new AbortController()
-        lastEventID = 0
-        setStatus("connecting…", "working")
-        try {
-          const res = await fetch(`/api/conversations/${encodeURIComponent(keyInput.value)}/events`, {
-            headers: {
-              authorization: "Bearer " + tokenInput.value,
-              ...(lastEventID ? { "last-event-id": String(lastEventID) } : {}),
-            },
-            signal: controller.signal,
-          })
-          if (res.status === 401) {
-            setStatus("token rejected", "error")
-            return
-          }
-          if (!res.ok || !res.body) {
-            setStatus("connection failed", "error")
-            return
-          }
-          setStatus("idle")
-          const reader = res.body.getReader()
-          const decoder = new TextDecoder()
-          let buffer = ""
-          for (;;) {
-            const { done, value } = await reader.read()
-            if (done) break
-            buffer += decoder.decode(value, { stream: true })
-            let index
-            while ((index = buffer.indexOf("\n\n")) >= 0) {
-              const frame = buffer.slice(0, index)
-              buffer = buffer.slice(index + 2)
-              handleFrame(frame)
-            }
-          }
-          setStatus("reconnecting…", "working")
-        } catch (error) {
-          if (controller?.signal.aborted) return
-          setStatus("disconnected", "error")
-        }
-        reconnectTimer = setTimeout(connect, 2000)
+        setStatus("loading…")
+        const res = await api("/api/settings")
+        if (res.status === 401) return setStatus("token rejected", "error")
+        if (!res.ok) return setStatus(`load failed (${res.status})`, "error")
+        fill(await res.json())
+        setStatus("loaded", "ok")
       }
 
-      $("connect").onclick = connect
+      $("load").onclick = load
 
-      $("new").onclick = () => {
-        keyInput.value = "web-" + Math.random().toString(36).slice(2, 8)
-        localStorage.setItem("cfopencode.key", keyInput.value)
-        log.innerHTML = '<div class="empty">New conversation. Send a message to start.</div>'
-        connect()
-      }
-
-      $("composer").onsubmit = async (event) => {
+      $("settings").onsubmit = async (event) => {
         event.preventDefault()
-        const text = textInput.value.trim()
-        if (!text) return
-        textInput.value = ""
-        addBubble("user", text)
-        setStatus("working…", "working")
-        const res = await api(`/api/conversations/${encodeURIComponent(keyInput.value)}/messages`, {
-          method: "POST",
-          body: JSON.stringify({ text }),
-        })
-        if (!res.ok) {
-          addBubble("error", "request failed: " + res.status)
-          setStatus("error", "error")
+        setStatus("saving…")
+        const body = {
+          workspaceRepo: $("workspaceRepo").value.trim(),
+          workspaceBranch: $("workspaceBranch").value.trim(),
+          model: $("model").value.trim(),
+          pollSeconds: Number($("pollSeconds").value),
+          streaming: $("streaming").checked,
+          permissions: {
+            allow: lines($("allow").value),
+            ask: lines($("ask").value),
+            deny: lines($("deny").value),
+          },
         }
+        const res = await api("/api/settings", { method: "PUT", body: JSON.stringify(body) })
+        const payload = await res.json().catch(() => ({}))
+        if (!res.ok) return setStatus(payload.error ?? `save failed (${res.status})`, "error")
+        fill(payload)
+        setStatus("saved", "ok")
       }
 
-      textInput.addEventListener("keydown", (event) => {
-        if (event.key === "Enter" && !event.shiftKey) {
-          event.preventDefault()
-          $("composer").requestSubmit()
-        }
-      })
-
-      if (tokenInput.value) connect()
+      if (tokenInput.value) load()
     </script>
   </body>
 </html>

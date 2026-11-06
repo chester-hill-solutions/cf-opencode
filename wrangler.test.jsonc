@@ -8,13 +8,17 @@
   "vars": {
     "WORKSPACE_REPO": "https://github.com/chester-hill-solutions/opencode-slack",
     "OPENCODE_MODEL": "opencode/deepseek-v4.1-flash",
-    "CHECKIN_SECONDS": "45"
+    "POLL_SECONDS": "2"
   },
   "durable_objects": {
-    "bindings": [{ "class_name": "Conversation", "name": "CONVERSATION" }]
+    "bindings": [
+      { "class_name": "Conversation", "name": "CONVERSATION" },
+      { "class_name": "Settings", "name": "SETTINGS" }
+    ]
   },
   "r2_buckets": [{ "binding": "CHECKPOINTS", "bucket_name": "cf-opencode-test" }],
   "exports": {
-    "Conversation": { "type": "durable-object", "storage": "sqlite" }
+    "Conversation": { "type": "durable-object", "storage": "sqlite" },
+    "Settings": { "type": "durable-object", "storage": "sqlite" }
   }
 }
