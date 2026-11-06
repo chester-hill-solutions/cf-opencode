@@ -60,7 +60,7 @@ not multi-tenancy. R3 is the *configurability* layer on top of that isolation. A
 | R0-5 | Audit 22: explicit conversation state machine (`idle → admitting → running → settling → idle`, guarded transitions) | M | agent | **done** |
 | R0-6 | Audit cluster 1: performance pass (hot paths, SSE fan-out, R2 sizes) | S | agent | **done** (findings 25–28) |
 | R0-7 | Finish audit 23: turn latency, queue depth, checkpoint bytes, failure classes | M | agent | **done** (OTel export deferred) |
-| R0-8 | Handover: README limits, runbook, cost-per-turn note | S | agent | todo |
+| R0-8 | Handover: README limits, runbook, cost-per-turn note | S | agent | **done** (runbook) |
 | R0-9 | ~~Audit 24~~ | — | — | moved to R1-4 |
 
 **Exit criteria**
