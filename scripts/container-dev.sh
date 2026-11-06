@@ -11,8 +11,8 @@ set -euo pipefail
 # Install: https://github.com/apple/container/releases
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE="${IMAGE:-opencode-harness:dev}"
-NAME="${NAME:-opencode-harness}"
+IMAGE="${IMAGE:-cf-opencode:dev}"
+NAME="${NAME:-cf-opencode}"
 MODEL="${OPENCODE_MODEL:-opencode/deepseek-v4.1-flash}"
 REPO="${WORKSPACE_REPO:-https://github.com/chester-hill-solutions/opencode-slack}"
 

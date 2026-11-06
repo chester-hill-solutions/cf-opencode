@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "opencode-harness",
+  "name": "cf-opencode",
   "main": "src/index.ts",
   "compatibility_date": "2026-11-05",
   "compatibility_flags": ["nodejs_compat"],
@@ -21,7 +21,7 @@
   "durable_objects": {
     "bindings": [{ "class_name": "Conversation", "name": "CONVERSATION" }]
   },
-  "r2_buckets": [{ "binding": "CHECKPOINTS", "bucket_name": "opencode-harness-checkpoints" }],
+  "r2_buckets": [{ "binding": "CHECKPOINTS", "bucket_name": "cf-opencode-checkpoints" }],
   "exports": {
     "Conversation": { "type": "durable-object", "storage": "sqlite" }
   }

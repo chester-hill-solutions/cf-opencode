@@ -1,4 +1,4 @@
-# opencode-harness
+# cf-opencode
 
 Run [OpenCode](https://opencode.ai) as a harness on Cloudflare: **one Durable Object per conversation**, a **local S3 workspace** (stow-s3) inside the container, and **R2 for cold checkpoints**. The core speaks HTTP/SSE; Slack is just one adapter.
 
@@ -81,7 +81,7 @@ Without the Slack secrets the Slack routes return 503 and the harness is HTTP-on
 1. Connect the repo in **Workers & Pages**.
 2. **Settings → Builds**: root directory `.`, build command `bun install`, deploy command `npx wrangler deploy`.
 3. Secrets: `API_TOKEN`, and optionally `SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN`, `SLACK_BOT_USER_ID`.
-4. Create the bucket: `bunx wrangler r2 bucket create opencode-harness-checkpoints`.
+4. Create the bucket: `bunx wrangler r2 bucket create cf-opencode-checkpoints`.
 5. Push to `main` — Cloudflare builds the image, publishes it, and rolls out the container.
 
 Non-production branches upload Worker code only (no image rollout). Use a staging Worker for image changes.
