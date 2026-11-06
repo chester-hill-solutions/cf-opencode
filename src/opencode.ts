@@ -24,7 +24,12 @@ export function portFetch(port: ContainerPort): PortFetch {
     const url = new URL(request.url)
     url.protocol = "http:"
     url.host = "container"
-    const forwarded = new Request(url.toString(), request)
+    const forwarded = new Request(url.toString(), {
+      method: request.method,
+      headers: request.headers,
+      body: request.body,
+      signal: init?.signal ?? AbortSignal.timeout(60_000),
+    })
     forwarded.headers.delete("host")
     return port.fetch(forwarded)
   }

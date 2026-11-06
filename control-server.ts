@@ -45,7 +45,8 @@ async function waitFor(url: string, attempts = 150): Promise<void> {
 }
 
 async function startStow(): Promise<void> {
-  if (stow) return
+  if (stow && stow.exitCode === null) return
+  if (stow) stow = undefined
   mkdirSync(STOW_DIR, { recursive: true })
   stow = spawn(
     [
@@ -70,7 +71,8 @@ async function startStow(): Promise<void> {
 }
 
 async function startOpencode(): Promise<void> {
-  if (opencode) return
+  if (opencode && opencode.exitCode === null) return
+  if (opencode) opencode = undefined
   opencode = spawn(["opencode", "serve", "--hostname", "0.0.0.0", "--port", String(OPENCODE_PORT)], {
     cwd: WORKSPACE,
     env: {
@@ -142,7 +144,11 @@ Bun.serve({
     }
 
     if (url.pathname === "/status") {
-      return Response.json({ initialized: initialized(), running: Boolean(opencode), s3: Boolean(stow) })
+      return Response.json({
+        initialized: initialized(),
+        running: opencode?.exitCode === null,
+        s3: stow?.exitCode === null,
+      })
     }
 
     if (url.pathname === "/start") {

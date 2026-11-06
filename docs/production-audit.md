@@ -42,12 +42,22 @@ interleavings across `await` on non-storage I/O (DO→DO fetch, container HTTP, 
 Findings 5 and 10's control-server changes take effect when the container image is rebuilt; findings 1–9
 ship in the Worker.
 
+## Cluster 3 · Reliability & fault tolerance (second pass)
+
+| # | Finding | Location | Failure sequence | Fix | Evidence |
+|---|---|---|---|---|---|
+| 11 | **No timeout on container HTTP calls** | `src/opencode.ts` `portFetch`, `src/conversation.ts` control calls | Container hangs → the DO awaits forever; the alarm never re-arms and the turn never settles | Default 60 s on API calls, 2 s health, 10 s configure/status, 60 s start/restore, 120 s checkpoint | Code path |
+| 12 | **Crashed children never restarted** | `control-server.ts` `startOpencode` / `startStow` | `opencode serve` exits → the subprocess variable still exists → `/start` returns early → every call fails until the container itself restarts | Check `exitCode`, restart, and report real `running`/`s3` in `/status` | Code path |
+| 13 | **Reply delivery was at-most-once** | `src/conversation.ts` `pumpOnce` | `lastReply` persisted before the Slack post → post fails → next poll considers it delivered → reply lost | Deliver, then persist (at-least-once; a partial failure can duplicate on SSE) | Code path |
+| 14 | **Checkpoint failures are silent** | `src/conversation.ts` `checkpoint` | R2/tar failure is logged and swallowed → no retry or alert → the next cold start restores an older checkpoint | Reported; add a retry and surface the failure on the next settle | Code path |
+| 15 | **No health-based restart** | `src/conversation.ts` `doEnsureReady` | A container that is running but wedged answers `/status` and is reused; calls now time out but nothing restarts it | Reported; a health probe with restart-on-failure is the next step | Code path |
+
 ## What was not checked
 
-- Clusters 1 (performance), 3 (reliability beyond the alarm), 5 (scalability), 6 (maintainability).
-- No live container or deployed concurrency harness: findings 2, 3 and 7 are cited interleavings, not
-  reproduced races. Regression tests are added for the state-merge and permission paths; the DO-level
-  interleavings still need a workerd harness.
+- Clusters 1 (performance), 5 (scalability), 6 (maintainability).
+- Findings 2, 3 and 7 are cited interleavings. A workerd regression test now drives two concurrent
+  deliveries of the same Slack event through the DO (`test/concurrency.test.ts`); the settings-restart and
+  stale-pump interleavings still lack a live harness. Findings 14 and 15 remain open.
 - Light mode, 200% zoom, and Slack-specific rate limits are outside this pass.
 
 ## Verification notes

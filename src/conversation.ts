@@ -112,7 +112,7 @@ export class Conversation extends DurableObject<Env> {
     } catch (err) {
       if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
       await this.postChunked(target.channel, `⚠️ Couldn't start the session: ${errorMessage(err)}`, target.replyTs).catch(() => {})
-      return Response.json({ ok: false }, { status: 500 })
+      return Response.json({ ok: false, error: errorMessage(err) }, { status: 500 })
     }
   }
 
@@ -330,8 +330,9 @@ export class Conversation extends DurableObject<Env> {
       const reply = latestAssistantReply(messages)
 
       if (reply && reply !== state.lastReply) {
-        await this.store.patch({ lastReply: reply })
+        // At-least-once: persist only after delivery so a failed post is retried.
         await this.deliver({ type: "assistant", text: reply })
+        await this.store.patch({ lastReply: reply })
       }
 
       await this.pollPermissions(sessionID)
@@ -376,14 +377,29 @@ export class Conversation extends DurableObject<Env> {
 
   // ---------------------------------------------------------------- container
 
+  /** Test seam: replaces the container port for a given number. */
+  transport?: (number: number) => ContainerPort
+
   private async port(number: number): Promise<ContainerPort> {
+    if (this.transport) return this.transport(number)
+    if (this.env.CONTAINER_URL) {
+      const host = new URL(this.env.CONTAINER_URL).hostname
+      return {
+        fetch: (input, init) => {
+          const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url)
+          url.hostname = host
+          url.port = String(number)
+          return fetch(url.toString(), init)
+        },
+      }
+    }
     const container = this.ctx.container
     if (!container) throw new Error("no container bound")
     if (!container.running) container.start()
     const port = container.getTcpPort(number)
     for (let attempt = 0; attempt < 100; attempt++) {
       try {
-        const res = await port.fetch("http://container/health")
+        const res = await port.fetch("http://container/health", { signal: AbortSignal.timeout(2000) })
         if (res.ok) return port
       } catch {
         /* not ready yet */
@@ -415,10 +431,11 @@ export class Conversation extends DurableObject<Env> {
     const settings = await this.settings()
     const state = await this.store.get()
     const container = this.ctx.container
-    if (!container) throw new Error("no container bound")
+    if (!container && !this.env.CONTAINER_URL && !this.transport) throw new Error("no container bound")
 
     // Apply a settings change only between runs: destroying mid-run loses the turn.
     if (
+      container &&
       state.settingsVersion !== undefined &&
       state.settingsVersion !== settings.version &&
       container.running &&
@@ -430,11 +447,17 @@ export class Conversation extends DurableObject<Env> {
 
     const control = await this.port(CONTROL_PORT)
 
-    const status = (await (await control.fetch("http://container/status")).json()) as { initialized?: boolean }
+    const status = (await (
+      await control.fetch("http://container/status", { signal: AbortSignal.timeout(10_000) })
+    ).json()) as { initialized?: boolean }
     if (!status.initialized) {
       const checkpoint = await this.env.CHECKPOINTS.get(this.checkpointKey())
       if (checkpoint?.body) {
-        await control.fetch("http://container/restore", { method: "POST", body: checkpoint.body })
+        await control.fetch("http://container/restore", {
+          method: "POST",
+          body: checkpoint.body,
+          signal: AbortSignal.timeout(60_000),
+        })
       }
     }
 
@@ -442,14 +465,20 @@ export class Conversation extends DurableObject<Env> {
     await control.fetch("http://container/configure", {
       method: "POST",
       body: JSON.stringify(settings),
+      signal: AbortSignal.timeout(10_000),
     })
 
-    const started = await control.fetch("http://container/start", { method: "POST" })
+    const started = await control.fetch("http://container/start", {
+      method: "POST",
+      signal: AbortSignal.timeout(60_000),
+    })
     if (!started.ok) throw new Error(`container start failed: ${await started.text()}`)
 
     if (state.settingsVersion !== settings.version) {
       await this.store.patch({ settingsVersion: settings.version })
     }
+    if (this.env.CONTAINER_URL || this.transport) return this.port(OPENCODE_PORT)
+    if (!container) throw new Error("no container bound")
     return container.getTcpPort(OPENCODE_PORT)
   }
 
@@ -460,7 +489,9 @@ export class Conversation extends DurableObject<Env> {
   private async checkpoint(): Promise<void> {
     try {
       const control = await this.port(CONTROL_PORT)
-      const response = await control.fetch("http://container/checkpoint")
+      const response = await control.fetch("http://container/checkpoint", {
+        signal: AbortSignal.timeout(120_000),
+      })
       if (!response.ok || !response.body) return
       await this.env.CHECKPOINTS.put(this.checkpointKey(), response.body)
     } catch (err) {

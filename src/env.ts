@@ -10,6 +10,8 @@ export interface Env {
   OPENCODE_MODEL: string
   POLL_SECONDS: string
   CHECKPOINTS: R2Bucket
+  /** Test seam: route container calls to an HTTP origin instead of ctx.container. */
+  CONTAINER_URL?: string
   /** Bearer token for the HTTP/SSE adapter. */
   API_TOKEN?: string
 }
