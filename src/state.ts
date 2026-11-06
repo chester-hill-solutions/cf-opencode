@@ -15,8 +15,10 @@ export interface ConversationState {
   sessionID?: string
   transport?: Transport
   slack?: SlackTarget
-  /** Last assistant text delivered, used to avoid duplicates. */
+  /** Last assistant text broadcast to SSE, used to avoid duplicates. */
   lastReply?: string
+  /** Last assistant text posted to Slack; interim updates stay on SSE only. */
+  lastSlackReply?: string
   /** Settings version the running container was configured with. */
   settingsVersion?: number
   /** One pending admission when the container could not start. */
@@ -111,8 +113,14 @@ export class ConversationStore {
   }
 
   async rememberPermission(requestID: string, sessionID: string): Promise<void> {
+    await this.rememberPermissions([requestID], sessionID)
+  }
+
+  /** Record several pending permissions with one read and one write. */
+  async rememberPermissions(requestIDs: string[], sessionID: string): Promise<void> {
+    if (requestIDs.length === 0) return
     const state = await this.get()
-    state.pending[requestID] = sessionID
+    for (const requestID of requestIDs) state.pending[requestID] = sessionID
     await this.save(state)
   }
 

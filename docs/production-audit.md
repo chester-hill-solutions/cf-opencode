@@ -47,6 +47,10 @@ interleavings across `await` on non-storage I/O (DO→DO fetch, container HTTP, 
 | 19 | Slack 429s honor `Retry-After` for two retries, then fall back to the at-least-once path |
 | 20 | The UI no longer embeds a model catalogue; `/api/models` is the only source |
 | 21 | `bun run check:config` compares the prod and test Wrangler configs in CI |
+| 25 | Readiness is cached per instance; the handshake runs once per container |
+| 26 | Context and permissions are fetched concurrently |
+| 27 | Pending permissions are recorded in one batched write |
+| 28 | Slack gets one reply per turn; SSE keeps the live stream |
 
 Findings 5 and 10's control-server changes take effect when the container image is rebuilt; findings 1–9
 ship in the Worker.
@@ -80,9 +84,18 @@ ship in the Worker.
 | 23 | **Observability gaps** | whole Worker | No metrics or traces; only `console.warn`; no turn latency, queue depth, checkpoint bytes or failure classes | **Partly fixed:** one-line JSON `logEvent` records admission failures, turn settle, checkpoint saved/skipped/failed and container recycle. Turn latency, queue depth and OTel export remain open | `src/log.ts` + call sites |
 | 24 | **Mixed responsibilities** | `src/conversation.ts` (~500 lines) | Slack delivery, SSE fan-out, container lifecycle, pump and permissions live in one class | Reported (prompt 36): extract `ContainerRuntime` and `EventStream`; do not restructure in the audit | File size and imports |
 
+## Cluster 1 · Performance & efficiency (fourth pass)
+
+| # | Finding | Location | Failure sequence | Fix | Evidence |
+|---|---|---|---|---|---|
+| 25 | **Readiness handshake repeated on every container call** | `src/conversation.ts` `doEnsureReady` | `withClient` calls `ensureReady`, which always did `/status` → `/configure` → `/start` → `/health`; a poll that fetches context and permissions paid it twice, so ~6 control round trips per 2 s per conversation | Cache the verified port per instance; fast-path when the spec version matches and the container is running. Configure only on cold boot or a spec change | `test/performance.test.ts` asserts one handshake for two prompts |
+| 26 | **Context and permission list fetched sequentially** | `src/conversation.ts` `pumpOnce` | Two independent container calls per poll, one after the other, doubling poll latency | Fetch both in one `Promise.all` window | Code path |
+| 27 | **N+1 storage reads for pending permissions** | `src/conversation.ts` `pollPermissions` | For P pending requests: `store.get()` + `rememberPermission` (get+put) per request → 2P reads and P writes per poll | One state read, one batched `rememberPermissions` write, then deliver | `tests/state.test.ts` batch test |
+| 28 | **Slack posted every interim assistant reply** | `src/conversation.ts` `pumpOnce`, `deliver` | The reply text changes on every poll while streaming; each change posted to Slack, so a 60 s turn could make ~30 `chat.postMessage` calls and trip rate limits | SSE streams every change; Slack receives one assistant message when the turn settles (`lastSlackReply`), with at-least-once retry on failure | Code path + `lastSlackReply` state |
+
 ## What was not checked
 
-- Cluster 1 (performance). Clusters 5 and 6 are reported above; cluster 6 prompt 37 (full state-machine
+- Cluster 1 is now reported above (findings 25–28, all fixed). Cluster 6 prompt 37 (full state-machine
   pass) is deliberately deferred to its own session.
 - Findings 2, 3 and 7 are cited interleavings. A workerd regression test now drives two concurrent
   deliveries of the same Slack event through the DO (`test/concurrency.test.ts`); the settings-restart and

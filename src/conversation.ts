@@ -17,6 +17,13 @@ import { retryAfterSeconds } from "./backoff"
 import { logEvent } from "./log"
 import type { HarnessSettings } from "./settings"
 
+/** The fields of a pending permission the harness forwards. */
+interface PermissionSummary {
+  id: string
+  action: string
+  resources: string[]
+}
+
 const OPENCODE_PORT = 4000
 const CONTROL_PORT = 4001
 const POLL_MS = 2000
@@ -51,6 +58,9 @@ export class Conversation extends DurableObject<Env> {
   private streaming = false
   private pumping = false
   private consecutiveFailures = 0
+  /** This instance has verified the container for the current spec. */
+  private ready = false
+  private opencodePort?: ContainerPort
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
@@ -226,10 +236,15 @@ export class Conversation extends DurableObject<Env> {
   }
 
   /** Emit to SSE and, when the conversation has a Slack target, post there too. */
-  private async deliver(event: ConversationEvent): Promise<void> {
+  private async deliver(event: ConversationEvent, options: { slack?: boolean } = {}): Promise<void> {
     const seq = await this.store.nextSeq()
     await this.store.appendEvent({ seq, event })
     this.broadcast(event, seq)
+    if (options.slack === false) return
+    await this.deliverToSlack(event)
+  }
+
+  private async deliverToSlack(event: ConversationEvent): Promise<void> {
     const state = await this.store.get()
     if (!state.slack || !this.env.SLACK_BOT_TOKEN) return
     if (event.type === "assistant") {
@@ -271,7 +286,7 @@ export class Conversation extends DurableObject<Env> {
   }
 
   private async startRun(): Promise<void> {
-    await this.store.patch({ lastReply: undefined })
+    await this.store.patch({ lastReply: undefined, lastSlackReply: undefined })
     await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
   }
 
@@ -360,19 +375,31 @@ export class Conversation extends DurableObject<Env> {
       if (!state.sessionID) return true
 
       const sessionID = state.sessionID
-      const messages = (await this.withClient((client) => client.session.context({ sessionID }))) as MessageInfo[]
+      // Context and permissions are independent: fetch them in one round-trip window.
+      const [messages, pending] = await Promise.all([
+        this.withClient((client) => client.session.context({ sessionID })) as Promise<MessageInfo[]>,
+        this.withClient((client) => client.permission.list({ sessionID })).catch(
+          () => [] as PermissionSummary[],
+        ),
+      ])
       const reply = latestAssistantReply(messages)
+      const settled = isSettled(messages)
 
       if (reply && reply !== state.lastReply) {
-        // At-least-once: persist only after delivery so a failed post is retried.
-        await this.deliver({ type: "assistant", text: reply })
+        // SSE streams every change; Slack gets one message per turn, at settle.
+        await this.deliver({ type: "assistant", text: reply }, { slack: false })
         await this.store.patch({ lastReply: reply })
       }
 
-      await this.pollPermissions(sessionID)
+      await this.pollPermissions(sessionID, pending)
 
-      if (isSettled(messages)) {
+      if (settled) {
         logEvent("turn.settled")
+        if (reply && reply !== state.lastSlackReply) {
+          // At-least-once: persist only after delivery so a failed post is retried.
+          await this.deliverToSlack({ type: "assistant", text: reply })
+          await this.store.patch({ lastSlackReply: reply })
+        }
         await this.deliver({ type: "settled" })
         const saved = await this.checkpoint()
         if (!saved) {
@@ -409,12 +436,14 @@ export class Conversation extends DurableObject<Env> {
     await this.ctx.storage.setAlarm(Date.now() + delay)
   }
 
-  private async pollPermissions(sessionID: string): Promise<void> {
-    const pending = (await this.withClient((client) => client.permission.list({ sessionID })).catch(() => [])) ?? []
-    for (const request of pending) {
-      const state = await this.store.get()
-      if (state.pending[request.id]) continue
-      await this.store.rememberPermission(request.id, sessionID)
+  private async pollPermissions(sessionID: string, pending: PermissionSummary[]): Promise<void> {
+    if (pending.length === 0) return
+    const state = await this.store.get()
+    const fresh = pending.filter((request) => !state.pending[request.id])
+    if (fresh.length === 0) return
+    // One read and one write for the whole batch.
+    await this.store.rememberPermissions(fresh.map((request) => request.id), sessionID)
+    for (const request of fresh) {
       await this.deliver({
         type: "permission",
         requestID: request.id,
@@ -467,6 +496,8 @@ export class Conversation extends DurableObject<Env> {
       return result
     } catch (error) {
       this.consecutiveFailures++
+      this.ready = false
+      this.opencodePort = undefined
       // Two consecutive failures: assume the container is wedged and recycle it.
       if (this.consecutiveFailures >= 2) {
         this.consecutiveFailures = 0
@@ -495,16 +526,22 @@ export class Conversation extends DurableObject<Env> {
     const container = this.ctx.container
     if (!container && !this.env.CONTAINER_URL && !this.transport) throw new Error("no container bound")
 
-    // Apply a settings change only between runs: destroying mid-run loses the turn.
-    if (
-      container &&
-      state.settingsVersion !== undefined &&
-      state.settingsVersion !== settings.version &&
-      container.running &&
-      !this.pumping &&
-      !this.streaming
-    ) {
+    const versionChanged = state.settingsVersion !== undefined && state.settingsVersion !== settings.version
+    const busy = this.pumping || this.streaming
+
+    // A settings change is applied between runs: destroying mid-run loses the turn.
+    if (container && versionChanged && container.running && busy) {
+      return this.opencodePort ?? this.port(OPENCODE_PORT)
+    }
+    if (container && versionChanged && container.running) {
       await container.destroy()
+      this.ready = false
+      this.opencodePort = undefined
+    }
+
+    // Fast path: this instance already verified the container for this spec.
+    if (this.ready && this.opencodePort && (!container || container.running) && !versionChanged) {
+      return this.opencodePort
     }
 
     const control = await this.port(CONTROL_PORT)
@@ -512,6 +549,7 @@ export class Conversation extends DurableObject<Env> {
     const status = (await (
       await control.fetch("http://container/status", { signal: AbortSignal.timeout(10_000) })
     ).json()) as { initialized?: boolean }
+
     if (!status.initialized) {
       const checkpoint = await this.env.CHECKPOINTS.get(this.checkpointKey())
       if (checkpoint?.body) {
@@ -525,11 +563,14 @@ export class Conversation extends DurableObject<Env> {
     }
 
     // Configure after restore: /restore replaces /workspace, including the config.
-    await control.fetch("http://container/configure", {
-      method: "POST",
-      body: JSON.stringify(settings),
-      signal: AbortSignal.timeout(10_000),
-    })
+    // A warm container on the same spec already has its config.
+    if (!status.initialized || versionChanged) {
+      await control.fetch("http://container/configure", {
+        method: "POST",
+        body: JSON.stringify(settings),
+        signal: AbortSignal.timeout(10_000),
+      })
+    }
 
     const started = await control.fetch("http://container/start", {
       method: "POST",
@@ -540,9 +581,11 @@ export class Conversation extends DurableObject<Env> {
     if (state.settingsVersion !== settings.version) {
       await this.store.patch({ settingsVersion: settings.version })
     }
-    if (this.env.CONTAINER_URL || this.transport) return this.port(OPENCODE_PORT)
-    if (!container) throw new Error("no container bound")
-    return container.getTcpPort(OPENCODE_PORT)
+
+    const port = await this.port(OPENCODE_PORT)
+    this.opencodePort = port
+    this.ready = true
+    return port
   }
 
   /** Hold one admission when the container cannot start; drain it from the alarm. */

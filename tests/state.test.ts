@@ -40,6 +40,17 @@ describe("ConversationStore", () => {
     expect(state.sessionID).toBe("ses_1")
   })
 
+  test("records a batch of pending permissions with one write", async () => {
+    const storage = fakeStorage()
+    const store = new ConversationStore(storage)
+    await store.rememberPermissions(["req_1", "req_2", "req_3"], "ses_1")
+    expect(await store.get()).toMatchObject({
+      pending: { req_1: "ses_1", req_2: "ses_1", req_3: "ses_1" },
+    })
+    await store.rememberPermissions([], "ses_1")
+    expect(Object.keys((await store.get()).pending)).toHaveLength(3)
+  })
+
   test("keeps the session, transport and Slack target", async () => {
     const store = new ConversationStore(fakeStorage())
     await store.setSession("ses_1", "slack", { channel: "C1", replyTs: "111.222" })

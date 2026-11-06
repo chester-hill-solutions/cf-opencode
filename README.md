@@ -1,4 +1,7 @@
-# cf-opencode
+# Aboiteau
+
+> **Aboiteau** is the product; `cf-opencode` is the current code and deployment identifier until the
+> v2 rename lands (see [docs/roadmap.md](docs/roadmap.md#naming)).
 
 Run [OpenCode](https://opencode.ai) as a harness on Cloudflare: **one Durable Object per conversation**, a **local S3 workspace** (stow-s3) inside the container, and **R2 for cold checkpoints**. The core speaks HTTP/SSE; Slack is just one adapter.
 
@@ -146,6 +149,12 @@ Apple `container` needs macOS 26+ on Apple silicon. `wrangler dev` with containe
 - `bench/container.sh` — cold start, checkpoint size/time, restore time.
 
 Local numbers (workerd): `/health` p50 1.0 ms / p95 1.0 ms; DO state p50 1.0 ms / p95 2.0 ms; Worker bundle 103 KB. Targets and results live in [bench/README.md](bench/README.md) and [bench/RESULTS.md](bench/RESULTS.md); the test pyramid is in [docs/testing.md](docs/testing.md).
+
+## Roadmap
+
+The path from harness to product — R0 harness complete, R1 tenancy foundations, R2 self-onboarding,
+R3 configurable sandbox, R4 product — is in [docs/roadmap.md](docs/roadmap.md), with gates, estimates
+and the ticket-level backlog.
 
 ## Limits and open work
 
