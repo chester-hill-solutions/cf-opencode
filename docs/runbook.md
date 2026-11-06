@@ -218,7 +218,7 @@ restore checkpoints from R2. Checkpoint keys are `workspaces/<id>.tar.gz` until 
 ## Data
 
 - R2 bucket `cf-opencode-checkpoints` — checkpoint versions per conversation at `workspaces/<id>/<timestamp>.tar.gz`, newest five kept. The archive is produced without stopping OpenCode: the live SQLite database is copied with `.backup` and substituted into the tar, so a checkpoint costs a copy and a compress, not a server restart.
-- Container snapshots — captured after each successful checkpoint as a fast restore cache. They are image-bound with a 30-day TTL, so a stale or unusable snapshot is dropped (`snapshot.stale`) and the container starts from the image, restoring the R2 archive.
+- Container snapshots — captured on an explicit `recycle` before the container stops, as a fast restore cache for the next start. A snapshot is the writable root (~28 MB) and is image-bound with a 30-day TTL and no delete API, so taking one per turn would accumulate storage and slow turns; per-turn durability stays with the R2 archive.
 - Container workspace — ephemeral; restored from R2 on cold start.
 - DO SQLite — conversation state, event log (last 200), pending permissions, checkpoint size and retry state.
 - Deleting a conversation's checkpoint is safe only when no turn is running.

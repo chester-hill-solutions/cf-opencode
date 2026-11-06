@@ -264,6 +264,10 @@ export class Conversation extends DurableObject<Env> {
    * kept: this is what a long-lived conversation needs after an image deploy.
    */
   private async onRecycle(): Promise<Response> {
+    // Capture a snapshot before stopping so the next start is fast. Snapshots
+    // are large (the writable root) and immutable with a 30-day TTL, so this
+    // happens on an explicit recycle, not on every turn.
+    await this.captureSnapshot()
     try {
       await this.ctx.container?.destroy()
     } catch {
@@ -1350,7 +1354,6 @@ export class Conversation extends DurableObject<Env> {
         checkpointPending: undefined,
         checkpointAttempts: undefined,
       })
-      await this.captureSnapshot()
       return true
     } catch (err) {
       console.warn("checkpoint failed", err)
