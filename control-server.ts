@@ -142,7 +142,7 @@ async function startOpencode(): Promise<void> {
     stdout: "inherit",
     stderr: "inherit",
   })
-  await waitFor(`http://127.0.0.1:${OPENCODE_PORT}/api/info`, 150, basicAuth(opencodePassword))
+  await waitFor(`http://127.0.0.1:${OPENCODE_PORT}/api/info`, 300, basicAuth(opencodePassword))
 }
 
 function writeOpencodeConfig(model?: string, permissions?: PermissionLists) {
@@ -360,6 +360,11 @@ if (import.meta.main) Bun.serve({
 
     if (url.pathname === "/models" && request.method === "GET") {
       return opencodeFetch("/api/model")
+    }
+
+    if (url.pathname === "/usage" && request.method === "GET") {
+      const query = url.searchParams.toString()
+      return opencodeFetch(`/api/experimental/session/stats${query ? `?${query}` : ""}`)
     }
 
     const connect = url.pathname.match(/^\/integrations\/([^/]+)\/connect\/(oauth|key)$/)

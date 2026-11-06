@@ -11,6 +11,7 @@ export type SettingsDraft = {
   model: string
   pollSeconds: string
   streaming: boolean
+  dailyBudgetUSD: string
   permissions: Record<PermissionKind, string>
 }
 
@@ -25,6 +26,7 @@ const emptyDraft: SettingsDraft = {
   model: DEFAULT_MODEL,
   pollSeconds: "2",
   streaming: true,
+  dailyBudgetUSD: "0",
   permissions: { allow: "", ask: "", deny: "" },
 }
 
@@ -35,6 +37,7 @@ function toDraft(settings: HarnessSettings): SettingsDraft {
     model: settings.model,
     pollSeconds: String(settings.pollSeconds),
     streaming: settings.streaming,
+    dailyBudgetUSD: String(settings.dailyBudgetUSD ?? 0),
     permissions: {
       allow: settings.permissions.allow.join("\n"),
       ask: settings.permissions.ask.join("\n"),
@@ -70,6 +73,7 @@ function isSettings(value: unknown): value is HarnessSettings {
     typeof item.model === "string" &&
     typeof item.pollSeconds === "number" &&
     typeof item.streaming === "boolean" &&
+    typeof item.dailyBudgetUSD === "number" &&
     typeof item.version === "number" &&
     !!permissions &&
     ["allow", "ask", "deny"].every(
@@ -199,6 +203,7 @@ export function useSettings() {
       model: draft.model.trim(),
       pollSeconds: Number(draft.pollSeconds),
       streaming: draft.streaming,
+      dailyBudgetUSD: Number(draft.dailyBudgetUSD),
       permissions: {
         allow: ruleLines(draft.permissions.allow),
         ask: ruleLines(draft.permissions.ask),

@@ -61,7 +61,7 @@ bun run dev:ui
 # http://127.0.0.1:4173/ui-kit/
 
 bun run typecheck
-bun run test:ui
+bun test tests
 ```
 
 To connect the local settings UI to a running API, start with `ABOITEAU_API_ORIGIN=http://127.0.0.1:8787 bun run dev:ui`. The unconnected preview clearly reports that no API is available; it does not simulate saving.

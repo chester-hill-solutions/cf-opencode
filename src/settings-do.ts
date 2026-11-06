@@ -31,6 +31,44 @@ export class Settings extends DurableObject<Env> {
       return this.patchOnboarding((await request.json()) as Partial<OnboardingState>)
     }
 
+    // Daily spend ledger: one absolute entry per conversation per day, so a
+    // retried report overwrites instead of double counting.
+    if (url.pathname === "/usage" && request.method === "POST") {
+      const body = (await request.json()) as {
+        conversationID?: string
+        date?: string
+        costUSD?: number
+        input?: number
+        output?: number
+      }
+      if (!body.conversationID || !body.date) {
+        return Response.json({ error: "conversationID and date are required" }, { status: 400 })
+      }
+      await this.ctx.storage.put(`usage:${body.date}:${body.conversationID}`, {
+        costUSD: Number(body.costUSD ?? 0) || 0,
+        input: Number(body.input ?? 0) || 0,
+        output: Number(body.output ?? 0) || 0,
+        updatedAt: Date.now(),
+      })
+      return Response.json({ ok: true })
+    }
+
+    if (url.pathname === "/usage/today" && request.method === "GET") {
+      const date = new Date().toISOString().slice(0, 10)
+      const entries = await this.ctx.storage.list<{ costUSD: number; input: number; output: number }>({
+        prefix: `usage:${date}:`,
+      })
+      let costUSD = 0
+      let input = 0
+      let output = 0
+      for (const entry of entries.values()) {
+        costUSD += entry.costUSD
+        input += entry.input
+        output += entry.output
+      }
+      return Response.json({ date, costUSD, input, output, conversations: entries.size })
+    }
+
     // Secrets are encrypted with the CHS vault. Values never leave the DO
     // unless a trusted caller asks for a specific key by name.
     if (url.pathname === "/secrets" && request.method === "GET") {
@@ -90,8 +128,12 @@ export class Settings extends DurableObject<Env> {
   async current(): Promise<HarnessSettings> {
     const stored = await this.ctx.storage.get<HarnessSettings>("settings")
     const settings = stored ?? defaultSettings(this.env)
-    // Records written before onboarding existed have no field; fill it in.
-    return settings.onboarding ? settings : { ...settings, onboarding: {} }
+    // Records written before these fields existed need defaults filled in.
+    return {
+      ...settings,
+      onboarding: settings.onboarding ?? {},
+      dailyBudgetUSD: settings.dailyBudgetUSD ?? 0,
+    }
   }
 
   /** Merge onboarding metadata without bumping the settings version (no restart). */

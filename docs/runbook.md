@@ -1,26 +1,41 @@
 # Runbook — Aboiteau
 
-Operational notes for the current single-tenant harness. Tenant and onboarding procedures arrive in R2.
+Operational notes for the current single-tenant harness.
 
 ## Deploy
+
+After deploying an image change, long-lived Durable Objects and their containers
+keep the code and image they were created with. Current conversations must be
+recycled before they pick up new container routes:
+
+```sh
+curl -X POST https://<worker>/api/conversations/<key>/recycle \
+  -H "authorization: Bearer $TOKEN"
+```
+
+A Durable Object's own code updates only when Cloudflare evicts it; for a change
+to DO logic, create a new conversation key (or wait for eviction). `/recycle`
+keeps state; the onboarding `/api/onboarding/reset` also clears state.
 
 | Change | Command | Notes |
 |---|---|---|
 | Worker code | `bunx wrangler deploy --containers-rollout=none` | Live immediately; container image untouched |
-| Container image | push to `main` with Workers Builds connected | Builds, publishes, rolls out the image |
-| Both | `bunx wrangler deploy` | Requires a local Docker-compatible engine; not available on this machine |
+| Container image | `bun run deploy` | Builds, publishes and rolls out; needs Docker Desktop running |
 
 Secrets:
 
 ```sh
 bunx wrangler secret put API_TOKEN
+bunx wrangler secret put VAULT_MASTER_KEY        # 64 hex characters
+bunx wrangler secret put GITHUB_CLIENT_ID
+bunx wrangler secret put GITHUB_CLIENT_SECRET
 bunx wrangler secret put SLACK_SIGNING_SECRET   # optional
 bunx wrangler secret put SLACK_BOT_TOKEN        # optional
 bunx wrangler secret put SLACK_BOT_USER_ID      # optional
 ```
 
-The deployed token is kept at `~/.config/cf-opencode/api-token` (0600). Treat it as a shared admin
-credential until R1-6 replaces it with per-tenant keys.
+The local API token is kept in the gitignored `.dev.vars` at the repo root (0600). Treat it as a shared
+admin credential until onboarding grows real users.
 
 ## Health checks
 
@@ -74,6 +89,35 @@ performed once.
 Provider credentials and the GitHub token are stored in the Settings Durable Object through
 `@chester-hill-solutions/vault`, encrypted with `VAULT_MASTER_KEY`. They never appear in
 `GET /api/settings`.
+
+## Usage and budget
+
+`GET /api/usage` returns today's spend, tokens and the configured budget:
+
+```json
+{"date":"2026-11-06","costUSD":0.42,"input":120000,"output":8000,"conversations":2,"budgetUSD":5}
+```
+
+Each conversation records `session.usage.updated` from OpenCode's event stream
+(`session.text.*`, `session.usage.updated`, `session.execution.*`) as steps run,
+then reports the absolute daily total to the Settings Durable Object. The ledger
+keeps one entry per conversation per day, so a retried report overwrites instead
+of double counting. `usage` also appears on the conversation state, and
+`usageError` explains a refresh that failed.
+
+Metering depends on the warm event stream (`streaming: true`). If the stream
+cannot attach, turns still run via polling but usage is not recorded; the debug
+endpoint shows the stream state and event counts:
+
+```sh
+curl -s -H "authorization: Bearer $TOKEN" \
+  https://<worker>/api/conversations/<key>/debug
+```
+
+Set `dailyBudgetUSD` in settings (0 disables). Once today's total reaches it,
+`POST /api/conversations/<key>/messages` returns `429` with
+`{"error":"daily budget reached","spentUSD":…}`. Queued messages admitted
+before the cap are still allowed to run.
 
 ## Lifecycle phases
 

@@ -91,4 +91,21 @@ describe("validateSettings", () => {
     expect(result.ok).toBe(true)
     if (result.ok) expect(result.value.onboarding).toEqual({})
   })
+
+  test("defaults to no spending budget", () => {
+    expect(base.dailyBudgetUSD).toBe(0)
+  })
+
+  test("accepts a daily budget and keeps it across saves", () => {
+    const withBudget = { ...base, dailyBudgetUSD: 12.5 }
+    const result = validateSettings({ streaming: false }, withBudget)
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value.dailyBudgetUSD).toBe(12.5)
+  })
+
+  test("rejects an invalid daily budget", () => {
+    for (const value of [-1, Number.NaN, 1e9, "5"]) {
+      expect(validateSettings({ dailyBudgetUSD: value }, base).ok).toBe(false)
+    }
+  })
 })

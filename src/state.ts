@@ -70,6 +70,10 @@ export interface ConversationState {
   checkpointSize?: number
   /** The terminal error of the last turn, kept for status output. */
   lastTurnError?: string
+  /** Today's spend for this conversation, as reported by OpenCode. */
+  usage?: { date: string; costUSD: number; input: number; output: number }
+  /** Why the last usage refresh failed, for operators. */
+  usageError?: string
   /** Slack event ids already handled (dedupe). */
   seen: string[]
   /** Pending permission requests: requestID -> sessionID. */

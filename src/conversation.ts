@@ -30,6 +30,7 @@ import { retryAfterSeconds } from "./backoff"
 import { logEvent } from "./log"
 import type { HarnessSettings } from "./settings"
 import { staleAction } from "./lifecycle"
+import { budgetExceeded } from "./budget"
 import { GITHUB_TOKEN_KEY } from "./vault"
 
 /** The fields of a pending permission the harness forwards. */
@@ -88,6 +89,10 @@ export class Conversation extends DurableObject<Env> {
   private opencodePort?: ContainerPort
   /** Password for the current OpenCode server process. */
   private opencodePassword?: string
+  /** Event names seen on the warm stream, for diagnostics. */
+  private seenEvents = new Map<string, number>()
+  /** Last state of the warm stream: opened, an error, or idle. */
+  private streamState = "idle"
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
@@ -105,6 +110,15 @@ export class Conversation extends DurableObject<Env> {
     if (url.pathname === "/health") return Response.json({ ok: true })
     if (url.pathname.startsWith("/onboarding")) return this.onOnboarding(url.pathname, request)
     if (url.pathname === "/reset" && request.method === "POST") return this.onReset()
+    if (url.pathname === "/recycle" && request.method === "POST") return this.onRecycle()
+    if (url.pathname === "/debug" && request.method === "GET") {
+      return Response.json({
+        streamState: this.streamState,
+        streaming: this.streaming,
+        ready: this.ready,
+        events: Object.fromEntries(this.seenEvents),
+      })
+    }
     return new Response("not found", { status: 404 })
   }
 
@@ -125,6 +139,15 @@ export class Conversation extends DurableObject<Env> {
     }
 
     const prompt = input.user ? `${input.user}: ${text}` : text
+
+    const spent = await this.budgetBlocked()
+    if (spent !== undefined) {
+      return Response.json(
+        { ok: false, error: "daily budget reached", spentUSD: spent },
+        { status: 429 },
+      )
+    }
+
     if (!(await this.claimAdmission())) {
       const queued = await this.enqueue(prompt, undefined)
       if (!queued) return Response.json({ ok: false, error: "busy" }, { status: 503 })
@@ -215,6 +238,22 @@ export class Conversation extends DurableObject<Env> {
     this.opencodePort = undefined
     this.opencodePassword = undefined
     await this.ctx.storage.deleteAll()
+    return Response.json({ ok: true })
+  }
+
+  /**
+   * Recycle the container so the next call starts the current image. State is
+   * kept: this is what a long-lived conversation needs after an image deploy.
+   */
+  private async onRecycle(): Promise<Response> {
+    try {
+      await this.ctx.container?.destroy()
+    } catch {
+      /* already stopped */
+    }
+    this.ready = false
+    this.opencodePort = undefined
+    this.opencodePassword = undefined
     return Response.json({ ok: true })
   }
 
@@ -531,23 +570,50 @@ export class Conversation extends DurableObject<Env> {
     try {
       const port = await this.ensureReady()
       const res = await port.fetch("http://container/api/event", {
-        headers: { accept: "text/event-stream" },
+        headers: {
+          accept: "text/event-stream",
+          ...(this.opencodePassword ? { authorization: basicAuth(this.opencodePassword) } : {}),
+        },
         signal: controller.signal,
       })
-      if (!res.ok || !res.body) return
+      if (!res.ok || !res.body) {
+        this.streamState = `http ${res.status}`
+        return
+      }
+      this.streamState = "opened"
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       const parse = createSseParser((message) => {
-        if (message.event === "session.execution.succeeded") void this.pumpOnce()
-        if (message.event === "session.execution.failed") void this.pumpOnce()
-        if (message.event === "session.execution.interrupted") void this.pumpOnce()
+        // OpenCode's stream may name frames `message` and put the type in the
+        // JSON payload, so prefer the payload's `type` when present.
+        let parsed: { type?: string } | undefined
+        if (message.data) {
+          try {
+            parsed = JSON.parse(message.data) as { type?: string }
+          } catch {
+            parsed = undefined
+          }
+        }
+        const name = message.event && message.event !== "message" ? message.event : parsed?.type
+        if (!name) return
+        this.seenEvents.set(name, (this.seenEvents.get(name) ?? 0) + 1)
+        if (name === "session.execution.succeeded") void this.pumpOnce()
+        if (name === "session.execution.failed") void this.pumpOnce()
+        if (name === "session.execution.interrupted") void this.pumpOnce()
+        if (name === "session.usage.updated" && message.data) {
+          this.ctx.waitUntil(this.recordUsage(message.data, "replace"))
+        }
+        if (name === "session.usage.recorded" && message.data) {
+          this.ctx.waitUntil(this.recordUsage(message.data, "add"))
+        }
       })
       for (;;) {
         const { done, value } = await reader.read()
         if (done) break
         parse(decoder.decode(value, { stream: true }))
       }
-    } catch {
+    } catch (error) {
+      this.streamState = errorMessage(error)
       /* fall back to the alarm pump */
     } finally {
       clearTimeout(timeout)
@@ -642,6 +708,62 @@ export class Conversation extends DurableObject<Env> {
     await this.store.advance("idle")
   }
 
+  /**
+   * Record spend reported by OpenCode. `session.usage.updated` carries the
+   * session's cumulative totals (replace); `session.usage.recorded` describes
+   * one metered step (add). Both feed today's conversation total and ledger.
+   */
+  private async recordUsage(raw: string, mode: "replace" | "add"): Promise<void> {
+    try {
+      const parsed = JSON.parse(raw) as {
+        data?: { cost?: number; tokens?: { input?: number; output?: number } }
+        cost?: number
+        tokens?: { input?: number; output?: number }
+      }
+      const payload = parsed.data ?? parsed
+      const cost = Number(payload.cost ?? 0) || 0
+      const input = Number(payload.tokens?.input ?? 0) || 0
+      const output = Number(payload.tokens?.output ?? 0) || 0
+      if (cost === 0 && input === 0 && output === 0) return
+      const date = new Date().toISOString().slice(0, 10)
+      const state = await this.store.get()
+      const base =
+        state.usage?.date === date ? state.usage : { date, costUSD: 0, input: 0, output: 0 }
+      const usage =
+        mode === "replace"
+          ? { date, costUSD: cost, input, output }
+          : {
+              date,
+              costUSD: base.costUSD + cost,
+              input: base.input + input,
+              output: base.output + output,
+            }
+      await this.store.patch({ usage, usageError: undefined })
+      await this.env.SETTINGS.getByName("global").fetch("https://settings/usage", {
+        method: "POST",
+        body: JSON.stringify({ conversationID: this.ctx.id.toString(), ...usage }),
+      })
+    } catch (error) {
+      await this.store.patch({ usageError: errorMessage(error) }).catch(() => {})
+    }
+  }
+
+  /** Spend so far today, or undefined when the budget is disabled or unreadable. */
+  private async budgetBlocked(): Promise<number | undefined> {
+    const settings = await this.settings().catch(() => undefined)
+    const budget = settings?.dailyBudgetUSD ?? 0
+    if (!Number.isFinite(budget) || budget <= 0) return undefined
+    try {
+      const response = await this.env.SETTINGS.getByName("global").fetch("https://settings/usage/today")
+      if (!response.ok) return undefined
+      const usage = (await response.json()) as { costUSD?: number }
+      const spent = Number(usage.costUSD ?? 0)
+      return budgetExceeded(spent, budget) ? spent : undefined
+    } catch {
+      return undefined
+    }
+  }
+
   /** Alarm fallback: poll while a stream is not covering the run. */
   async alarm(): Promise<void> {
     try {
@@ -730,7 +852,7 @@ export class Conversation extends DurableObject<Env> {
       number === OPENCODE_PORT && this.opencodePassword
         ? { authorization: basicAuth(this.opencodePassword) }
         : undefined
-    for (let attempt = 0; attempt < 100; attempt++) {
+    for (let attempt = 0; attempt < 300; attempt++) {
       try {
         const res = await port.fetch(`http://container${path}`, {
           headers,
@@ -753,6 +875,9 @@ export class Conversation extends DurableObject<Env> {
       this.consecutiveFailures = 0
       return result
     } catch (error) {
+      // A cold start that outlasts the wait is slow, not wedged: do not count
+      // it as a failure or recycle the container out from under itself.
+      if (error instanceof Error && error.message.includes("did not become ready")) throw error
       this.consecutiveFailures++
       this.invalidateOpenCode()
       // Two consecutive failures: assume the container is wedged and recycle it.
@@ -851,7 +976,7 @@ export class Conversation extends DurableObject<Env> {
     const startedAt = Date.now()
     const started = await control.fetch("http://container/start", {
       method: "POST",
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(120_000),
     })
     if (!started.ok) throw new Error(`container start failed: ${await started.text()}`)
     const startedBody = (await started.json()) as { password?: string }

@@ -113,6 +113,16 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return healthCheck(env)
   }
 
+  if (parts[1] === "usage" && request.method === "GET") {
+    const [today, settings] = await Promise.all([
+      settingsDo(env, "/usage/today"),
+      settingsDo(env, "/get"),
+    ])
+    const usage = (await today.json()) as Record<string, unknown>
+    const current = (await settings.json()) as { dailyBudgetUSD?: number }
+    return Response.json({ ...usage, budgetUSD: current.dailyBudgetUSD ?? 0 })
+  }
+
   if (parts[1] === "models" && request.method === "GET") {
     return Response.json({ models: MODEL_CATALOG, recommended: recommendModel().ref })
   }
@@ -165,6 +175,14 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
 
   if (request.method === "GET" && suffix.length === 1 && suffix[0] === "context") {
     return conversation.fetch("https://conversation/context")
+  }
+
+  if (request.method === "GET" && suffix.length === 1 && suffix[0] === "debug") {
+    return conversation.fetch("https://conversation/debug")
+  }
+
+  if (request.method === "POST" && suffix.length === 1 && suffix[0] === "recycle") {
+    return conversation.fetch("https://conversation/recycle", { method: "POST" })
   }
 
   if (request.method === "GET" && suffix.length === 0) {

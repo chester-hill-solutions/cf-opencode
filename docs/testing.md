@@ -5,8 +5,9 @@ Three layers, plus measurements.
 ## 1. Unit — `bun test tests`
 
 Pure logic, no runtime: signature verification, conversation keys, permission
-rules, conversation state, message/reply helpers, SSE formatting, port fetch.
-37 tests, milliseconds.
+rules, conversation state, message/reply helpers, SSE formatting, port fetch, and the
+UI kit registry/export/theme contract.
+102 tests, milliseconds.
 
 ## 2. Integration — `bun run test:workers`
 
@@ -21,7 +22,7 @@ via Miniflare. Covers:
 - SSE content type
 - interactivity rejection for unknown actions
 
-9 tests. No Docker and no container involved.
+30 tests. No Docker and no container involved.
 
 ## 3. End-to-end — container + deployed Worker
 

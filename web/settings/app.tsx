@@ -137,7 +137,7 @@ export function SettingsApp() {
             <p className="eyebrow">Your workspace. Your rules.</p>
             <h1>Settings</h1>
             <p className="lead">Choose how your coding agent works.</p>
-            <nav className="heading-spectrum" aria-label="Settings sections">
+            <nav className="heading-spectrum" aria-label="Jump to a settings section">
               {sections.map((section) => (
                 <a key={section.id} href={"#" + section.id} data-accent={section.accent}>
                   <span className="heading-spectrum-chip" aria-hidden="true">
@@ -350,6 +350,22 @@ export function SettingsApp() {
                         {fieldError("pollSeconds")}
                       </p>
                     )}
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="dailyBudgetUSD">Daily budget</FieldLabel>
+                    <Input
+                      id="dailyBudgetUSD"
+                      type="number"
+                      inputMode="decimal"
+                      min={0}
+                      step="0.01"
+                      value={draft.dailyBudgetUSD}
+                      onChange={(event) => update("dailyBudgetUSD", event.target.value)}
+                      aria-describedby="budget-hint"
+                    />
+                    <FieldDescription id="budget-hint">
+                      USD per day. 0 disables the cap. New turns are rejected once it is reached.
+                    </FieldDescription>
                   </Field>
                   <div className="streaming-field">
                     <Checkbox

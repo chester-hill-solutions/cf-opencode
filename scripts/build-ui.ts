@@ -11,16 +11,29 @@ await mkdir(resolve(output, "brand"), { recursive: true })
 await mkdir(resolve(output, "onboarding"), { recursive: true })
 await mkdir(resolve(output, "ui-kit"), { recursive: true })
 
-const build = await Bun.build({
-  entrypoints: [resolve(root, "web/settings.tsx"), resolve(root, "web/ui-kit.tsx"), resolve(root, "web/onboarding.tsx")],
-  outdir: resolve(output, "assets"),
-  target: "browser",
-  format: "esm",
-  splitting: true,
-  minify: true,
-  define: { "process.env.NODE_ENV": JSON.stringify("production") },
-})
-if (!build.success) throw new AggregateError(build.logs, "UI JavaScript build failed")
+const entries = [
+  resolve(root, "web/settings.tsx"),
+  resolve(root, "web/ui-kit.tsx"),
+  resolve(root, "web/onboarding.tsx"),
+]
+// One bundle per page: a shared chunk would make the settings page download the
+// gallery's chart, carousel and overlay dependencies.
+const builds = await Promise.all(
+  entries.map((entrypoint) =>
+    Bun.build({
+      entrypoints: [entrypoint],
+      outdir: resolve(output, "assets"),
+      target: "browser",
+      format: "esm",
+      splitting: false,
+      minify: true,
+      define: { "process.env.NODE_ENV": JSON.stringify("production") },
+    })
+  )
+)
+for (const build of builds) {
+  if (!build.success) throw new AggregateError(build.logs, "UI JavaScript build failed")
+}
 
 const css = Bun.spawnSync(
   [

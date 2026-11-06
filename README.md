@@ -104,7 +104,7 @@ by [`@chester-hill-solutions/vault`](vendor/chester-hill-solutions/vault); see
 
 The page uses the approved A mark, warm paper surfaces, ultramarine actions and a restrained screenprint accent. The save bar stays visible; loading, saved, unsaved, rejected-token, catalogue fallback and network-error states are explicit. Failed saves retain the draft. Reloading is disabled while edits are unsaved.
 
-`bun run build:ui` builds React and Tailwind assets into `public/`; Wrangler runs it automatically before development and deployment. `bun run dev:ui` starts a frontend preview at `http://127.0.0.1:4173`. Set `ABOITEAU_API_ORIGIN` to proxy a running API. Run `bun run test:ui` for browser workflow and responsive checks.
+`bun run build:ui` builds React and Tailwind assets into `public/`; Wrangler runs it automatically before development and deployment. `bun run dev:ui` starts a frontend preview at `http://127.0.0.1:4173`. Set `ABOITEAU_API_ORIGIN` to proxy a running API. `bun test tests` also checks the UI kit registry, exports and theme contract.
 
 Sane defaults:
 
@@ -155,7 +155,7 @@ Apple `container` needs macOS 26+ on Apple silicon. `wrangler dev` with containe
 
 ## Testing and measurements
 
-- `bun test tests` — 66 unit tests (signature, conversation keys, permissions, state, SSE formatting, retry/backoff, helpers).
+- `bun test tests` — 102 unit tests (signature, conversation keys, permissions, state, SSE formatting, retry/backoff, helpers, UI kit registry).
 - `bun run test:workers` — 18 integration tests in workerd (Worker surface, DO state, Slack signature/routing, SSE, concurrency and admission-queue regressions, a latency guard).
 - `bun run check:config` — fails CI when the prod and test Wrangler configs drift on bindings, exports or vars.
 - `bench/measure.ts` — deployed Worker/SSE/turn latency.

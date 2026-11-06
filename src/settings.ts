@@ -20,6 +20,8 @@ export interface HarnessSettings {
   pollSeconds: number
   /** Read OpenCode's event stream while the container is warm. */
   streaming: boolean
+  /** Harness-wide daily spend cap in USD; 0 disables enforcement. */
+  dailyBudgetUSD: number
   permissions: PermissionLists
   /** First-run connection state; written by the onboarding API, never by PUT. */
   onboarding: OnboardingState
@@ -93,6 +95,7 @@ export function defaultSettings(env: SettingsDefaults): HarnessSettings {
     model: env.OPENCODE_MODEL ?? "opencode/deepseek-v4.1-flash",
     pollSeconds: Number(env.POLL_SECONDS ?? DEFAULT_POLL_SECONDS) || DEFAULT_POLL_SECONDS,
     streaming: true,
+    dailyBudgetUSD: 0,
     permissions: { allow: DEFAULT_ALLOW, ask: DEFAULT_ASK, deny: DEFAULT_DENY },
     onboarding: {},
     version: 1,
@@ -132,6 +135,16 @@ export function validateSettings(
   const streaming = body.streaming ?? base.streaming
   if (typeof streaming !== "boolean") return { ok: false, error: "streaming must be a boolean" }
 
+  const dailyBudgetUSD = body.dailyBudgetUSD ?? base.dailyBudgetUSD
+  if (
+    typeof dailyBudgetUSD !== "number" ||
+    !Number.isFinite(dailyBudgetUSD) ||
+    dailyBudgetUSD < 0 ||
+    dailyBudgetUSD > 100_000
+  ) {
+    return { ok: false, error: "dailyBudgetUSD must be a number between 0 and 100000" }
+  }
+
   const permissionsInput = (body.permissions ?? base.permissions) as Record<string, unknown>
   const permissions: PermissionLists = { allow: [], ask: [], deny: [] }
   for (const key of ["allow", "ask", "deny"] as const) {
@@ -155,6 +168,7 @@ export function validateSettings(
       model,
       pollSeconds,
       streaming,
+      dailyBudgetUSD,
       permissions,
       onboarding: base.onboarding ?? {},
       version: base.version,

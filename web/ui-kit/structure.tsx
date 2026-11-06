@@ -1,6 +1,9 @@
 import {
   AspectRatio,
   Badge,
+  Button,
+  Direction,
+  Input,
   Marker,
   PageHeader,
   PageSection,
@@ -107,6 +110,16 @@ export function Structure() {
             </ResizablePanel>
           </ResizablePanelGroup>
         </div>
+      </Demo>
+
+      <Demo name="Direction" note="Locale drives DOM direction and keyboard behaviour." wide>
+        <Direction locale="ar" className="w-full">
+          <Row>
+            <Button variant="outline">إعدادات</Button>
+            <Input placeholder="اسم المستودع" />
+            <Badge variant="secondary">تجريبي</Badge>
+          </Row>
+        </Direction>
       </Demo>
 
       <Demo name="Row rhythm" wide surface={false}>
