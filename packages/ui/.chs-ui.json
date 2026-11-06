@@ -1,0 +1,22 @@
+{
+  "version": "0.3.1",
+  "componentsDir": "src/components/ui",
+  "libDir": "src/lib",
+  "hooksDir": "src/hooks",
+  "stylesDir": "src/styles",
+  "themeFile": "foundation.css",
+  "components": [
+    "alert",
+    "badge",
+    "button",
+    "card",
+    "checkbox",
+    "field",
+    "input",
+    "label",
+    "native-select",
+    "separator",
+    "skeleton",
+    "textarea"
+  ]
+}

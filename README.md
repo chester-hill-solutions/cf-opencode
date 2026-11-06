@@ -85,13 +85,17 @@ Without the Slack secrets the Slack routes return 503 and the harness is HTTP-on
 
 ## Settings UI
 
-`/` serves a single-file admin panel (static asset, no build step):
+`/` serves the Aboiteau settings page, built from the dedicated [`@aboiteau/ui`](packages/ui/README.md) package. `/ui-kit/` is the live component and brand gallery.
 
 - workspace repo + branch, model, poll seconds, streaming toggle
 - **model selector**: a curated catalogue grouped by provider, with a recommended default
   (`opencode/deepseek-v4.1-flash`) and a `Custom…` option for anything the deployment exposes
 - permission lists: allow / ask / deny shell patterns (one per line)
 - API token entry, `Load settings`, `Save settings`
+
+The page uses the approved A mark, warm paper surfaces, ultramarine actions and a restrained screenprint accent. The save bar stays visible; loading, saved, unsaved, rejected-token, catalogue fallback and network-error states are explicit. Failed saves retain the draft. Reloading is disabled while edits are unsaved.
+
+`bun run build:ui` builds React and Tailwind assets into `public/`; Wrangler runs it automatically before development and deployment. `bun run dev:ui` starts a frontend preview at `http://127.0.0.1:4173`. Set `ABOITEAU_API_ORIGIN` to proxy a running API. Run `bun run test:ui` for browser workflow and responsive checks.
 
 Sane defaults:
 

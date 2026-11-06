@@ -5,24 +5,36 @@
   "type": "module",
   "description": "OpenCode harness on Cloudflare: a Durable Object per conversation, local S3 (stow-s3) for the hot workspace, R2 for cold checkpoints, and an HTTP/SSE core with pluggable adapters.",
   "license": "MIT",
+  "workspaces": ["packages/ui"],
   "scripts": {
     "dev": "wrangler dev",
+    "build:ui": "bun scripts/build-ui.ts",
+    "dev:ui": "bun scripts/dev-ui.ts",
     "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.tests.json",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.tests.json && tsc -p tsconfig.ui.json",
     "check:config": "bun scripts/check-config.mjs",
     "test": "bun test tests",
     "test:workers": "vitest run",
+    "test:ui": "bun run build:ui && bun scripts/test-ui.ts",
     "bench": "bun run bench/measure.ts",
     "bench:container": "bash bench/container.sh"
   },
   "dependencies": {
-    "@opencode/client": "latest"
+    "@aboiteau/ui": "workspace:*",
+    "@opencode/client": "latest",
+    "react": "19",
+    "react-dom": "19"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.6.0",
     "@cloudflare/workers-types": "^4.20251105.0",
+    "@fontsource-variable/dm-sans": "^5.3.0",
+    "@tailwindcss/cli": "^4.3.5",
     "@types/bun": "^1.4.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "playwright": "^1.65.0",
+    "tailwindcss": "^4.3.5",
     "typescript": "^5.9.0",
     "vitest": "^4.1.0",
     "wrangler": "^4.105.0"

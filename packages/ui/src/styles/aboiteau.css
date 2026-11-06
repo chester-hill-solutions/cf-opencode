@@ -1,0 +1,251 @@
+@import "./foundation.css";
+
+/* Aboiteau owns appearance. CHS source owns control behaviour and semantics. */
+:root,
+:root:not([data-style]),
+[data-style="aboiteau"] {
+  color-scheme: light;
+  --abo-ultramarine: #1746d1;
+  --abo-vermilion: #f04b32;
+  --abo-yellow: #f7d447;
+  --abo-paper: #f6eedd;
+  --abo-ink: #212722;
+  --abo-pink: #ed5798;
+  --style-font-brand: "DM Sans Variable", "Arial", sans-serif;
+  --style-font-heading: "DM Sans Variable", "Arial", sans-serif;
+  --style-font-sans: "DM Sans Variable", "Arial", sans-serif;
+  --style-font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --background: #f8f4ec;
+  --foreground: var(--abo-ink);
+  --card: #fffdf8;
+  --card-foreground: var(--abo-ink);
+  --popover: var(--card);
+  --popover-foreground: var(--foreground);
+  --primary: var(--abo-ultramarine);
+  --primary-foreground: #ffffff;
+  --secondary: #eee9de;
+  --secondary-foreground: var(--abo-ink);
+  --muted: #eee9de;
+  --muted-foreground: #62665f;
+  --accent: #e9edfc;
+  --accent-foreground: var(--abo-ultramarine);
+  --destructive: #b72e22;
+  --destructive-foreground: #ffffff;
+  --success: #276047;
+  --success-foreground: #ffffff;
+  --warning: #7b590c;
+  --warning-foreground: var(--abo-ink);
+  --info: var(--abo-ultramarine);
+  --info-foreground: #ffffff;
+  --border: #d8d5ca;
+  --input: #858a80;
+  --ring: var(--abo-ultramarine);
+  --ui-primary-text: var(--primary);
+  --ui-success-text: var(--success);
+  --ui-warning-text: var(--warning);
+  --ui-destructive-text: var(--destructive);
+  --ui-info-text: var(--info);
+  --radius: 0.5rem;
+  --ui-control-height: 2.875rem;
+  --font-size-base: 1rem;
+  --font-size-sm: 0.875rem;
+  --font-size-xs: 0.75rem;
+}
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 7rem;
+  scroll-padding-bottom: 8rem;
+}
+body {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.5;
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+a {
+  color: var(--primary);
+  text-underline-offset: 0.2em;
+}
+button,
+input,
+select,
+textarea,
+a,
+summary {
+  -webkit-tap-highlight-color: transparent;
+}
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 4px;
+}
+[hidden] {
+  display: none !important;
+}
+
+.abo-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+  color: var(--foreground);
+}
+.abo-logo {
+  display: block;
+  width: 2.75rem;
+  height: 2.375rem;
+  color: var(--primary);
+  flex: 0 0 auto;
+}
+.abo-wordmark {
+  font-family: var(--style-font-brand);
+  font-size: 2rem;
+  font-weight: 850;
+  letter-spacing: -0.07em;
+  line-height: 1;
+}
+.abo-ink-field {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+[data-slot="button"] {
+  min-height: var(--ui-control-height);
+  padding-inline: 1.125rem;
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+[data-slot="button"][data-variant="outline"] {
+  border-color: var(--input);
+  background: var(--card);
+}
+[data-slot="button"][data-disabled],
+[data-slot="button"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+[data-slot="input"],
+[data-slot="native-select"],
+[data-slot="textarea"] {
+  min-height: var(--ui-control-height);
+  border-color: var(--input);
+  background: var(--card);
+  padding: 0.6875rem 0.875rem;
+  font-size: 1rem;
+  line-height: 1.5;
+  box-shadow: none;
+}
+[data-slot="native-select"] {
+  padding-inline-end: 2.5rem;
+}
+[data-slot="textarea"] {
+  min-height: 11rem;
+  resize: vertical;
+  field-sizing: fixed;
+  font: 0.8125rem/1.8 var(--style-font-mono);
+}
+[data-slot="input"]::placeholder,
+[data-slot="textarea"]::placeholder {
+  color: var(--muted-foreground);
+}
+[data-slot="input"]:disabled,
+[data-slot="native-select"]:disabled,
+[data-slot="textarea"]:disabled {
+  background: var(--muted);
+  opacity: 0.65;
+}
+[data-slot="field"] {
+  gap: 0.5rem;
+}
+[data-slot="field-label"] {
+  font-size: 0.875rem;
+  font-weight: 700;
+  line-height: 1.5;
+}
+[data-slot="field-description"] {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+}
+[data-slot="checkbox"] {
+  min-height: 2.75rem;
+  gap: 0.75rem;
+  font-size: 0.9375rem;
+}
+[data-slot="checkbox-indicator"] {
+  width: 1.25rem;
+  height: 1.25rem;
+  border-color: var(--input);
+  background: var(--card);
+}
+[data-slot="checkbox"][data-selected] [data-slot="checkbox-indicator"] {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+}
+[data-slot="status"] {
+  height: auto;
+  min-height: 1.875rem;
+  max-width: 100%;
+  padding: 0.25rem 0.625rem;
+  border-radius: 0.25rem;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--muted-foreground);
+  font: 600 0.75rem/1.4 var(--style-font-sans);
+  white-space: normal;
+}
+[data-slot="status"][data-tone="success"] {
+  color: var(--success);
+  background: #edf4ec;
+  border-color: #bdd0bd;
+}
+[data-slot="status"][data-tone="warning"] {
+  color: var(--abo-ink);
+  background: var(--abo-yellow);
+  border-color: #a78a2c;
+}
+[data-slot="status"][data-tone="error"] {
+  color: var(--destructive);
+  background: #fff0ea;
+  border-color: #dcb0a4;
+}
+[data-slot="status"][data-tone="busy"] {
+  color: var(--primary);
+  background: #e9edfc;
+  border-color: #b7c4f0;
+}
+[data-slot="alert"] {
+  border-width: 1px;
+  border-style: solid;
+  line-height: 1.6;
+}
+[data-slot="alert-title"] {
+  font-weight: 700;
+}
+[data-slot="alert-description"] {
+  color: inherit;
+  font-size: 0.875rem;
+}
+[data-slot="skeleton"] {
+  background: var(--muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

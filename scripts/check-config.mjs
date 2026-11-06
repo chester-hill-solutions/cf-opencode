@@ -68,6 +68,7 @@ const exportShape = (config) =>
     .map((key) => `${key}:${config.exports[key].type}:${config.exports[key].storage ?? "-"}`)
 compare("exports shape", exportShape(prod), exportShape(test), problems)
 compare("assets.directory", prod.assets?.directory, test.assets?.directory, problems)
+compare("build", prod.build, test.build, problems)
 
 // Test-only bindings belong in vitest.config.ts, not in the test Wrangler file.
 compare("vars", Object.keys(prod.vars ?? {}).sort(), Object.keys(test.vars ?? {}).sort(), problems)

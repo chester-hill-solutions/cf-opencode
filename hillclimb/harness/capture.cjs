@@ -87,7 +87,7 @@ async function main() {
       return res.end("not found")
     }
     res.writeHead(200, {
-      "content-type": name.endsWith(".html") ? "text/html; charset=utf-8" : "application/octet-stream",
+      "content-type": ({ ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2" })[path.extname(name)] ?? "application/octet-stream",
     })
     res.end(fs.readFileSync(file))
   })
