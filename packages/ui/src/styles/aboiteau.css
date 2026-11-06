@@ -37,6 +37,19 @@
   --warning-foreground: var(--abo-ink);
   --info: var(--abo-ultramarine);
   --info-foreground: #ffffff;
+  --chart-1: var(--abo-ultramarine);
+  --chart-2: #276047;
+  --chart-3: #b5432e;
+  --chart-4: #8a6411;
+  --chart-5: #b23a72;
+  --sidebar: var(--card);
+  --sidebar-foreground: var(--foreground);
+  --sidebar-primary: var(--primary);
+  --sidebar-primary-foreground: var(--primary-foreground);
+  --sidebar-accent: #e9edfc;
+  --sidebar-accent-foreground: var(--abo-ultramarine);
+  --sidebar-border: var(--border);
+  --sidebar-ring: var(--ring);
   --border: #d8d5ca;
   --input: #858a80;
   --ring: var(--abo-ultramarine);
@@ -52,40 +65,42 @@
   --font-size-xs: 0.75rem;
 }
 
-html {
-  scroll-behavior: smooth;
-  scroll-padding-top: 7rem;
-  scroll-padding-bottom: 8rem;
-}
-body {
-  margin: 0;
-  font-size: 1rem;
-  line-height: 1.5;
-}
-button,
-input,
-select,
-textarea {
-  font: inherit;
-}
-a {
-  color: var(--primary);
-  text-underline-offset: 0.2em;
-}
-button,
-input,
-select,
-textarea,
-a,
-summary {
-  -webkit-tap-highlight-color: transparent;
-}
-:focus-visible {
-  outline: 2px solid var(--ring);
-  outline-offset: 4px;
-}
-[hidden] {
-  display: none !important;
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    scroll-padding-top: 7rem;
+    scroll-padding-bottom: 8rem;
+  }
+  body {
+    margin: 0;
+    font-size: 1rem;
+    line-height: 1.5;
+  }
+  button,
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+  a {
+    color: var(--primary);
+    text-underline-offset: 0.2em;
+  }
+  button,
+  input,
+  select,
+  textarea,
+  a,
+  summary {
+    -webkit-tap-highlight-color: transparent;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 4px;
+  }
+  [hidden] {
+    display: none !important;
+  }
 }
 
 .abo-brand {

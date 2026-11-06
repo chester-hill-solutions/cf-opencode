@@ -49,9 +49,25 @@ export interface ConversationState {
   /** Settings version the running container was configured with. */
   settingsVersion?: number
   /** One pending admission when the container could not start. */
-  queued?: { text: string; slack?: SlackTarget; attempts: number }
+  queued?: {
+    text: string
+    slack?: SlackTarget
+    attempts: number
+    /** When the next admission attempt is due. */
+    nextAttemptAt?: number
+    /** Why the last attempt failed, for operators. */
+    lastError?: string
+  }
   /** Fingerprint of the workspace at the last successful checkpoint. */
   checkpointFingerprint?: string
+  /** A checkpoint failed and has not been retried to success. */
+  checkpointPending?: boolean
+  /** Retry count for a pending checkpoint. */
+  checkpointAttempts?: number
+  /** Size of the last successful checkpoint, for cost tracking. */
+  checkpointSize?: number
+  /** The terminal error of the last turn, kept for status output. */
+  lastTurnError?: string
   /** Slack event ids already handled (dedupe). */
   seen: string[]
   /** Pending permission requests: requestID -> sessionID. */

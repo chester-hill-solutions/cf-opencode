@@ -494,3 +494,99 @@
     display: none;
   }
 }
+
+.catalog-section-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 1.5rem;
+}
+.catalog-section-heading h2 {
+  margin: 0;
+}
+.catalog-section-description {
+  max-width: 46rem;
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 0.875rem;
+  line-height: 1.6;
+}
+.component-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
+  align-items: start;
+}
+.component-demo {
+  display: grid;
+  min-width: 0;
+  gap: 0.5rem;
+}
+.component-demo-wide {
+  grid-column: 1 / -1;
+}
+.component-demo-header h3 {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.component-demo-header p {
+  margin: 0.15rem 0 0;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+.component-demo-surface {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+}
+.component-demo-surface > [data-slot="field"],
+.component-demo-surface > [data-slot="search-field"],
+.component-demo-surface > [data-slot="password-field"],
+.component-demo-surface > [data-slot="number-field"],
+.component-demo-surface > [data-slot="date-picker"],
+.component-demo-surface > [data-slot="date-range-picker"],
+.component-demo-surface > [data-slot="date-field"],
+.component-demo-surface > [data-slot="combobox"],
+.component-demo-surface > [data-slot="select"],
+.component-demo-surface > [data-slot="tag-input"],
+.component-demo-surface > [data-slot="file-upload"] {
+  flex: 1 1 14rem;
+}
+.specimen-stack {
+  display: grid;
+  min-width: 0;
+  width: 100%;
+  gap: 0.75rem;
+}
+@media (max-width: 52rem) {
+  .component-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.catalog-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  margin: 1.5rem 0 0;
+  padding: 1rem 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8125rem;
+}
+.catalog-nav a {
+  color: var(--muted-foreground);
+  text-decoration: none;
+}
+.catalog-nav a:hover {
+  color: var(--primary);
+}

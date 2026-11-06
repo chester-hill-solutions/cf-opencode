@@ -3,6 +3,7 @@ import { basicAuth, makeClient, portFetch, type ContainerPort } from "./opencode
 import {
   ConversationStore,
   type ConversationPhase,
+  type ConversationState,
   type SlackTarget,
   type Transport,
 } from "./state"
@@ -19,6 +20,7 @@ import {
   latestAssistantReply,
   turnFailure,
   type MessageInfo,
+  type TurnFailure,
 } from "./messages"
 import { formatSse, isSlowSubscriber, type ConversationEvent } from "./events"
 import { createSseParser } from "./sse"
@@ -27,6 +29,7 @@ import { withRetries } from "./retry"
 import { retryAfterSeconds } from "./backoff"
 import { logEvent } from "./log"
 import type { HarnessSettings } from "./settings"
+import { staleAction } from "./lifecycle"
 import { GITHUB_TOKEN_KEY } from "./vault"
 
 /** The fields of a pending permission the harness forwards. */
@@ -39,6 +42,9 @@ interface PermissionSummary {
 const OPENCODE_PORT = 4000
 const CONTROL_PORT = 4001
 const POLL_MS = 2000
+/** Delay before retrying a checkpoint that failed after a turn. */
+const CHECKPOINT_RETRY_MS = 30_000
+const CHECKPOINT_RETRY_LIMIT = 3
 
 /** R2 key holding the account's OpenCode state (config + provider credentials). */
 export const ACCOUNT_STATE_KEY = "account/state.tar.gz"
@@ -48,6 +54,8 @@ export interface MessageRequest {
   user?: string
   transport?: Transport
   slack?: SlackTarget
+  /** Optional client key; a retry with the same key is not a second turn. */
+  idempotencyKey?: string
 }
 
 export interface SlackEventRequest {
@@ -103,6 +111,16 @@ export class Conversation extends DurableObject<Env> {
   private async onMessage(input: MessageRequest): Promise<Response> {
     const text = input.text.trim()
     if (!text) return Response.json({ ok: false, error: "empty message" }, { status: 400 })
+
+    if (input.idempotencyKey) {
+      if (!/^[A-Za-z0-9:_-]{1,128}$/.test(input.idempotencyKey)) {
+        return Response.json({ ok: false, error: "invalid idempotencyKey" }, { status: 400 })
+      }
+      if (!(await this.store.claimEvent(`msg:${input.idempotencyKey}`))) {
+        const current = await this.store.get()
+        return Response.json({ ok: true, duplicate: true, sessionID: current.sessionID })
+      }
+    }
 
     const prompt = input.user ? `${input.user}: ${text}` : text
     if (!(await this.claimAdmission())) {
@@ -575,33 +593,7 @@ export class Conversation extends DurableObject<Env> {
       await this.pollPermissions(sessionID, pending)
 
       if (settled || failure) {
-        await this.store.advance("settling")
-        logEvent(failure ? "turn.failed" : "turn.settled", {
-          ...(state.runStartedAt ? { durationMs: Date.now() - state.runStartedAt } : {}),
-          ...(failure ? { error: failure.message.slice(0, 200) } : {}),
-          queued: Boolean(state.queued),
-        })
-        if (failure) {
-          const key = failureKey(failure)
-          if (key !== state.reportedError) {
-            await this.deliver({ type: "error", message: failure.message })
-            await this.store.patch({ reportedError: key })
-          }
-        }
-        if (reply && reply !== state.lastSlackReply) {
-          // At-least-once: persist only after delivery so a failed post is retried.
-          await this.deliverToSlack({ type: "assistant", text: reply })
-          await this.store.patch({ lastSlackReply: reply })
-        }
-        await this.deliver({ type: "settled" })
-        const saved = await this.checkpoint()
-        if (!saved && !failure) {
-          await this.deliver({ type: "error", message: "workspace checkpoint failed; this turn is not durable" })
-        }
-        if ((await this.store.get()).queued) {
-          await this.ctx.storage.setAlarm(Date.now() + 1000)
-        }
-        await this.store.advance("idle")
+        await this.finishTurn(state, reply, failure)
         return true
       }
       return false
@@ -610,15 +602,69 @@ export class Conversation extends DurableObject<Env> {
     }
   }
 
+  /**
+   * End-of-turn bookkeeping, shared by the poll path and the timeout guard.
+   * Persists only after delivery so a failed post is retried next time.
+   */
+  private async finishTurn(
+    state: ConversationState,
+    reply: string,
+    failure?: TurnFailure,
+  ): Promise<void> {
+    await this.store.advance("settling")
+    logEvent(failure ? "turn.failed" : "turn.settled", {
+      ...(state.runStartedAt ? { durationMs: Date.now() - state.runStartedAt } : {}),
+      ...(failure ? { error: failure.message.slice(0, 200) } : {}),
+      queued: Boolean(state.queued),
+    })
+    if (failure) {
+      const key = failureKey(failure)
+      if (key !== state.reportedError) {
+        await this.deliver({ type: "error", message: failure.message })
+        await this.store.patch({ reportedError: key, lastTurnError: failure.message })
+      }
+    }
+    if (reply && reply !== state.lastSlackReply) {
+      await this.deliverToSlack({ type: "assistant", text: reply })
+      await this.store.patch({ lastSlackReply: reply })
+    }
+    await this.deliver({ type: "settled" })
+    const saved = await this.checkpoint()
+    if (!saved && !failure) {
+      await this.deliver({
+        type: "error",
+        message: "workspace checkpoint failed; retrying in the background",
+      })
+    }
+    if ((await this.store.get()).queued) await this.ctx.storage.setAlarm(Date.now() + 1000)
+    await this.store.advance("idle")
+  }
+
   /** Alarm fallback: poll while a stream is not covering the run. */
   async alarm(): Promise<void> {
     try {
       const before = await this.store.get()
-      if ((before.phase ?? "idle") === "admitting" && !this.pumping) {
+      const action = staleAction(before, Date.now(), this.pumping)
+      if (action === "admission") {
         // The request that was admitting died with the previous DO instance.
         await this.store.advance("idle")
         logEvent("admission.stale")
+      } else if (action === "settlement") {
+        // A settle interrupted by a crash or deploy must not strand the DO.
+        logEvent("settlement.stale", {
+          ...(before.runStartedAt ? { durationMs: Date.now() - before.runStartedAt } : {}),
+        })
+        await this.store.advance("idle")
+      } else if (action === "timeout") {
+        // No terminal message and no error: abandon the turn so the container
+        // is not pinned forever.
+        logEvent("turn.timedout", {
+          ...(before.runStartedAt ? { durationMs: Date.now() - before.runStartedAt } : {}),
+        })
+        await this.finishTurn(before, before.lastReply ?? "", { message: "turn timed out" })
+        return
       }
+      if (await this.retryCheckpoint()) return
       if (await this.drainQueue()) return
       const settled = await this.pumpOnce()
       if (settled) return
@@ -824,13 +870,16 @@ export class Conversation extends DurableObject<Env> {
   private async enqueue(text: string, slack?: SlackTarget): Promise<boolean> {
     const state = await this.store.get()
     if (state.queued) return false
-    await this.store.patch({ queued: { text, ...(slack ? { slack } : {}), attempts: 0 } })
+    const nextAttemptAt = Date.now() + 5000
+    await this.store.patch({
+      queued: { text, ...(slack ? { slack } : {}), attempts: 0, nextAttemptAt },
+    })
     await this.store.advance("queued")
     logEvent("queue.enqueued", { transport: slack ? "slack" : "http" })
     if (slack) {
       await this.postChunked(slack.channel, "⏳ Container busy — queued; I'll retry shortly.", slack.replyTs).catch(() => {})
     }
-    await this.ctx.storage.setAlarm(Date.now() + 5000)
+    await this.ctx.storage.setAlarm(nextAttemptAt)
     return true
   }
 
@@ -861,7 +910,7 @@ export class Conversation extends DurableObject<Env> {
     } catch (err) {
       const attempts = queued.attempts + 1
       if (attempts >= 5) {
-        await this.store.patch({ queued: undefined })
+        await this.store.patch({ queued: undefined, lastTurnError: errorMessage(err) })
         await this.store.advance("idle")
         logEvent("queue.failed", { attempts })
         await this.deliver({ type: "error", message: `queued message could not start: ${errorMessage(err)}` })
@@ -874,7 +923,14 @@ export class Conversation extends DurableObject<Env> {
         }
         return false
       }
-      await this.store.patch({ queued: { ...queued, attempts } })
+      await this.store.patch({
+        queued: {
+          ...queued,
+          attempts,
+          lastError: errorMessage(err),
+          nextAttemptAt: Date.now() + Math.min(5000 * attempts, 30_000),
+        },
+      })
       await this.store.advance("queued")
       await this.ctx.storage.setAlarm(Date.now() + Math.min(5000 * attempts, 30_000))
       return false
@@ -883,6 +939,28 @@ export class Conversation extends DurableObject<Env> {
 
   private checkpointKey(): string {
     return `workspaces/${this.ctx.id.toString()}.tar.gz`
+  }
+
+  /** Retry a checkpoint that failed at settle time, with a bounded attempt count. */
+  private async retryCheckpoint(): Promise<boolean> {
+    const state = await this.store.get()
+    if (!state.checkpointPending) return false
+    if ((state.phase ?? "idle") !== "idle") return false
+    const attempts = state.checkpointAttempts ?? 0
+    if (attempts >= CHECKPOINT_RETRY_LIMIT) {
+      await this.store.patch({ checkpointPending: undefined, checkpointAttempts: undefined })
+      logEvent("checkpoint.abandoned", { attempts })
+      return false
+    }
+    const saved = await this.checkpoint()
+    if (saved) {
+      await this.store.patch({ checkpointPending: undefined, checkpointAttempts: undefined })
+      logEvent("checkpoint.recovered", { attempts })
+      return false
+    }
+    await this.store.patch({ checkpointAttempts: attempts + 1 })
+    logEvent("checkpoint.retry", { attempts: attempts + 1 })
+    return false
   }
 
   private async checkpoint(): Promise<boolean> {
@@ -915,21 +993,31 @@ export class Conversation extends DurableObject<Env> {
             await this.env.CHECKPOINTS.put(this.checkpointKey(), fixed.readable)
             await piping
             logEvent("checkpoint.saved", { bytes: counted.bytes() })
+            await this.store.patch({ checkpointSize: counted.bytes() })
           } else {
             // Older control servers streamed without a length.
             const bytes = await response.arrayBuffer()
             await this.env.CHECKPOINTS.put(this.checkpointKey(), bytes)
             logEvent("checkpoint.saved", { bytes: bytes.byteLength })
+            await this.store.patch({ checkpointSize: bytes.byteLength })
           }
           const fingerprint = response.headers.get("x-workspace-fingerprint")
           if (fingerprint) await this.store.patch({ checkpointFingerprint: fingerprint })
         },
         { attempts: 3, delayMs: 1000 },
       )
+      await this.store.patch({
+        checkpointPending: undefined,
+        checkpointAttempts: undefined,
+      })
       return true
     } catch (err) {
       console.warn("checkpoint failed", err)
       logEvent("checkpoint.failed")
+      // Keep the failure visible and retry from the alarm instead of losing the
+      // turn's work silently.
+      await this.store.patch({ checkpointPending: true })
+      await this.ctx.storage.setAlarm(Date.now() + CHECKPOINT_RETRY_MS)
       // The container may have been paused before the failure.
       this.invalidateOpenCode()
       return false

@@ -109,6 +109,10 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
 
   const parts = url.pathname.split("/").filter(Boolean) // api, ...
 
+  if (parts[1] === "health" && request.method === "GET") {
+    return healthCheck(env)
+  }
+
   if (parts[1] === "models" && request.method === "GET") {
     return Response.json({ models: MODEL_CATALOG, recommended: recommendModel().ref })
   }
@@ -134,9 +138,18 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   const suffix = parts.slice(3)
 
   if (request.method === "POST" && suffix.length === 1 && suffix[0] === "messages") {
-    const body = (await request.json()) as { text?: string; user?: string }
+    const body = (await request.json()) as {
+      text?: string
+      user?: string
+      idempotencyKey?: string
+    }
     if (!body.text) return Response.json({ error: "text is required" }, { status: 400 })
-    const message: MessageRequest = { text: body.text, transport: "http", ...(body.user ? { user: body.user } : {}) }
+    const message: MessageRequest = {
+      text: body.text,
+      transport: "http",
+      ...(body.user ? { user: body.user } : {}),
+      ...(body.idempotencyKey ? { idempotencyKey: body.idempotencyKey } : {}),
+    }
     const res = await conversation.fetch("https://conversation/message", {
       method: "POST",
       body: JSON.stringify(message),
@@ -346,4 +359,46 @@ async function handleGithubCallback(request: Request, env: Env, url: URL): Promi
     ...(login ? { githubLogin: login } : {}),
   })
   return back("connected")
+}
+
+// ---------------------------------------------------------------------- health
+
+function detail(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/** Deep health: configuration and bindings, without starting a container. */
+async function healthCheck(env: Env): Promise<Response> {
+  const checks: Record<string, { ok: boolean; detail?: string }> = {
+    apiToken: { ok: Boolean(env.API_TOKEN) },
+    vault: {
+      ok: Boolean(env.VAULT_MASTER_KEY),
+      ...(env.VAULT_MASTER_KEY ? {} : { detail: "VAULT_MASTER_KEY is not set" }),
+    },
+    github: {
+      ok: Boolean(env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET),
+      ...(env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET
+        ? {}
+        : { detail: "GitHub OAuth is not configured" }),
+    },
+  }
+
+  try {
+    await env.CHECKPOINTS.list({ limit: 1 })
+    checks.checkpoints = { ok: true }
+  } catch (error) {
+    checks.checkpoints = { ok: false, detail: detail(error) }
+  }
+
+  try {
+    const response = await env.SETTINGS.getByName("global").fetch("https://settings/get")
+    checks.settings = response.ok
+      ? { ok: true }
+      : { ok: false, detail: `status ${response.status}` }
+  } catch (error) {
+    checks.settings = { ok: false, detail: detail(error) }
+  }
+
+  const ok = checks.apiToken.ok && checks.checkpoints.ok && checks.settings.ok
+  return Response.json({ ok, checks }, { status: ok ? 200 : 503 })
 }
