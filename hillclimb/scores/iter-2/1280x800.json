@@ -1,0 +1,18 @@
+{
+  "viewport": "1280x800",
+  "criteria": {
+    "task_clarity": {"A": 5, "B": 8, "why": "A shows no save control and ambiguous state; B pins Save with a named status pill."},
+    "visual_hierarchy": {"A": 6, "B": 8, "why": "A has no dominant action; B's action bar anchors the page."},
+    "density_rhythm": {"A": 6, "B": 7, "why": "Both share card spacing; A's centred checkbox breaks the grid, B keeps a tidier one."},
+    "state_coverage": {"A": 5, "B": 8, "why": "A has no dirty state and misattributes saving/error; B labels five states."},
+    "accessibility": {"A": 6, "B": 7, "why": "Contrast passes in both; A hides its save control and keeps the detached checkbox."},
+    "consistency": {"A": 7, "B": 8, "why": "A uses bare status text; B uses one pill in one location."},
+    "polish": {"A": 6, "B": 5, "why": "A has clean edges but an unfinished checkbox row; B cuts the Poll seconds input at the scroll edge."}
+  },
+  "better": "B",
+  "why": "B keeps the save action and its state visible and correctly attributed, fixing the core question A leaves unanswered; its costs are smaller than the clarity gain.",
+  "hardGateEvidence": [
+    "B: the Poll seconds input is cut at the footer boundary.",
+    "A: the streaming checkbox is ~13 pt with its label detached and centred."
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "viewport": "1600x1000",
+  "criteria": {
+    "task_clarity": {
+      "score": 4,
+      "note": "The five section labels do name what is configured, but nothing marks a required field, the edited state still reads 'loaded', and no Save control appears at 1600x1000 in any of the six captures — only 'Load settings'."
+    },
+    "visual_hierarchy": {
+      "score": 4,
+      "note": "All five cards carry identical weight while the status — the answer to 'is it saved?' — is 11px grey text squeezed beside a secondary button in the Access card, and the error lands there instead of on the Model field."
+    },
+    "density_rhythm": {
+      "score": 4,
+      "note": "Row height is a steady ~78px and inputs run 770px wide for a one-digit value like '2', yet the form still overflows a 1000px viewport, and the streaming row alone is centre-aligned (centred 13px checkbox, centred label 16px below) against an otherwise left-aligned column."
+    },
+    "state_coverage": {
+      "score": 4,
+      "note": "Six states exist but only three look distinct: 'active' is identical to 'idle' apart from a focus ring, 'waiting' is 11px grey 'saving...' with no disabled controls or progress cue, and the error names a Model problem while sitting ~400px away in the Access card with the Model input unstyled."
+    },
+    "accessibility": {
+      "score": 5,
+      "note": "Body text sits at 5.4:1 and the focus ring is a crisp 2px outline, but placeholder/empty text is 4.1:1 and the streaming checkbox is a 13px target whose label is a separate centred paragraph 16px below it."
+    },
+    "consistency": {
+      "score": 5,
+      "note": "Inputs and the bordered button share one language, but the streaming toggle is a raw OS checkbox, status appears as plain green, plain grey and plain red text rather than one pill, and placeholders introduce a second neutral grey."
+    },
+    "polish": {
+      "score": 6,
+      "note": "No horizontal scroll and the long repository URL holds on one line, but every capture ends with the Permissions textarea sliced mid-line at the fold and the centred checkbox row visibly breaks the column's left edge."
+    }
+  },
+  "states": {
+    "empty": "Reads well: one clean column with a single obvious first action, 'Load settings'; reads badly: 'not loaded' replaces the version in the header and empty fields use the same grey as real values, so you cannot tell which are defaults.",
+    "idle": "Reads well: loaded values are legible and the green 'loaded' confirms state; reads badly: five identical cards and no visible Save leave no clue what to do next.",
+    "active": "Reads well: the focus ring on Branch is unmistakable; reads badly: the edited branch is not flagged as unsaved — the status still says 'loaded' in green.",
+    "waiting": "Reads well: 'saving...' swaps into the same slot with no layout jump; reads badly: it is tiny grey text with no progress cue or disabled controls, so the in-flight state is easy to miss and easy to double-submit.",
+    "long": "Reads well: the long repository URL stays on one line without overflow and the pattern list wraps cleanly; reads badly: 40 patterns push the rest of the page below the fold with no scroll affordance and the last visible line is cut mid-glyph.",
+    "error": "Reads well: the failure is coloured and appears next to the button that triggered it; reads badly: it sits in the Access card far from the Model field it names, which itself shows no error styling and looks perfectly valid."
+  },
+  "better": "n/a",
+  "headroom": "Access/status area: add a sticky footer action bar pinned to the bottom of the viewport carrying the primary 'Save settings' button and a single status pill that flips between loaded / unsaved changes / saving… / error, so the save action and the loaded-vs-unsaved answer are on screen without scrolling — currently neither is visible at 1600x1000.",
+  "hardGateEvidence": [
+    "Text below 4.5:1: placeholder and empty-state field text is #757575 on #0f1115 = 4.1:1 (empty state, every input including the 'Bearer token' and repository placeholders).",
+    "Target smaller than 24 pt: the streaming checkbox measures 13x13 px in all states, and its label is a separate centred line 16 px below it rather than beside it.",
+    "Clipped/orphaned text at the fold in every state: the Permissions textarea is sliced mid-glyph at y=1000 ('find *' in idle, 'command-5 --with-a-long-flag *' in long), and no Save control is reachable on screen at this viewport.",
+    "Content disappears between states: the header's right slot shows 'v3 · 2026-11-05, 6:06:40 p.m.' in five states and 'not loaded' in the empty state, so the version string vanishes.",
+    "No unlabelled icon-only controls and no blank captures observed."
+  ]
+}

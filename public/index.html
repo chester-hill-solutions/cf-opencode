@@ -22,6 +22,9 @@
         font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
         background: var(--bg);
         color: var(--text);
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
       }
       header {
         display: flex;
@@ -33,7 +36,35 @@
       }
       header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
       header .meta { margin-left: auto; font-size: 12px; color: var(--muted); }
-      main { max-width: 860px; margin: 0 auto; padding: 24px 20px 64px; display: flex; flex-direction: column; gap: 20px; }
+      main { flex: 1; overflow-y: auto; width: 100%; max-width: 860px; margin: 0 auto; padding: 24px 20px 40px; display: flex; flex-direction: column; gap: 20px; }
+      .actionbar {
+        flex: 0 0 auto;
+        border-top: 1px solid var(--border);
+        background: var(--panel);
+        padding: 12px 20px;
+      }
+      .actionbar-row {
+        max-width: 860px;
+        margin: 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .actionbar .hint { flex: 1; min-width: 220px; }
+      .pill {
+        font-size: 12px;
+        padding: 3px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        color: var(--muted);
+        white-space: nowrap;
+      }
+      .pill.ok { color: var(--ok); border-color: var(--ok); }
+      .pill.dirty { color: #f0c674; border-color: #f0c674; }
+      .pill.busy { color: var(--accent); border-color: var(--accent); }
+      .pill.error { color: var(--danger); border-color: var(--danger); }
+      .error-detail { max-width: 860px; margin: 0 auto; padding-top: 8px; color: var(--danger); font-size: 13px; }
       fieldset {
         border: 1px solid var(--border);
         border-radius: 12px;
@@ -92,8 +123,7 @@
           <input id="token" type="password" autocomplete="off" placeholder="Bearer token" />
         </label>
         <div class="actions">
-          <button id="load">Load settings</button>
-          <span id="status"></span>
+          <button id="load" type="button">Load settings</button>
         </div>
         <div class="hint">The token is kept in localStorage. Put Cloudflare Access in front for shared deployments.</div>
       </fieldset>
@@ -154,24 +184,36 @@
           </div>
         </fieldset>
 
-        <div class="actions">
-          <button class="primary" type="submit">Save settings</button>
-          <span class="hint">Saving restarts the container on the next turn; the workspace checkpoint is restored.</span>
-        </div>
       </form>
     </main>
 
+    <footer class="actionbar">
+      <div class="actionbar-row">
+        <button class="primary" type="submit" form="settings" id="save">Save settings</button>
+        <span id="status" class="pill">not loaded</span>
+        <span class="hint">Saving restarts the container on the next turn; the workspace checkpoint is restored.</span>
+      </div>
+      <div id="errorDetail" class="error-detail" hidden></div>
+    </footer>
+
     <script>
       const $ = (id) => document.getElementById(id)
-      const status = $("status")
+      const statusEl = $("status")
+      const saveBtn = $("save")
+      const errorDetail = $("errorDetail")
       const meta = $("meta")
       const tokenInput = $("token")
+      let loaded = false
 
       tokenInput.value = localStorage.getItem("cfopencode.token") ?? ""
 
       const setStatus = (text, cls = "") => {
-        status.textContent = text
-        status.className = cls
+        statusEl.textContent = text
+        statusEl.className = "pill " + cls
+      }
+
+      const markDirty = () => {
+        if (loaded) setStatus("unsaved changes", "dirty")
       }
 
       const lines = (value) => value.split("\n").map((line) => line.trim()).filter(Boolean)
@@ -202,11 +244,13 @@
 
       async function load() {
         localStorage.setItem("cfopencode.token", tokenInput.value)
-        setStatus("loading…")
+        setStatus("loading…", "busy")
         const res = await api("/api/settings")
         if (res.status === 401) return setStatus("token rejected", "error")
         if (!res.ok) return setStatus(`load failed (${res.status})`, "error")
         fill(await res.json())
+        loaded = true
+        errorDetail.hidden = true
         setStatus("loaded", "ok")
       }
 
@@ -214,7 +258,8 @@
 
       $("settings").onsubmit = async (event) => {
         event.preventDefault()
-        setStatus("saving…")
+        setStatus("saving…", "busy")
+        saveBtn.disabled = true
         const body = {
           workspaceRepo: $("workspaceRepo").value.trim(),
           workspaceBranch: $("workspaceBranch").value.trim(),
@@ -227,12 +272,26 @@
             deny: lines($("deny").value),
           },
         }
-        const res = await api("/api/settings", { method: "PUT", body: JSON.stringify(body) })
-        const payload = await res.json().catch(() => ({}))
-        if (!res.ok) return setStatus(payload.error ?? `save failed (${res.status})`, "error")
-        fill(payload)
-        setStatus("saved", "ok")
+        try {
+          const res = await api("/api/settings", { method: "PUT", body: JSON.stringify(body) })
+          const payload = await res.json().catch(() => ({}))
+          if (!res.ok) {
+            setStatus("save failed", "error")
+            errorDetail.textContent = payload.error ?? `save failed (${res.status})`
+            errorDetail.hidden = false
+            return
+          }
+          fill(payload)
+          loaded = true
+          errorDetail.hidden = true
+          setStatus("saved", "ok")
+        } finally {
+          saveBtn.disabled = false
+        }
       }
+
+      $("settings").addEventListener("input", markDirty)
+      $("settings").addEventListener("change", markDirty)
 
       if (tokenInput.value) load()
     </script>

@@ -1,0 +1,50 @@
+{
+  "viewport": "1280x800",
+  "criteria": {
+    "task_clarity": {
+      "score": 4,
+      "note": "The five section legends make the page's purpose legible, but the only visible action at 800 pt is 'Load settings' (Save and the permission lists are below the fold) and nothing distinguishes loaded from unsaved — the edited state still reads 'loaded'."
+    },
+    "visual_hierarchy": {
+      "score": 4,
+      "note": "Four same-weight cards with identical legends flatten the page into a list of equals, and the ACCESS card carries both the primary button and a global status while the header right edge carries a second, competing status ('v3 · 2026-11-05…' / 'not loaded')."
+    },
+    "density_rhythm": {
+      "score": 4,
+      "note": "Fields are a uniform 35.5 pt tall with 18 pt card padding, but inter-card gaps swing from 29 pt (ACCESS→WORKSPACE) to 10 pt (WORKSPACE→MODEL and MODEL→RUNTIME), and the centred checkbox with a centred caption breaks the left-aligned label/field rhythm used everywhere else."
+    },
+    "state_coverage": {
+      "score": 3,
+      "note": "Empty, loaded, long and error are each recognisable, but active and waiting differ from idle by a focus ring or one grey word, so the two states an operator most needs to read are the least designed."
+    },
+    "accessibility": {
+      "score": 5,
+      "note": "Focus is unmistakable (thick blue ring on the focused Branch input) and every button and input is 35 pt, but placeholders measure 4.10:1 and the streaming checkbox is a 13 pt glyph whose label sits 17.5 pt below it."
+    },
+    "consistency": {
+      "score": 5,
+      "note": "Inputs, button and legends share one size and colour language, but the streaming checkbox is a one-off centred control and load/save status is split between the header and an inline label inside ACCESS."
+    },
+    "polish": {
+      "score": 4,
+      "note": "No clipping or horizontal overflow appears even with the 100-character repo URL, but the legend indent (26 pt) misses the field-label indent (19 pt), card gaps are uneven, and the RUNTIME card is sliced by the fold."
+    }
+  },
+  "states": {
+    "empty": "The ACCESS card correctly asks for the token first, but repo, branch and model show dim grey sample values that look loaded while Poll seconds is an entirely blank box with no placeholder, so what is real is ambiguous.",
+    "idle": "Values and the green 'loaded' marker read cleanly and the form scans easily, though Save and all three permission lists sit below the fold.",
+    "active": "The blue focus ring on Branch is unmistakable, but nothing on the page marks the edit as unsaved — the status still says 'loaded'.",
+    "waiting": "'saving…' swaps in for 'loaded' in the same grey as every field label while the button and inputs keep their normal appearance, so the in-flight state is nearly invisible.",
+    "long": "The long repo URL fits inside its input with no clipping or overflow — the cleanest state here — but the 40 allow patterns it is meant to stress are off-screen.",
+    "error": "A red message does appear, yet it is a model-format error parked beside 'Load settings' in the ACCESS card while the offending Model reference field looks exactly as it did when idle."
+  },
+  "better": "n/a",
+  "headroom": "Replace the inline status beside 'Load settings' in the ACCESS card with a sticky action bar pinned to the bottom of the viewport that holds the Save button and a single status pill ('unsaved changes' / 'saving…' / 'saved' / error), so the save action and the loaded-vs-unsaved answer are on screen at 800 pt and flip to 'unsaved changes' on the first keystroke.",
+  "hardGateEvidence": [
+    "empty/idle: placeholder text is #757575 on #0f1115 = 4.10:1, below 4.5:1 (sampled from pixels) in all four placeholder fields (token, repository, branch, model).",
+    "RUNTIME: the streaming checkbox glyph measures 13x13 pt and has no label beside it (label is 17.5 pt below, centred), so the target looks smaller than 24 pt.",
+    "error: the offending Model reference input is pixel-identical to idle (rows y=1055-1210 show zero changed pixels) — no error border or field message; the only error text is ~460 pt away in the ACCESS card.",
+    "1280x800: the capture is cut mid-RUNTIME card at 800 pt (RUNTIME card spans y=644 pt to past the fold) and no Save control or permission list is visible in any of the six states.",
+    "RUNTIME: 'Stream OpenCode events while the container is warm (falls back to polling)' is an orphaned caption 17.5 pt below its centred checkbox, separated from the control it describes."
+  ]
+}

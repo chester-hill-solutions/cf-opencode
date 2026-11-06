@@ -1,0 +1,29 @@
+{
+  "viewport": "1280x800",
+  "criteria": {
+    "task_clarity": {"A": 8, "B": 5, "why": "A keeps the Save action and a plain-language state (loaded / unsaved changes / saving / save failed) permanently visible at the point of action, while B's Save button is off-screen at this viewport and its dirty state is never indicated, leaving an edited field still labelled \"loaded\"."},
+    "visual_hierarchy": {"A": 7, "B": 7, "why": "B lets the form stay dominant with status subordinate, whereas A's always-bright blue Save bar becomes the strongest element in every state including idle, though in the error state A's red pill is still quieter than the button."},
+    "density_rhythm": {"A": 7, "B": 7.5, "why": "Both share one card, label and input rhythm, but B's centred streaming checkbox breaks the left-aligned grid while A's footer adds a well-aligned third band that nevertheless cuts into the card flow."},
+    "state_coverage": {"A": 8, "B": 6, "why": "A gives each state a distinct labelled pill (grey, green, amber, blue, red), whereas B distinguishes states only by small inline text, has no unsaved state at all, and shows the full validation message only as stray red text beside the unrelated \"Load settings\" button."},
+    "accessibility": {"A": 6.5, "B": 6.5, "why": "Both show a clear blue focus ring, labelled inputs, generous buttons and ~5.7:1 body text, but both ship a ~13 pt checkbox and ~4.2:1 placeholder text, and A's fixed bar can cover a keyboard-focused control at the fold."},
+    "consistency": {"A": 7.5, "B": 7, "why": "A reuses one pill and one button language across five statuses, while B mixes bare coloured text with a header line that sometimes duplicates status and sometimes shows a version stamp."},
+    "polish": {"A": 5, "B": 8, "why": "B has no overlap or clipping, whereas A's fixed footer slices the streaming checkbox and completely hides its label at this viewport in all six states."}
+  },
+  "states": {
+    "empty": {"A": "Clear first-run framing with a prominent token field, but the footer repeats the header's \"not loaded\" and its bar already covers the streaming control.", "B": "Calm and complete, with the token field, defaults and streaming option all legible, though the primary Save action is nowhere in view."},
+    "idle": {"A": "Green \"loaded\" pill next to Save reads instantly and the always-visible save/help line is useful, but the footer still overlaps the form's last control.", "B": "Reads as a plain loaded form and the green \"loaded\" text is clear, but the status sits beside \"Load settings\" rather than the off-screen save action."},
+    "active": {"A": "The amber \"unsaved changes\" pill plus the focused branch field make the dirty state obvious at a glance.", "B": "The edited, focused branch field is visible but nothing on screen says the change is unsaved; the status still reads \"loaded\"."},
+    "waiting": {"A": "The \"saving…\" pill gives progress in the right place, but the Save button itself looks unchanged and still enabled, so there is no second cue.", "B": "\"saving…\" appears as small grey text far from the action and no Save control is visible to show a pending/disabled state."},
+    "long": {"A": "The long repository URL truncates cleanly inside its input with no overflow, and the sticky bar keeps the state visible.", "B": "The long repository URL also truncates cleanly and the layout holds, with no horizontal scroll."},
+    "error": {"A": "The red \"save failed\" pill is unmissable but explains nothing — the actual validation message is not visible anywhere on screen.", "B": "The full validation sentence is shown in red, which is genuinely helpful, but it is attached to the access card next to \"Load settings\" rather than to the failing model field or the save action."}
+  },
+  "better": "A",
+  "why": "A is better because it fixes the surface's core job — Save and the loaded/dirty/saving/failed state are always in view and labelled in words, which B entirely lacks at this viewport. B is cleaner and shows the actual error text, but it does so in the wrong place, so A's clarity gain outweighs its footer overlap and missing error detail.",
+  "hardGateEvidence": [
+    "A, all states: the fixed bottom bar overlays the form — the \"Stream OpenCode events…\" checkbox is sliced in half at the fold and its label is completely hidden (clipped content/control).",
+    "A, error state: no validation message text is rendered on screen, only the \"save failed\" pill, so the reason for failure is absent from the capture.",
+    "Both: the streaming checkbox box measures roughly 13×11 pt, below the 24 pt minimum target.",
+    "Both: placeholder text (#757575 on a near-black input) measures about 4.2:1, just under the 4.5:1 threshold.",
+    "No blank captures, no unlabelled icon-only controls and no horizontal overflow visible in either set."
+  ]
+}

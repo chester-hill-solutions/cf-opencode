@@ -1,0 +1,21 @@
+{
+  "viewport": "1600x1000",
+  "criteria": {
+    "task_clarity": {"A": 5, "B": 9, "why": "A has no Save in frame and no dirty marker; B puts Save plus a single state pill in a persistent footer."},
+    "visual_hierarchy": {"A": 5, "B": 8, "why": "A ranks five equal cards and a secondary Load; B creates one dominant action with status adjacent."},
+    "density_rhythm": {"A": 6, "B": 7, "why": "Both share the card grid; B adds a footer band whose left edge is off the form column."},
+    "state_coverage": {"A": 4, "B": 9, "why": "A's active state is identical to idle and the error lives in the wrong card; B differentiates all six in one place."},
+    "accessibility": {"A": 6, "B": 8, "why": "Both label fields and show a focus ring; B adds text to every status, both keep the detached 13 px checkbox."},
+    "consistency": {"A": 6, "B": 8, "why": "A splits status across header and card; B consolidates it into one pill."},
+    "polish": {"A": 6, "B": 7, "why": "A cuts the page mid-textarea; B's footer button is out of line with the cards and the error line hugs the bottom."}
+  },
+  "better": "B",
+  "why": "B adds a persistent footer action bar that keeps the primary Save and a single text status pill in one place, so the operator sees what to press and whether values are loaded, dirty or rejected; A leaves Save off-screen and gives the dirty state no signal.",
+  "hardGateEvidence": [
+    "Both: the RUNTIME checkbox is ~13 pt with its label centred on a separate row.",
+    "A: no save control is visible anywhere in the frame.",
+    "A: the model validation message is rendered inside the ACCESS card, orphaned from the Model field.",
+    "B: the footer row's left edge is off the form column, creating a second margin.",
+    "Contrast passes in both (~5.7:1 body, pills 6.9–9.5:1)."
+  ]
+}

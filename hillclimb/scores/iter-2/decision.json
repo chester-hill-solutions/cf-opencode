@@ -1,0 +1,63 @@
+{
+  "best": "baseline",
+  "bestScore": 57.0,
+  "candidate": "iter-2-after",
+  "candidateScore": 76.17,
+  "critics": {
+    "1280x800": {
+      "better": "B",
+      "hardGateEvidence": [
+        "B: the Poll seconds input is cut at the footer boundary.",
+        "A: the streaming checkbox is ~13 pt with its label detached and centred."
+      ],
+      "why": "B keeps the save action and its state visible and correctly attributed, fixing the core question A leaves unanswered; its costs are smaller than the clarity gain."
+    },
+    "1600x1000": {
+      "better": "B",
+      "hardGateEvidence": [
+        "Both: the RUNTIME checkbox is ~13 pt with its label centred on a separate row.",
+        "A: no save control is visible anywhere in the frame.",
+        "A: the model validation message is rendered inside the ACCESS card, orphaned from the Model field.",
+        "B: the footer row's left edge is off the form column, creating a second margin.",
+        "Contrast passes in both (~5.7:1 body, pills 6.9\u20139.5:1)."
+      ],
+      "why": "B adds a persistent footer action bar that keeps the primary Save and a single text status pill in one place, so the operator sees what to press and whether values are loaded, dirty or rejected; A leaves Save off-screen and gives the dirty state no signal."
+    },
+    "900x650": {
+      "better": "B",
+      "hardGateEvidence": [
+        "B: the form is cut at the footer boundary (model input bisected at the fold).",
+        "B: the error line sits close to the bottom edge.",
+        "Both: the streaming checkbox is a ~13 pt target detached from its label."
+      ],
+      "why": "B keeps a primary Save and a named status permanently in view, answering the rubric's heaviest question; A is tidier but leaves the action and dirty state invisible."
+    }
+  },
+  "delta": 19.17,
+  "mapping": {
+    "A": "baseline",
+    "B": "iter-2-after"
+  },
+  "mode": "paired",
+  "reason": "delta",
+  "regressions": {},
+  "threshold": 2.0,
+  "verdict": "keep",
+  "viewports": {
+    "1280x800": {
+      "best": 57.5,
+      "candidate": 74.0,
+      "delta": 16.5
+    },
+    "1600x1000": {
+      "best": 53.5,
+      "candidate": 81.0,
+      "delta": 27.5
+    },
+    "900x650": {
+      "best": 60.0,
+      "candidate": 73.5,
+      "delta": 13.5
+    }
+  }
+}

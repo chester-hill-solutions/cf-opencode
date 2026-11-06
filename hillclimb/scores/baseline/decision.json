@@ -1,0 +1,27 @@
+{
+  "criteria": {
+    "accessibility": 5.0,
+    "consistency": 5.33,
+    "density_rhythm": 4.0,
+    "polish": 5.33,
+    "state_coverage": 4.0,
+    "task_clarity": 4.33,
+    "visual_hierarchy": 4.33
+  },
+  "headroom": {
+    "accessibility": 75.0,
+    "consistency": 46.7,
+    "density_rhythm": 90.0,
+    "polish": 46.7,
+    "state_coverage": 90.0,
+    "task_clarity": 113.3,
+    "visual_hierarchy": 85.0
+  },
+  "mode": "single",
+  "runScore": 45.33,
+  "viewports": {
+    "1280x800": 41.0,
+    "1600x1000": 44.5,
+    "900x650": 50.5
+  }
+}

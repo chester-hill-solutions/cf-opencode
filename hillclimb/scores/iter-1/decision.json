@@ -1,0 +1,69 @@
+{
+  "best": "baseline",
+  "bestScore": 64.17,
+  "candidate": "iter-1-after",
+  "candidateScore": 68.08,
+  "critics": {
+    "1280x800": {
+      "better": "A",
+      "hardGateEvidence": [
+        "A, all states: the fixed bottom bar overlays the form \u2014 the \"Stream OpenCode events\u2026\" checkbox is sliced in half at the fold and its label is completely hidden (clipped content/control).",
+        "A, error state: no validation message text is rendered on screen, only the \"save failed\" pill, so the reason for failure is absent from the capture.",
+        "Both: the streaming checkbox box measures roughly 13\u00d711 pt, below the 24 pt minimum target.",
+        "Both: placeholder text (#757575 on a near-black input) measures about 4.2:1, just under the 4.5:1 threshold.",
+        "No blank captures, no unlabelled icon-only controls and no horizontal overflow visible in either set."
+      ],
+      "why": "A is better because it fixes the surface's core job \u2014 Save and the loaded/dirty/saving/failed state are always in view and labelled in words, which B entirely lacks at this viewport. B is cleaner and shows the actual error text, but it does so in the wrong place, so A's clarity gain outweighs its footer overlap and missing error detail."
+    },
+    "1600x1000": {
+      "better": "A",
+      "hardGateEvidence": [
+        "A: the fixed bottom bar clips the allow-list textarea mid-line ('tail *' cut in half) and hides the permissions card's bottom edge in empty, idle, active, waiting, long and error captures.",
+        "B: the primary 'Save settings' control is not visible anywhere in the 1600x1000 captures in any of the six states (below the fold throughout).",
+        "Both: the stream toggle renders as a ~13px checkbox, below the 24pt target minimum, and is centred on its own line with the explanatory label beneath it rather than beside it.",
+        "A: the validation detail present in B ('model must be provider/model or provider/model#variant') is absent from A's error state, which shows only 'save failed'.",
+        "A: 'not loaded' is duplicated in the header and in the footer pill in the empty state.",
+        "No contrast failure visible: body/help text measured ~6.2:1, status pills 7.5\u201311.7:1 against their backgrounds."
+      ],
+      "why": "A is better because its always-visible save action plus an honest not-loaded/loaded/unsaved/saving/failed status answers the page's core question in every state, which outweighs the fixed bar clipping the last textarea and the error state dropping its specific message. B is calmer and cleaner at the edges, but an operator at this viewport can neither see nor reach the action that makes the page useful."
+    },
+    "900x650": {
+      "better": "B",
+      "hardGateEvidence": [
+        "A: the Model help line 'provider/model or provider/model#variant' is clipped by the sticky footer's top edge in all six captures.",
+        "A: the sticky footer overlaps the Model card's bottom border, leaving the card edge cut off in every state.",
+        "A: error state shows only a 'save failed' pill; the validation message that is visible in B is not visible anywhere at 900x650."
+      ],
+      "why": "B is better at this viewport because its form reads unobstructed and its error state names the actual problem, while A's sticky footer clips a line of the Model help text in every state and reduces the validation failure to a bare 'save failed' pill. A's 'unsaved changes' pill is a real improvement in dirty-state clarity, but it does not offset the clipping and the lost error detail."
+    }
+  },
+  "delta": 3.92,
+  "mapping": {
+    "A": "iter-1-after",
+    "B": "baseline"
+  },
+  "mode": "paired",
+  "reason": "viewport regression",
+  "regressions": {
+    "900x650": -6.0
+  },
+  "threshold": 2.0,
+  "verdict": "revert",
+  "viewports": {
+    "1280x800": {
+      "best": 65.5,
+      "candidate": 71.25,
+      "delta": 5.75
+    },
+    "1600x1000": {
+      "best": 54.5,
+      "candidate": 66.5,
+      "delta": 12.0
+    },
+    "900x650": {
+      "best": 72.5,
+      "candidate": 66.5,
+      "delta": -6.0
+    }
+  }
+}

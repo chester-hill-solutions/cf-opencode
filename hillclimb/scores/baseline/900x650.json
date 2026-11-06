@@ -1,0 +1,46 @@
+{
+  "viewport": "900x650",
+  "criteria": {
+    "task_clarity": {
+      "score": 5,
+      "note": "The page says what it configures (settings, ACCESS/WORKSPACE/MODEL/RUNTIME) and 'loaded' answers part of the status question, but no required-field markers exist and the unsaved state is nowhere indicated, so 'is it saved?' is unanswerable at this viewport."
+    },
+    "visual_hierarchy": {
+      "score": 5,
+      "note": "Title and card grouping rank cleanly, but the only action in view is the secondary 'Load settings' while the primary Save sits below the fold, and the saving/error status is set in the same small muted type as helper copy, so no state has a dominant element."
+    },
+    "density_rhythm": {
+      "score": 4,
+      "note": "Measured gaps are 29.5 pt between ACCESS and WORKSPACE but only 9.5 pt between WORKSPACE/MODEL and MODEL/RUNTIME, so the lower three cards read as one merged block, and inside cards the top inset (~29 pt) is nearly double the bottom inset (~17 pt)."
+    },
+    "state_coverage": {
+      "score": 5,
+      "note": "All six states render and differ (placeholders + 'not loaded', real values + 'loaded', blue focus ring, 'saving…', long URL, red error), but dirty is not marked as unsaved, the in-flight state leaves the button unchanged, and the error is not attached to the field that caused it."
+    },
+    "accessibility": {
+      "score": 5,
+      "note": "Focus is clearly visible as a thick blue ring on the Branch input, every visible input has a label above it and buttons are ~50 pt tall, but placeholder text measures ~4.1:1 and there is no error or required affordance tied to any input."
+    },
+    "consistency": {
+      "score": 6,
+      "note": "Inputs, the button and muted label colour reuse one language, but the header-right slot changes identity between states (a 'not loaded' status in empty, a 'v3 · timestamp' stamp otherwise) and status is bare text in green/grey/red with no shared treatment."
+    },
+    "polish": {
+      "score": 6,
+      "note": "Nothing is clipped, no horizontal scroll, and left/right edges align, but the WORKSPACE card's bottom border nearly touches the MODEL card's top border and its legend notch, which looks like a collision rather than a deliberate gap."
+    }
+  },
+  "states": {
+    "empty": "Reads as a clear 'start here' with one token field and one button, but nothing distinguishes which of the five sections are required versus optional.",
+    "idle": "Loaded is legible (green 'loaded', real values in fields), yet the header shows a version stamp instead of state, so two unrelated status sources compete and 'saved' is implied rather than stated.",
+    "active": "The thick blue ring on Branch makes focus unmistakable, but the edited value is only detectable by that ring — no dirty marker anywhere says the change is unsaved.",
+    "waiting": "Saving appears only as small muted 'saving…' text in place of 'loaded' while the Load settings button stays at full strength, so the in-flight state has no anchor.",
+    "long": "The long repo URL fits inside its input with no clipping and the layout holds, but the 40 permission patterns are entirely below the fold so the long-list case cannot be judged here.",
+    "error": "The red message is specific and readable, but it is parked in the ACCESS card beside Load settings while the offending Model reference field sits far below with no error styling of its own."
+  },
+  "better": "n/a",
+  "headroom": "Header-right slot (currently 'v3 · 2026-11-05, 6:06:40 p.m.'): replace it with a single persistent state chip reading Not loaded / Loaded / Unsaved changes / Saving… / Save failed, so loaded-versus-unsaved is answerable without scrolling to the off-screen status line.",
+  "hardGateEvidence": [
+    "Placeholder text (#757575) on the input fill (#0f1115) measures ≈4.1:1, below 4.5:1 — visible in empty state on 'Bearer token', 'https://github.com/owner/repo', 'main' and 'opencode/deepseek-v4.1-flash'."
+  ]
+}

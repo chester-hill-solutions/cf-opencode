@@ -1,0 +1,19 @@
+{
+  "viewport": "900x650",
+  "criteria": {
+    "task_clarity": {"A": 5, "B": 8, "why": "A has no save action in view and answers 'saved?' with a small inline word; B keeps Save plus an explicit state pill visible."},
+    "visual_hierarchy": {"A": 6, "B": 8, "why": "A gives every card equal weight and whispers the status; B ranks Save, pill, then help text."},
+    "density_rhythm": {"A": 6, "B": 6, "why": "Both share one spacing and type system; both waste vertical space, B's bar costs more."},
+    "state_coverage": {"A": 5, "B": 8, "why": "A shows no dirty indicator and attaches saving/error to Load; B labels five states explicitly."},
+    "accessibility": {"A": 7, "B": 7, "why": "Both show a strong focus ring, labelled inputs and large buttons."},
+    "consistency": {"A": 7, "B": 8, "why": "A uses bare coloured status text; B applies one pill across all states."},
+    "polish": {"A": 7, "B": 6, "why": "A is clean but unfinished; B's bar cuts the form at the scroll edge and the error line is tight."}
+  },
+  "better": "B",
+  "why": "B keeps a primary Save and a named status permanently in view, answering the rubric's heaviest question; A is tidier but leaves the action and dirty state invisible.",
+  "hardGateEvidence": [
+    "B: the form is cut at the footer boundary (model input bisected at the fold).",
+    "B: the error line sits close to the bottom edge.",
+    "Both: the streaming checkbox is a ~13 pt target detached from its label."
+  ]
+}

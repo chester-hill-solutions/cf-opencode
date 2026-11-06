@@ -21,6 +21,7 @@
     "@cloudflare/vitest-plugin": "^1.6.0",
     "@cloudflare/workers-types": "^4.20251105.0",
     "@types/bun": "^1.4.4",
+    "playwright": "^1.65.0",
     "typescript": "^5.9.0",
     "vitest": "^4.1.0",
     "wrangler": "^4.105.0"

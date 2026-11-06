@@ -1,0 +1,27 @@
+{
+  "viewport": "900x650",
+  "criteria": {
+    "task_clarity": {"A": 7, "B": 6, "why": "A always shows the Save action plus a status pill that distinguishes loaded, unsaved, saving and failed, so 'is it saved?' is answerable at any scroll position, while B answers it only through a 'loaded' label parked next to the wrong action (Load, not Save) and gives no unsaved signal at all, though B does at least spell out the validation reason that A hides."},
+    "visual_hierarchy": {"A": 6, "B": 7, "why": "B lets the form own the page with quiet status text beside it, whereas A puts a permanently bright filled Save button and a bordered footer bar at the loudest rank in every state, including empty and waiting where the form or the status should dominate."},
+    "density_rhythm": {"A": 7, "B": 8, "why": "Both keep one card and spacing system, but A's footer adds a second surface whose top edge lands mid-line of the Model help text, breaking the vertical rhythm that B preserves cleanly."},
+    "state_coverage": {"A": 7, "B": 6, "why": "A gives empty, idle, active, waiting and error visibly distinct pill treatments (notably an explicit 'unsaved changes'), whereas B renders active identically to idle and only shows 'saving...' as faint grey text, but B's error state carries the full reason while A's does not."},
+    "accessibility": {"A": 7, "B": 8, "why": "Both show a clear blue focus ring on the Branch field and use large, generously sized buttons with labels above inputs and text-plus-colour status, but A's clipped help line and footer text over a darker bar edge closer to the 4.5:1 floor than B's plain body text."},
+    "consistency": {"A": 7, "B": 8, "why": "A introduces a new pill component and a second footer surface on top of the existing card language, while B stays on a single button style and plain status text with no one-off treatments."},
+    "polish": {"A": 5, "B": 9, "why": "A clips the 'provider/model or provider/model#variant' line behind its sticky footer and cuts the Model card's bottom border in all six captures, whereas B has clean edges, no clipped text and no overlap anywhere at this viewport."}
+  },
+  "states": {
+    "empty": {"A": "The footer makes Save and a 'not loaded' pill visible immediately, but the half-eaten Model help line at the fold makes the first screen look broken.", "B": "Reads cleanly top to bottom with Access, Workspace, Model and the full Model help text visible, though the Save action is entirely off-screen."},
+    "idle": {"A": "A green 'loaded' pill sitting beside Save answers 'is it saved?' at a glance, though the footer still shears the Model help text and swallows the start of Runtime.", "B": "Green 'loaded' is clear and the form is unobstructed, but it is attached to Load rather than Save and the save action itself is below the fold."},
+    "active": {"A": "The amber 'unsaved changes' pill is the clearest dirty signal on either set and sits exactly where Save is, leaving the focus ring to identify the changed field.", "B": "Only the blue focus ring on Branch hints that anything changed; the status still reads 'loaded', so an operator cannot tell the edit is unsaved."},
+    "waiting": {"A": "'saving...' appears in the footer right beside Save, the correct location, but Save keeps its full bright primary styling so the in-flight lockout is invisible.", "B": "'saving...' is quiet grey text stranded in the Access card, far from the Save button, so the in-flight state reads as unrelated to saving."},
+    "long": {"A": "The long repo URL stays on one line with no wrap or overflow and the pill still reports 'loaded', but the clipped help line and hidden Runtime section persist.", "B": "The long repo URL fits on one line without overflow and the layout stays calm, though only 'loaded' tells you this long value is committed."},
+    "error": {"A": "A red 'save failed' pill is unmistakable, but the reason for the failure is not visible anywhere on screen and the generic restart note is the only supporting text.", "B": "The full validation message 'model must be provider/model or provider/model#variant' is shown in red, but it is stranded in the Access card far from the Model field it describes."}
+  },
+  "better": "B",
+  "why": "B is better at this viewport because its form reads unobstructed and its error state names the actual problem, while A's sticky footer clips a line of the Model help text in every state and reduces the validation failure to a bare 'save failed' pill. A's 'unsaved changes' pill is a real improvement in dirty-state clarity, but it does not offset the clipping and the lost error detail.",
+  "hardGateEvidence": [
+    "A: the Model help line 'provider/model or provider/model#variant' is clipped by the sticky footer's top edge in all six captures.",
+    "A: the sticky footer overlaps the Model card's bottom border, leaving the card edge cut off in every state.",
+    "A: error state shows only a 'save failed' pill; the validation message that is visible in B is not visible anywhere at 900x650."
+  ]
+}

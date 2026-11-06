@@ -1,0 +1,30 @@
+{
+  "viewport": "1600x1000",
+  "criteria": {
+    "task_clarity": {"A": 7, "B": 5, "why": "A keeps Save settings and an explicit saved/unsaved/saving/failed pill on screen in every state, while B never shows a save control at this viewport and still reads 'loaded' after a field is edited, so only B answers the error question with the actual validation reason."},
+    "visual_hierarchy": {"A": 7, "B": 5, "why": "A anchors one dominant action and a secondary status in a fixed bar against a clearly framed form, whereas B has no focal action at all and the eye falls off the page into a half-drawn textarea."},
+    "density_rhythm": {"A": 6, "B": 6, "why": "Both share the same five-card grid and spacing, but A's fixed bar ignores that vertical rhythm and slices the last card, while B has no closing action row and both centre the stream checkbox above its own label."},
+    "state_coverage": {"A": 8, "B": 4, "why": "A renders five visibly distinct states (not loaded / loaded / unsaved changes / saving… / save failed) and survives the long case, whereas B only varies a small text label, has no dirty state, and shows no save affordance in any capture."},
+    "accessibility": {"A": 6, "B": 6, "why": "Both show a clear focus ring on the edited branch field and both pass contrast (body text ~6.2:1, pill text 7.5–11.7:1), but both render the stream toggle as a ~13px checkbox detached from its label, and A additionally occludes content behind its bar."},
+    "consistency": {"A": 7, "B": 6, "why": "A uses one pill and one button language throughout, while B renders status as plain coloured text in a single slot, though A introduces a footer status surface that duplicates the header status slot in the empty state."},
+    "polish": {"A": 5, "B": 7, "why": "A's fixed bar visibly clips the allow-list textarea mid-line and hides the permissions card's bottom edge in all six states, while B has clean edges and no overlap, ending simply at the fold."}
+  },
+  "states": {
+    "empty": {"A": "The anchored bar makes the 'not loaded' condition and the save action legible, but 'not loaded' is also repeated in the header and the empty permissions textarea is sliced by the bar.", "B": "The access card reads cleanly with 'not loaded' stated once, but no save control is in view and the page stops on a half-drawn textarea."},
+    "idle": {"A": "Loaded status sits next to the save action exactly where an operator looks, though the bar cuts the allow-list textarea mid-line.", "B": "'loaded' is placed sensibly beside Load settings, yet there is nothing on screen to save with and the list is cut by the fold."},
+    "active": {"A": "The amber 'unsaved changes' pill is the clearest dirty signal in either set, but Save looks identical to its idle appearance.", "B": "The focus ring on Branch is good, but the status still says 'loaded' while an edit is pending, which misstates the state."},
+    "waiting": {"A": "'saving…' is visible without scrolling, but the Save button is not visibly disabled, inviting a double submit.", "B": "'saving…' is reported in the card, yet with no save control visible it is unclear what is actually in flight."},
+    "long": {"A": "The long repo URL and 40 patterns hold their layout and the bar stays anchored, at the cost of hiding the list's lower lines behind it.", "B": "The long values wrap without overflow and the card grid holds, but again there is no visible action to take."},
+    "error": {"A": "'save failed' is prominent but generic, since the actual validation reason appears nowhere in the viewport.", "B": "The specific message 'model must be provider/model or provider/model#variant' is shown inline, which is the one thing B communicates better, though Save is still off-screen."}
+  },
+  "better": "A",
+  "why": "A is better because its always-visible save action plus an honest not-loaded/loaded/unsaved/saving/failed status answers the page's core question in every state, which outweighs the fixed bar clipping the last textarea and the error state dropping its specific message. B is calmer and cleaner at the edges, but an operator at this viewport can neither see nor reach the action that makes the page useful.",
+  "hardGateEvidence": [
+    "A: the fixed bottom bar clips the allow-list textarea mid-line ('tail *' cut in half) and hides the permissions card's bottom edge in empty, idle, active, waiting, long and error captures.",
+    "B: the primary 'Save settings' control is not visible anywhere in the 1600x1000 captures in any of the six states (below the fold throughout).",
+    "Both: the stream toggle renders as a ~13px checkbox, below the 24pt target minimum, and is centred on its own line with the explanatory label beneath it rather than beside it.",
+    "A: the validation detail present in B ('model must be provider/model or provider/model#variant') is absent from A's error state, which shows only 'save failed'.",
+    "A: 'not loaded' is duplicated in the header and in the footer pill in the empty state.",
+    "No contrast failure visible: body/help text measured ~6.2:1, status pills 7.5–11.7:1 against their backgrounds."
+  ]
+}
