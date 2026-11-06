@@ -9,15 +9,20 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.tests.json",
-    "test": "bun test"
+    "test": "bun test tests",
+    "test:workers": "vitest run",
+    "bench": "bun run bench/measure.ts",
+    "bench:container": "bash bench/container.sh"
   },
   "dependencies": {
     "@opencode/client": "latest"
   },
   "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.6.0",
     "@cloudflare/workers-types": "^4.20251105.0",
     "@types/bun": "^1.4.4",
     "typescript": "^5.9.0",
+    "vitest": "^4.1.0",
     "wrangler": "^4.105.0"
   }
 }

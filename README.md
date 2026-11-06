@@ -97,6 +97,15 @@ bun run typecheck
 
 Apple `container` needs macOS 26+ on Apple silicon. `wrangler dev` with containers still requires a Docker-compatible engine; the script is the Docker-free path.
 
+## Testing and measurements
+
+- `bun test tests` — 37 unit tests (signature, conversation keys, permissions, state, SSE formatting, helpers).
+- `bun run test:workers` — 10 integration tests in workerd (Worker surface, DO state, Slack signature/routing, SSE, a latency guard).
+- `bench/measure.ts` — deployed Worker/SSE/turn latency.
+- `bench/container.sh` — cold start, checkpoint size/time, restore time.
+
+Local numbers (workerd): `/health` p50 1.0 ms / p95 1.0 ms; DO state p50 1.0 ms / p95 2.0 ms; Worker bundle 103 KB. Targets and results live in [bench/README.md](bench/README.md) and [bench/RESULTS.md](bench/RESULTS.md); the test pyramid is in [docs/testing.md](docs/testing.md).
+
 ## Limits and open work
 
 - The reply pump polls (2s) while a run is active; the warm-stream half is not built.
