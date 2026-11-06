@@ -13,6 +13,8 @@ import { formatSse, isSlowSubscriber, type ConversationEvent } from "./events"
 import { createSseParser } from "./sse"
 import { parseModelRef, type Env } from "./env"
 import { withRetries } from "./retry"
+import { retryAfterSeconds } from "./backoff"
+import { logEvent } from "./log"
 import type { HarnessSettings } from "./settings"
 
 const OPENCODE_PORT = 4000
@@ -72,16 +74,17 @@ export class Conversation extends DurableObject<Env> {
     const text = input.text.trim()
     if (!text) return Response.json({ ok: false, error: "empty message" }, { status: 400 })
 
+    const prompt = input.user ? `${input.user}: ${text}` : text
     try {
       const sessionID = await this.ensureSession(text, input.transport ?? "http", input.slack)
-      const prompt = input.user ? `${input.user}: ${text}` : text
       await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
       await this.startRun()
       const settings = await this.settings()
       if (settings.streaming) this.ctx.waitUntil(this.startStream(sessionID))
       return Response.json({ ok: true, sessionID })
     } catch (err) {
-      const queued = await this.enqueue(text, undefined)
+      logEvent("admission.failed", { transport: "http" })
+      const queued = await this.enqueue(prompt, undefined)
       if (!queued) return Response.json({ ok: false, error: "busy" }, { status: 503 })
       return Response.json({ ok: true, queued: true, error: errorMessage(err) }, { status: 202 })
     }
@@ -105,9 +108,10 @@ export class Conversation extends DurableObject<Env> {
     if (!text) return Response.json({ ok: true })
 
     const target: SlackTarget = { channel: event.channel, ...(input.replyTs ? { replyTs: input.replyTs } : {}) }
+    let prompt = text
     try {
+      prompt = await this.buildPrompt(event.channel, event.ts, event.thread_ts, text)
       const sessionID = await this.ensureSession(text, "slack", target)
-      const prompt = await this.buildPrompt(event.channel, event.ts, event.thread_ts, text)
       await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
       await this.startRun()
       const settings = await this.settings()
@@ -115,7 +119,8 @@ export class Conversation extends DurableObject<Env> {
       return Response.json({ ok: true, sessionID })
     } catch (err) {
       if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
-      const queued = await this.enqueue(text, target)
+      logEvent("admission.failed", { transport: "slack" })
+      const queued = await this.enqueue(prompt, target)
       if (!queued) {
         await this.postChunked(
           target.channel,
@@ -367,6 +372,7 @@ export class Conversation extends DurableObject<Env> {
       await this.pollPermissions(sessionID)
 
       if (isSettled(messages)) {
+        logEvent("turn.settled")
         await this.deliver({ type: "settled" })
         const saved = await this.checkpoint()
         if (!saved) {
@@ -457,6 +463,7 @@ export class Conversation extends DurableObject<Env> {
       // Two consecutive failures: assume the container is wedged and recycle it.
       if (this.consecutiveFailures >= 2) {
         this.consecutiveFailures = 0
+        logEvent("container.recycled")
         await this.ctx.container?.destroy().catch(() => {})
       }
       throw error
@@ -560,6 +567,7 @@ export class Conversation extends DurableObject<Env> {
       const attempts = queued.attempts + 1
       if (attempts >= 5) {
         await this.store.patch({ queued: undefined })
+        await this.deliver({ type: "error", message: `queued message could not start: ${errorMessage(err)}` })
         if (queued.slack) {
           await this.postChunked(
             queued.slack.channel,
@@ -590,17 +598,22 @@ export class Conversation extends DurableObject<Env> {
             `http://container/checkpoint?since=${encodeURIComponent(since)}`,
             { signal: AbortSignal.timeout(120_000) },
           )
-          if (response.status === 204) return
+          if (response.status === 204) {
+            logEvent("checkpoint.skipped")
+            return
+          }
           if (!response.ok || !response.body) throw new Error(`checkpoint returned ${response.status}`)
           await this.env.CHECKPOINTS.put(this.checkpointKey(), response.body)
           const fingerprint = response.headers.get("x-workspace-fingerprint")
           if (fingerprint) await this.store.patch({ checkpointFingerprint: fingerprint })
+          logEvent("checkpoint.saved")
         },
         { attempts: 3, delayMs: 1000 },
       )
       return true
     } catch (err) {
       console.warn("checkpoint failed", err)
+      logEvent("checkpoint.failed")
       return false
     }
   }
@@ -650,7 +663,11 @@ export class Conversation extends DurableObject<Env> {
     return text.replace(new RegExp(`<@${botUserId}>`, "g"), "").trim()
   }
 
-  private async slack(method: string, body: Record<string, unknown>): Promise<Record<string, any>> {
+  private async slack(
+    method: string,
+    body: Record<string, unknown>,
+    attempt = 0,
+  ): Promise<Record<string, any>> {
     if (!this.env.SLACK_BOT_TOKEN) throw new Error("SLACK_BOT_TOKEN is not configured")
     const res = await fetch(`https://slack.com/api/${method}`, {
       method: "POST",
@@ -660,6 +677,11 @@ export class Conversation extends DurableObject<Env> {
       },
       body: JSON.stringify(body),
     })
+    if (res.status === 429) {
+      if (attempt >= 2) throw new Error(`${method}: rate_limited`)
+      await sleep(retryAfterSeconds(res.headers.get("retry-after")) * 1000)
+      return this.slack(method, body, attempt + 1)
+    }
     const json = (await res.json()) as { ok?: boolean; error?: string }
     if (!json.ok) throw new Error(`${method}: ${json.error ?? "unknown_error"}`)
     return json as Record<string, any>

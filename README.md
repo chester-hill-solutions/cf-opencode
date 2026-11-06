@@ -132,14 +132,16 @@ scripts/container-dev.sh build   # Apple `container` (no Docker)
 scripts/container-dev.sh run     # :4000 opencode, :4001 control, :9000 local S3
 bun test
 bun run typecheck
+bun run check:config   # prod/test Wrangler config drift guard
 ```
 
 Apple `container` needs macOS 26+ on Apple silicon. `wrangler dev` with containers still requires a Docker-compatible engine; the script is the Docker-free path.
 
 ## Testing and measurements
 
-- `bun test tests` — 37 unit tests (signature, conversation keys, permissions, state, SSE formatting, helpers).
-- `bun run test:workers` — 10 integration tests in workerd (Worker surface, DO state, Slack signature/routing, SSE, a latency guard).
+- `bun test tests` — 63 unit tests (signature, conversation keys, permissions, state, SSE formatting, retry/backoff, helpers).
+- `bun run test:workers` — 16 integration tests in workerd (Worker surface, DO state, Slack signature/routing, SSE, concurrency and admission-queue regressions, a latency guard).
+- `bun run check:config` — fails CI when the prod and test Wrangler configs drift on bindings, exports or vars.
 - `bench/measure.ts` — deployed Worker/SSE/turn latency.
 - `bench/container.sh` — cold start, checkpoint size/time, restore time.
 

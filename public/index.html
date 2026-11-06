@@ -210,21 +210,22 @@
       const tokenInput = $("token")
       let loaded = false
 
-      const FALLBACK_MODELS = [
-        { providerID: "opencode", id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", ref: "opencode/deepseek-v4.1-flash", tags: ["fast", "tools"], recommended: true },
-        { providerID: "opencode", id: "deepseek-v4.1-flash-free", name: "DeepSeek V4.1 Flash Free", ref: "opencode/deepseek-v4.1-flash-free", tags: ["fast", "free"] },
-        { providerID: "opencode", id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", ref: "opencode/deepseek-v4-pro", tags: ["reasoning"] },
-        { providerID: "opencode-go", id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash (Go)", ref: "opencode-go/deepseek-v4.1-flash", tags: ["fast"] },
-        { providerID: "opencode-go", id: "kimi-k3.1-pro", name: "Kimi K3.1 Pro", ref: "opencode-go/kimi-k3.1-pro", tags: ["long-context"] },
-        { providerID: "openai", id: "gpt-6.1-terra-fast", name: "GPT-6.1 Terra Fast", ref: "openai/gpt-6.1-terra-fast", tags: ["fast"] },
-        { providerID: "openai", id: "gpt-6.1-terra", name: "GPT-6.1 Terra", ref: "openai/gpt-6.1-terra", tags: ["reasoning"] }
-      ]
-      let modelCatalog = FALLBACK_MODELS
+      let modelCatalog = []
       let recommendedRef = "opencode/deepseek-v4.1-flash"
+      let catalogueReady = false
 
       function renderModels(current) {
         const select = $("modelSelect")
         const value = current || recommendedRef
+        if (!catalogueReady || modelCatalog.length === 0) {
+          select.hidden = true
+          $("modelCustomWrap").hidden = false
+          $("modelCustom").value = value
+          $("model").value = value
+          $("modelHint").textContent = "Model catalogue unavailable — enter provider/model."
+          return
+        }
+        select.hidden = false
         select.innerHTML = ""
         const groups = {}
         for (const model of modelCatalog) (groups[model.providerID] ??= []).push(model)
@@ -263,10 +264,11 @@
             if (Array.isArray(data.models) && data.models.length) {
               modelCatalog = data.models
               recommendedRef = data.recommended ?? recommendedRef
+              catalogueReady = true
             }
           }
         } catch {
-          /* fall back to the embedded catalogue */
+          /* catalogue unavailable: the free-text field stays visible */
         }
         renderModels($("model").value || recommendedRef)
       }
@@ -285,6 +287,7 @@
       })
       $("modelCustom").addEventListener("input", () => {
         $("model").value = $("modelCustom").value
+        markDirty()
       })
 
       tokenInput.value = localStorage.getItem("cfopencode.token") ?? ""

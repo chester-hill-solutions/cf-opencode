@@ -5,7 +5,8 @@
 `src/settings.ts`, `control-server.ts`, `entrypoint.sh`, `wrangler.jsonc`.
 **Runtime:** Cloudflare Workers + Durable Objects (SQLite-backed) + one container per conversation;
 Slack Events API and HTTP/SSE adapters.
-**Clusters run:** 2 · Concurrency & transactions; 4 · Data integrity & consistency.
+**Clusters run:** 2 · Concurrency & transactions; 3 · Reliability; 4 · Data integrity & consistency;
+5 · Scalability; 6 · Maintainability.
 **Isolation level:** DO storage is single-writer per object with input gates; the audited risks are
 interleavings across `await` on non-storage I/O (DO→DO fetch, container HTTP, R2).
 
@@ -43,6 +44,9 @@ interleavings across `await` on non-storage I/O (DO→DO fetch, container HTTP, 
 | 16 | Single-slot admission queue drained by the alarm with backoff |
 | 17 | Slow SSE subscribers are closed past a 64 KB queue budget |
 | 18 | Workspace fingerprint lets unchanged turns skip the R2 upload |
+| 19 | Slack 429s honor `Retry-After` for two retries, then fall back to the at-least-once path |
+| 20 | The UI no longer embeds a model catalogue; `/api/models` is the only source |
+| 21 | `bun run check:config` compares the prod and test Wrangler configs in CI |
 
 Findings 5 and 10's control-server changes take effect when the container image is rebuilt; findings 1–9
 ship in the Worker.
@@ -64,16 +68,16 @@ ship in the Worker.
 | 16 | **Container capacity is one and unhandled** | `wrangler.jsonc` (`max_instances: 1`), `src/conversation.ts` `port()` | Thread B messages while thread A's container is the single instance → `start()`/health poll fails → admission errors with no retry | **Fixed:** single-slot admission queue; alarm drains it with linear backoff (5 attempts), then posts a final error. HTTP returns 202 `queued`; Slack gets a "queued" notice | Code path + `test/concurrency.test.ts` |
 | 17 | **SSE backpressure is unbounded** | `src/conversation.ts` `broadcast` | A slow subscriber is enqueued without checking `desiredSize`; a stalled client grows the DO's memory | **Fixed:** subscribers below −64 KB queued are closed and dropped; the client reconnects with `Last-Event-ID` | Code path + `tests/events.test.ts` |
 | 18 | **A full-workspace checkpoint per turn is O(repo)** | `control-server.ts` `/checkpoint`, `src/conversation.ts` `checkpoint` | A 500 MB repo is tarred and uploaded to R2 after every settled turn, even when nothing changed | **Fixed:** the control server fingerprints the workspace (HEAD + porcelain); the DO sends `since`, an unchanged tree returns 204 and no upload happens. Changed trees still tar (Stow incremental is the next step) | Code path |
-| 19 | **Slack 429 is not handled** | `src/conversation.ts` `slack()` | A rate-limited post throws; the at-least-once retry re-posts on the next poll and can storm | Reported: honor `Retry-After` with a bounded retry | Code path |
+| 19 | **Slack 429 is not handled** | `src/conversation.ts` `slack()` | A rate-limited post throws; the at-least-once retry re-posts on the next poll and can storm | **Fixed:** 429s honor `Retry-After` (default 1 s, capped at 30 s) for two retries, then throw so the at-least-once path takes over | `src/backoff.ts` + `tests/backoff.test.ts` |
 
 ## Cluster 6 · Maintainability & evolution (third pass)
 
 | # | Finding | Location | Failure sequence | Fix | Evidence |
 |---|---|---|---|---|---|
-| 20 | **Model catalogue duplicated** | `src/models.ts`, `public/index.html` `FALLBACK_MODELS` | A model added to one list and not the other drifts; the UI offers a model the API does not know (or misses one) | Reported: generate the fallback from the catalogue at build time, or drop the fallback | Two copies in the tree |
-| 21 | **Prod/test config drift** | `wrangler.jsonc` vs `wrangler.test.jsonc` | Different compatibility dates, containers only in prod, `CONTAINER_URL` only in tests; a new prod binding can be missing in tests and vice versa | Reported: derive the test config from prod, or add a CI check comparing binding names | Diff of the two files |
+| 20 | **Model catalogue duplicated** | `src/models.ts`, `public/index.html` `FALLBACK_MODELS` | A model added to one list and not the other drifts; the UI offers a model the API does not know (or misses one) | **Fixed:** the embedded catalogue is gone. `/api/models` is the only source; when it is unreachable the UI hides the select and keeps the free-text field visible | `public/index.html` `renderModels` |
+| 21 | **Prod/test config drift** | `wrangler.jsonc` vs `wrangler.test.jsonc` | Different compatibility dates, containers only in prod, `CONTAINER_URL` only in tests; a new prod binding can be missing in tests and vice versa | **Fixed:** `bun run check:config` compares entrypoint, flags, DO classes/bindings, R2 bindings, exports, assets and vars; CI runs it before typecheck. Test-only bindings live in `vitest.config.ts` | `scripts/check-config.mjs` + CI |
 | 22 | **Implicit conversation state machine** | `src/conversation.ts` | Lifecycle is inferred from `sessionID?`, `settingsVersion?`, `lastReply?`, `pumping`, `streaming`, `readying`, `consecutiveFailures`; "starting", "running" and "settling" are not named states | Reported: explicit state + guarded transitions (prompt 37, separate session) | Field list |
-| 23 | **Observability gaps** | whole Worker | No metrics or traces; only `console.warn`; no turn latency, queue depth, checkpoint bytes or failure classes | Reported: counters/log fields and OTel export | Code path |
+| 23 | **Observability gaps** | whole Worker | No metrics or traces; only `console.warn`; no turn latency, queue depth, checkpoint bytes or failure classes | **Partly fixed:** one-line JSON `logEvent` records admission failures, turn settle, checkpoint saved/skipped/failed and container recycle. Turn latency, queue depth and OTel export remain open | `src/log.ts` + call sites |
 | 24 | **Mixed responsibilities** | `src/conversation.ts` (~500 lines) | Slack delivery, SSE fan-out, container lifecycle, pump and permissions live in one class | Reported (prompt 36): extract `ContainerRuntime` and `EventStream`; do not restructure in the audit | File size and imports |
 
 ## What was not checked
@@ -82,7 +86,8 @@ ship in the Worker.
   pass) is deliberately deferred to its own session.
 - Findings 2, 3 and 7 are cited interleavings. A workerd regression test now drives two concurrent
   deliveries of the same Slack event through the DO (`test/concurrency.test.ts`); the settings-restart and
-  stale-pump interleavings still lack a live harness. Findings 19–24 are reported, not fixed. Findings 16–18 are fixed and covered by tests.
+  stale-pump interleavings still lack a live harness. Findings 16–21 are fixed and covered by tests; 22 (implicit state machine) and 24 (mixed responsibilities) are
+reported and deferred to their own sessions; 23 is partly fixed (structured logs, no metrics yet).
 - Light mode, 200% zoom, and Slack-specific rate limits are outside this pass.
 
 ## Verification notes
