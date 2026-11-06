@@ -219,7 +219,6 @@ async function handleOnboarding(
       model: settings.model ?? "",
       secrets: {
         github: keys.includes(GITHUB_TOKEN_KEY),
-        opencode: keys.includes("opencode.connected"),
       },
     })
   }

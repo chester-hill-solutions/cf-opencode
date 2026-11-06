@@ -57,7 +57,7 @@ type OnboardingStatus = {
   }
   workspace: { repo: string; branch: string }
   model: string
-  secrets: { github: boolean; opencode: boolean }
+  secrets: { github: boolean }
 }
 
 function readToken() {
@@ -132,7 +132,6 @@ export function OnboardingApp() {
   const [error, setError] = useState("")
   const [message, setMessage] = useState("")
   const poll = useRef<ReturnType<typeof setInterval> | undefined>(undefined)
-
   const authenticated = !!activeToken
 
   const refresh = useCallback(async (value: string) => {
@@ -180,6 +179,10 @@ export function OnboardingApp() {
           /* storage may be unavailable */
         }
         await Promise.all([loadIntegrations(token.trim()), loadModels(token.trim())])
+        const params = new URLSearchParams(window.location.search)
+        const outcome = params.get("step") === "github" ? params.get("status") : null
+        if (outcome === "connected") setMessage("GitHub connected.")
+        else if (outcome) setError(`GitHub connection ${outcome.replace(/_/g, " ")}.`)
         if (next.onboarding.completedAt) setMessage("This workspace is already set up.")
       } catch (cause) {
         setActiveToken("")
@@ -470,7 +473,13 @@ export function OnboardingApp() {
               {busy === "oauth" ? "Opening…" : "Sign in"}
             </Button>
             <span className="connection-note">
-              {attempt ? "Finish the sign-in in the new tab; this page updates automatically." : "Opens the provider’s sign-in page."}
+              {attempt ? (
+                <a href={attempt.url} target="_blank" rel="noreferrer">
+                  {attempt.instructions || "Open the sign-in page"}
+                </a>
+              ) : (
+                "Opens the provider’s sign-in page."
+              )}
             </span>
           </div>
           {attempt?.paste ? (
