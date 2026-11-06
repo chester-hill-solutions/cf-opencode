@@ -27,7 +27,46 @@ export interface HarnessSettings {
 }
 
 export const DEFAULT_ALLOW = SAFE_COMMANDS.map((command) => `${command} *`)
-export const DEFAULT_DENY = [...DENY_COMMANDS]
+
+/** Common legitimate-but-risky commands: explicit so operators can see and edit them. */
+export const DEFAULT_ASK = [
+  "git add *",
+  "git commit *",
+  "git push *",
+  "git checkout *",
+  "git switch *",
+  "git merge *",
+  "git rebase *",
+  "bun add *",
+  "bun install *",
+  "bun remove *",
+  "npm install *",
+  "npm add *",
+  "pnpm add *",
+  "yarn add *",
+  "curl *",
+  "wget *",
+  "ssh *",
+  "scp *",
+  "gh *",
+  "docker *",
+  "kubectl *",
+  "terraform *",
+  "ffmpeg *",
+  "python *",
+  "node *",
+]
+
+export const DEFAULT_DENY = [
+  ...DENY_COMMANDS,
+  "dd *",
+  "mkfs*",
+  "shutdown *",
+  "reboot *",
+  "chown -R *",
+]
+
+export const DEFAULT_POLL_SECONDS = 2
 
 export interface SettingsDefaults {
   WORKSPACE_REPO?: string
@@ -40,9 +79,9 @@ export function defaultSettings(env: SettingsDefaults): HarnessSettings {
     workspaceRepo: env.WORKSPACE_REPO ?? "",
     workspaceBranch: "main",
     model: env.OPENCODE_MODEL ?? "opencode/deepseek-v4.1-flash",
-    pollSeconds: Number(env.POLL_SECONDS ?? 2) || 2,
+    pollSeconds: Number(env.POLL_SECONDS ?? DEFAULT_POLL_SECONDS) || DEFAULT_POLL_SECONDS,
     streaming: true,
-    permissions: { allow: DEFAULT_ALLOW, ask: [], deny: DEFAULT_DENY },
+    permissions: { allow: DEFAULT_ALLOW, ask: DEFAULT_ASK, deny: DEFAULT_DENY },
     version: 1,
   }
 }

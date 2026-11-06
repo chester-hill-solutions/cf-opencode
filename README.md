@@ -84,9 +84,23 @@ Without the Slack secrets the Slack routes return 503 and the harness is HTTP-on
 
 `/` serves a single-file admin panel (static asset, no build step):
 
-- workspace repo + branch, model (`provider/model[#variant]`), poll seconds, streaming toggle
+- workspace repo + branch, model, poll seconds, streaming toggle
+- **model selector**: a curated catalogue grouped by provider, with a recommended default
+  (`opencode/deepseek-v4.1-flash`) and a `Custom…` option for anything the deployment exposes
 - permission lists: allow / ask / deny shell patterns (one per line)
 - API token entry, `Load settings`, `Save settings`
+
+Sane defaults:
+
+| List | Default |
+|---|---|
+| allow | read-only and build commands (`ls`, `cat`, `rg`, `git status|diff|log`, `bun test`, …) |
+| ask | `git push|commit|merge|rebase`, package installs, `curl`/`wget`/`ssh`, `docker`/`kubectl`/`terraform`, `ffmpeg`, `python`/`node` |
+| deny | `sudo`, `rm -rf`, `git push --force`, `git reset --hard`, `dd`, `mkfs`, `shutdown`, `reboot`, `chmod 777` |
+| poll seconds | 2 |
+| streaming | on |
+
+`GET /api/models` returns the catalogue plus the recommended reference.
 
 Settings are **global**, stored in the `Settings` Durable Object and versioned.
 Saving bumps the version; a conversation restarts its container on the next turn

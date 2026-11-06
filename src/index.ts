@@ -1,6 +1,7 @@
 import { parseInteractionBody, verifySlackSignature, type SlackEventEnvelope } from "./adapters/slack"
 import type { Env } from "./env"
 import type { MessageRequest, PermissionRequest, SlackEventRequest } from "./conversation"
+import { MODEL_CATALOG, recommendModel } from "./models"
 
 export { Conversation } from "./conversation"
 export { Settings } from "./settings-do"
@@ -99,6 +100,10 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   }
 
   const parts = url.pathname.split("/").filter(Boolean) // api, ...
+
+  if (parts[1] === "models" && request.method === "GET") {
+    return Response.json({ models: MODEL_CATALOG, recommended: recommendModel().ref })
+  }
 
   if (parts[1] === "settings") {
     const settings = env.SETTINGS.getByName("global")

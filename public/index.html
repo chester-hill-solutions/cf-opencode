@@ -78,7 +78,7 @@
       label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
       .row { display: flex; gap: 12px; flex-wrap: wrap; }
       .row > label { flex: 1; min-width: 200px; }
-      input[type="text"], input[type="password"], input[type="number"], textarea {
+      input[type="text"], input[type="password"], input[type="number"], select, textarea {
         font: inherit;
         color: var(--text);
         background: var(--bg);
@@ -144,10 +144,15 @@
         <fieldset>
           <legend>Model</legend>
           <label>
-            Model reference
-            <input id="model" type="text" placeholder="opencode/deepseek-v4.1-flash" />
+            Model
+            <select id="modelSelect"></select>
           </label>
-          <div class="hint">provider/model or provider/model#variant</div>
+          <label id="modelCustomWrap" hidden>
+            Custom model reference
+            <input id="modelCustom" type="text" placeholder="provider/model" />
+          </label>
+          <input id="model" type="hidden" />
+          <div class="hint" id="modelHint">provider/model or provider/model#variant</div>
         </fieldset>
 
         <fieldset>
@@ -205,6 +210,83 @@
       const tokenInput = $("token")
       let loaded = false
 
+      const FALLBACK_MODELS = [
+        { providerID: "opencode", id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash", ref: "opencode/deepseek-v4.1-flash", tags: ["fast", "tools"], recommended: true },
+        { providerID: "opencode", id: "deepseek-v4.1-flash-free", name: "DeepSeek V4.1 Flash Free", ref: "opencode/deepseek-v4.1-flash-free", tags: ["fast", "free"] },
+        { providerID: "opencode", id: "deepseek-v4-pro", name: "DeepSeek V4 Pro", ref: "opencode/deepseek-v4-pro", tags: ["reasoning"] },
+        { providerID: "opencode-go", id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash (Go)", ref: "opencode-go/deepseek-v4.1-flash", tags: ["fast"] },
+        { providerID: "opencode-go", id: "kimi-k3.1-pro", name: "Kimi K3.1 Pro", ref: "opencode-go/kimi-k3.1-pro", tags: ["long-context"] },
+        { providerID: "openai", id: "gpt-6.1-terra-fast", name: "GPT-6.1 Terra Fast", ref: "openai/gpt-6.1-terra-fast", tags: ["fast"] },
+        { providerID: "openai", id: "gpt-6.1-terra", name: "GPT-6.1 Terra", ref: "openai/gpt-6.1-terra", tags: ["reasoning"] }
+      ]
+      let modelCatalog = FALLBACK_MODELS
+      let recommendedRef = "opencode/deepseek-v4.1-flash"
+
+      function renderModels(current) {
+        const select = $("modelSelect")
+        const value = current || recommendedRef
+        select.innerHTML = ""
+        const groups = {}
+        for (const model of modelCatalog) (groups[model.providerID] ??= []).push(model)
+        for (const [provider, list] of Object.entries(groups)) {
+          const group = document.createElement("optgroup")
+          group.label = provider
+          for (const model of list) {
+            const option = document.createElement("option")
+            option.value = model.ref
+            option.textContent = model.name + (model.tags?.length ? " · " + model.tags.join(" · ") : "")
+            group.appendChild(option)
+          }
+          select.appendChild(group)
+        }
+        const custom = document.createElement("option")
+        custom.value = "__custom"
+        custom.textContent = "Custom…"
+        select.appendChild(custom)
+
+        const known = modelCatalog.some((model) => model.ref === value)
+        select.value = known ? value : "__custom"
+        $("modelCustomWrap").hidden = known
+        $("modelCustom").value = known ? "" : value
+        $("model").value = value
+        const recommended = modelCatalog.find((model) => model.ref === recommendedRef)
+        $("modelHint").textContent = recommended
+          ? "Recommended: " + recommended.name + (recommended.tags?.length ? " — " + recommended.tags.join(", ") : "")
+          : "provider/model or provider/model#variant"
+      }
+
+      async function loadModels() {
+        try {
+          const res = await api("/api/models")
+          if (res.ok) {
+            const data = await res.json()
+            if (Array.isArray(data.models) && data.models.length) {
+              modelCatalog = data.models
+              recommendedRef = data.recommended ?? recommendedRef
+            }
+          }
+        } catch {
+          /* fall back to the embedded catalogue */
+        }
+        renderModels($("model").value || recommendedRef)
+      }
+
+      $("modelSelect").addEventListener("change", () => {
+        const value = $("modelSelect").value
+        if (value === "__custom") {
+          $("modelCustomWrap").hidden = false
+          $("modelCustom").focus()
+          $("model").value = $("modelCustom").value
+        } else {
+          $("modelCustomWrap").hidden = true
+          $("model").value = value
+        }
+        markDirty()
+      })
+      $("modelCustom").addEventListener("input", () => {
+        $("model").value = $("modelCustom").value
+      })
+
       tokenInput.value = localStorage.getItem("cfopencode.token") ?? ""
 
       const setStatus = (text, cls = "") => {
@@ -222,7 +304,7 @@
       function fill(settings) {
         $("workspaceRepo").value = settings.workspaceRepo ?? ""
         $("workspaceBranch").value = settings.workspaceBranch ?? ""
-        $("model").value = settings.model ?? ""
+        renderModels(settings.model || recommendedRef)
         $("pollSeconds").value = settings.pollSeconds ?? 2
         $("streaming").checked = settings.streaming !== false
         $("allow").value = text(settings.permissions?.allow)
@@ -293,7 +375,9 @@
       $("settings").addEventListener("input", markDirty)
       $("settings").addEventListener("change", markDirty)
 
+      renderModels(recommendedRef)
       if (tokenInput.value) load()
+      loadModels()
     </script>
   </body>
 </html>

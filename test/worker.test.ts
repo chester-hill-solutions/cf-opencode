@@ -44,6 +44,14 @@ describe("worker surface", () => {
     expect(await res.json()).toMatchObject({ seen: [], pending: {} })
   })
 
+  it("serves the model catalogue with a token", async () => {
+    const res = await SELF.fetch(`${BASE}/api/models`, { headers: API })
+    expect(res.status).toBe(200)
+    const data = (await res.json()) as { models: Array<{ ref: string }>; recommended: string }
+    expect(data.models.length).toBeGreaterThan(0)
+    expect(data.recommended).toContain("/")
+  })
+
   it("serves settings with a token", async () => {
     const res = await SELF.fetch(`${BASE}/api/settings`, { headers: API })
     expect(res.status).toBe(200)
