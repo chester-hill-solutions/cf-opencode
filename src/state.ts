@@ -50,13 +50,28 @@ export class ConversationStore {
     await this.storage.put("state", state)
   }
 
-  /** Record an event id; returns true when it was already seen. */
-  async seenBefore(eventID: string): Promise<boolean> {
+  /** Claim an event for processing; false when it was already claimed. */
+  async claimEvent(eventID: string): Promise<boolean> {
     const state = await this.get()
-    if (state.seen.includes(eventID)) return true
+    if (state.seen.includes(eventID)) return false
     state.seen = [...state.seen, eventID].slice(-SEEN_LIMIT)
     await this.save(state)
-    return false
+    return true
+  }
+
+  /** Release a claim after a failed admission so a redelivery can be processed. */
+  async releaseEvent(eventID: string): Promise<void> {
+    const state = await this.get()
+    state.seen = state.seen.filter((id) => id !== eventID)
+    await this.save(state)
+  }
+
+  /** Merge fields into the latest state instead of writing a stale snapshot. */
+  async patch(patch: Partial<ConversationState>): Promise<ConversationState> {
+    const state = await this.get()
+    const next = { ...state, ...patch }
+    await this.save(next)
+    return next
   }
 
   async setSession(sessionID: string, transport: Transport, slack?: SlackTarget): Promise<void> {
@@ -86,19 +101,26 @@ export class ConversationStore {
     return log.filter((entry) => entry.seq > lastID)
   }
 
+  async oldestSeq(): Promise<number | undefined> {
+    const log = (await this.storage.get<StoredEventEntry[]>("events")) ?? []
+    return log[0]?.seq
+  }
+
   async rememberPermission(requestID: string, sessionID: string): Promise<void> {
     const state = await this.get()
     state.pending[requestID] = sessionID
     await this.save(state)
   }
 
-  async takePermission(requestID: string): Promise<string | undefined> {
+  async peekPermission(requestID: string): Promise<string | undefined> {
+    return (await this.get()).pending[requestID]
+  }
+
+  /** Remove a permission only after the decision was recorded. */
+  async clearPermission(requestID: string): Promise<void> {
     const state = await this.get()
-    const sessionID = state.pending[requestID]
-    if (sessionID) {
-      delete state.pending[requestID]
-      await this.save(state)
-    }
-    return sessionID
+    if (!state.pending[requestID]) return
+    delete state.pending[requestID]
+    await this.save(state)
   }
 }

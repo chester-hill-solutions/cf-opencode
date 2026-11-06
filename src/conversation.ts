@@ -70,13 +70,17 @@ export class Conversation extends DurableObject<Env> {
     const text = input.text.trim()
     if (!text) return Response.json({ ok: false, error: "empty message" }, { status: 400 })
 
-    const sessionID = await this.ensureSession(text, input.transport ?? "http", input.slack)
-    const prompt = input.user ? `${input.user}: ${text}` : text
-    await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
-    await this.startRun()
-    const settings = await this.settings()
-    if (settings.streaming) this.ctx.waitUntil(this.startStream(sessionID))
-    return Response.json({ ok: true, sessionID })
+    try {
+      const sessionID = await this.ensureSession(text, input.transport ?? "http", input.slack)
+      const prompt = input.user ? `${input.user}: ${text}` : text
+      await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
+      await this.startRun()
+      const settings = await this.settings()
+      if (settings.streaming) this.ctx.waitUntil(this.startStream(sessionID))
+      return Response.json({ ok: true, sessionID })
+    } catch (err) {
+      return Response.json({ ok: false, error: errorMessage(err) }, { status: 500 })
+    }
   }
 
   private async settings(): Promise<HarnessSettings> {
@@ -91,27 +95,34 @@ export class Conversation extends DurableObject<Env> {
     if (!event.channel || !event.ts) return Response.json({ ok: true })
     if (event.bot_id || event.subtype) return Response.json({ ok: true })
     if (!event.text) return Response.json({ ok: true })
-    if (input.eventID && (await this.store.seenBefore(input.eventID))) return Response.json({ ok: true })
+    if (input.eventID && !(await this.store.claimEvent(input.eventID))) return Response.json({ ok: true })
 
     const text = this.stripMention(event.text)
     if (!text) return Response.json({ ok: true })
 
     const target: SlackTarget = { channel: event.channel, ...(input.replyTs ? { replyTs: input.replyTs } : {}) }
-    const sessionID = await this.ensureSession(text, "slack", target)
-    const prompt = await this.buildPrompt(event.channel, event.ts, event.thread_ts, text)
-    await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
-    await this.startRun()
-    const settings = await this.settings()
-    if (settings.streaming) this.ctx.waitUntil(this.startStream(sessionID))
-    return Response.json({ ok: true, sessionID })
+    try {
+      const sessionID = await this.ensureSession(text, "slack", target)
+      const prompt = await this.buildPrompt(event.channel, event.ts, event.thread_ts, text)
+      await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
+      await this.startRun()
+      const settings = await this.settings()
+      if (settings.streaming) this.ctx.waitUntil(this.startStream(sessionID))
+      return Response.json({ ok: true, sessionID })
+    } catch (err) {
+      if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
+      await this.postChunked(target.channel, `⚠️ Couldn't start the session: ${errorMessage(err)}`, target.replyTs).catch(() => {})
+      return Response.json({ ok: false }, { status: 500 })
+    }
   }
 
   private async onPermission(input: PermissionRequest): Promise<Response> {
-    const sessionID = (await this.store.takePermission(input.requestID)) ?? input.sessionID
+    const sessionID = (await this.store.peekPermission(input.requestID)) ?? input.sessionID
     if (!sessionID) return Response.json({ ok: false, error: "unknown request" }, { status: 404 })
     await this.withClient((client) =>
       client.permission.reply({ sessionID, requestID: input.requestID, decision: input.decision }),
     )
+    await this.store.clearPermission(input.requestID)
     return Response.json({ ok: true })
   }
 
@@ -119,6 +130,7 @@ export class Conversation extends DurableObject<Env> {
 
   private async onEvents(request: Request): Promise<Response> {
     const lastID = Number(request.headers.get("last-event-id") ?? "0") || 0
+    const oldest = await this.store.oldestSeq()
     const replay = await this.store.eventsAfter(lastID)
     const encoder = new TextEncoder()
     let ref: ReadableStreamDefaultController<Uint8Array> | undefined
@@ -126,6 +138,9 @@ export class Conversation extends DurableObject<Env> {
     const stream = new ReadableStream<Uint8Array>({
       start: (controller) => {
         ref = controller
+        if (lastID > 0 && oldest !== undefined && lastID < oldest - 1) {
+          controller.enqueue(encoder.encode(formatSse({ type: "reset" })))
+        }
         for (const entry of replay) controller.enqueue(encoder.encode(formatSse(entry.event, entry.seq)))
         controller.enqueue(encoder.encode(": connected\n\n"))
         this.subscribers.add(controller)
@@ -215,16 +230,14 @@ export class Conversation extends DurableObject<Env> {
     const settings = await this.settings()
     const model = parseModelRef(settings.model)
     if (model) {
-      await this.withClient((client) => client.session.switchModel({ sessionID, model })).catch(() => {})
+      await this.withClient((client) => client.session.switchModel({ sessionID, model }))
     }
     await this.store.setSession(sessionID, transport, slack)
     return sessionID
   }
 
   private async startRun(): Promise<void> {
-    const state = await this.store.get()
-    state.lastReply = undefined
-    await this.store.save(state)
+    await this.store.patch({ lastReply: undefined })
     await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
   }
 
@@ -317,12 +330,11 @@ export class Conversation extends DurableObject<Env> {
       const reply = latestAssistantReply(messages)
 
       if (reply && reply !== state.lastReply) {
-        state.lastReply = reply
-        await this.store.save(state)
+        await this.store.patch({ lastReply: reply })
         await this.deliver({ type: "assistant", text: reply })
       }
 
-      await this.pollPermissions(sessionID, state)
+      await this.pollPermissions(sessionID)
 
       if (isSettled(messages)) {
         await this.deliver({ type: "settled" })
@@ -337,18 +349,22 @@ export class Conversation extends DurableObject<Env> {
 
   /** Alarm fallback: poll while a stream is not covering the run. */
   async alarm(): Promise<void> {
-    const settled = await this.pumpOnce()
-    if (settled) return
-    const settings = await this.settings()
-    await this.ctx.storage.setAlarm(Date.now() + (this.streaming ? 30_000 : settings.pollSeconds * 1000))
+    try {
+      const settled = await this.pumpOnce()
+      if (settled) return
+    } catch (err) {
+      console.warn("pump failed", err)
+    }
+    const settings = await this.settings().catch(() => undefined)
+    await this.ctx.storage.setAlarm(Date.now() + (this.streaming ? 30_000 : (settings?.pollSeconds ?? 2) * 1000))
   }
 
-  private async pollPermissions(sessionID: string, state: Awaited<ReturnType<ConversationStore["get"]>>): Promise<void> {
+  private async pollPermissions(sessionID: string): Promise<void> {
     const pending = (await this.withClient((client) => client.permission.list({ sessionID })).catch(() => [])) ?? []
     for (const request of pending) {
+      const state = await this.store.get()
       if (state.pending[request.id]) continue
-      state.pending[request.id] = sessionID
-      await this.store.save(state)
+      await this.store.rememberPermission(request.id, sessionID)
       await this.deliver({
         type: "permission",
         requestID: request.id,
@@ -383,23 +399,36 @@ export class Conversation extends DurableObject<Env> {
     return fn(client)
   }
 
+  private readying?: Promise<ContainerPort>
+
   /** Start the container, restore the checkpoint on first boot, start OpenCode. */
   private async ensureReady(): Promise<ContainerPort> {
+    if (!this.readying) {
+      this.readying = this.doEnsureReady().finally(() => {
+        this.readying = undefined
+      })
+    }
+    return this.readying
+  }
+
+  private async doEnsureReady(): Promise<ContainerPort> {
     const settings = await this.settings()
     const state = await this.store.get()
     const container = this.ctx.container
     if (!container) throw new Error("no container bound")
 
-    // Saved settings apply on the next turn: restart, then restore the checkpoint.
-    if (state.settingsVersion !== undefined && state.settingsVersion !== settings.version && container.running) {
+    // Apply a settings change only between runs: destroying mid-run loses the turn.
+    if (
+      state.settingsVersion !== undefined &&
+      state.settingsVersion !== settings.version &&
+      container.running &&
+      !this.pumping &&
+      !this.streaming
+    ) {
       await container.destroy()
     }
 
     const control = await this.port(CONTROL_PORT)
-    await control.fetch("http://container/configure", {
-      method: "POST",
-      body: JSON.stringify(settings),
-    })
 
     const status = (await (await control.fetch("http://container/status")).json()) as { initialized?: boolean }
     if (!status.initialized) {
@@ -408,11 +437,18 @@ export class Conversation extends DurableObject<Env> {
         await control.fetch("http://container/restore", { method: "POST", body: checkpoint.body })
       }
     }
-    await control.fetch("http://container/start", { method: "POST" })
+
+    // Configure after restore: /restore replaces /workspace, including the config.
+    await control.fetch("http://container/configure", {
+      method: "POST",
+      body: JSON.stringify(settings),
+    })
+
+    const started = await control.fetch("http://container/start", { method: "POST" })
+    if (!started.ok) throw new Error(`container start failed: ${await started.text()}`)
 
     if (state.settingsVersion !== settings.version) {
-      state.settingsVersion = settings.version
-      await this.store.save(state)
+      await this.store.patch({ settingsVersion: settings.version })
     }
     return container.getTcpPort(OPENCODE_PORT)
   }
@@ -506,6 +542,15 @@ function button(
     ...(style ? { style } : {}),
     action_id: actionID,
     value: JSON.stringify({ key, requestID }),
+  }
+}
+
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message
+  try {
+    return JSON.stringify(err)
+  } catch {
+    return String(err)
   }
 }
 

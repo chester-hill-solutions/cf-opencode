@@ -20,11 +20,24 @@ describe("ConversationStore", () => {
     expect(await store.get()).toEqual({ seen: [], pending: {} })
   })
 
-  test("dedupes event ids", async () => {
+  test("claims event ids and releases failed ones", async () => {
     const store = new ConversationStore(fakeStorage())
-    expect(await store.seenBefore("evt_1")).toBe(false)
-    expect(await store.seenBefore("evt_1")).toBe(true)
-    expect(await store.seenBefore("evt_2")).toBe(false)
+    expect(await store.claimEvent("evt_1")).toBe(true)
+    expect(await store.claimEvent("evt_1")).toBe(false)
+    expect(await store.claimEvent("evt_2")).toBe(true)
+    await store.releaseEvent("evt_1")
+    expect(await store.claimEvent("evt_1")).toBe(true)
+  })
+
+  test("patch merges into the latest state without clobbering other fields", async () => {
+    const store = new ConversationStore(fakeStorage())
+    await store.setSession("ses_1", "slack", { channel: "C1" })
+    await store.rememberPermission("req_1", "ses_1")
+    await store.patch({ lastReply: "hello" })
+    const state = await store.get()
+    expect(state.lastReply).toBe("hello")
+    expect(state.pending).toEqual({ req_1: "ses_1" })
+    expect(state.sessionID).toBe("ses_1")
   })
 
   test("keeps the session, transport and Slack target", async () => {
@@ -36,11 +49,13 @@ describe("ConversationStore", () => {
     expect(state.slack).toEqual({ channel: "C1", replyTs: "111.222" })
   })
 
-  test("remembers and consumes pending permissions once", async () => {
+  test("peeks a permission, then clears it after the reply", async () => {
     const store = new ConversationStore(fakeStorage())
     await store.rememberPermission("req_1", "ses_1")
-    expect(await store.takePermission("req_1")).toBe("ses_1")
-    expect(await store.takePermission("req_1")).toBeUndefined()
+    expect(await store.peekPermission("req_1")).toBe("ses_1")
+    expect(await store.peekPermission("req_1")).toBe("ses_1")
+    await store.clearPermission("req_1")
+    expect(await store.peekPermission("req_1")).toBeUndefined()
   })
 
   test("sequences SSE events and replays after an id", async () => {
@@ -70,7 +85,7 @@ describe("ConversationStore", () => {
   test("caps the dedupe list", async () => {
     const storage = fakeStorage()
     const store = new ConversationStore(storage)
-    for (let i = 0; i < 250; i++) await store.seenBefore(`evt_${i}`)
+    for (let i = 0; i < 250; i++) await store.claimEvent(`evt_${i}`)
     const state = await store.get()
     expect(state.seen.length).toBe(200)
     expect(state.seen[state.seen.length - 1]).toBe("evt_249")

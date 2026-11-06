@@ -116,9 +116,9 @@ function initialized(): boolean {
   return existsSync(`${WORKSPACE}/.git`) || existsSync(MARKER)
 }
 
-async function run(command: string[]): Promise<void> {
+async function run(command: string[]): Promise<number> {
   const proc = spawn(command, { stdout: "inherit", stderr: "inherit" })
-  await proc.exited
+  return proc.exited
 }
 
 Bun.serve({
@@ -147,7 +147,8 @@ Bun.serve({
 
     if (url.pathname === "/start") {
       if (!initialized() && workspaceRepo) {
-        await run(["git", "clone", "--depth", "1", "--branch", workspaceBranch, workspaceRepo, WORKSPACE])
+        const code = await run(["git", "clone", "--depth", "1", "--branch", workspaceBranch, workspaceRepo, WORKSPACE])
+        if (code !== 0) return Response.json({ error: "workspace clone failed" }, { status: 500 })
       }
       await startStow()
       await startOpencode()
@@ -159,13 +160,19 @@ Bun.serve({
       await Bun.write(tmp, new Response(request.body as ReadableStream))
       rmSync(WORKSPACE, { recursive: true, force: true })
       mkdirSync(WORKSPACE, { recursive: true })
-      await run(["tar", "xzf", tmp, "-C", WORKSPACE])
+      const code = await run(["tar", "xzf", tmp, "-C", WORKSPACE])
+      if (code !== 0) return Response.json({ error: "restore failed" }, { status: 500 })
       writeFileSync(MARKER, new Date().toISOString())
       return Response.json({ ok: true })
     }
 
     if (url.pathname === "/checkpoint") {
-      // Flush OpenCode's SQLite WAL so the checkpoint is consistent.
+      // Pause OpenCode so the archive is a consistent snapshot; /start resumes it.
+      if (opencode) {
+        opencode.kill()
+        await opencode.exited.catch(() => {})
+        opencode = undefined
+      }
       try {
         await run(["sqlite3", `${STATE_DIR}/opencode.db`, "PRAGMA wal_checkpoint(TRUNCATE)"])
       } catch {

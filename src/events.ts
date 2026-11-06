@@ -10,6 +10,7 @@ export type ConversationEvent =
   | { type: "settled" }
   | { type: "permission"; requestID: string; action?: string; resources?: string[] }
   | { type: "error"; message: string }
+  | { type: "reset" }
 
 /** One SSE frame: an `event:` name plus the JSON payload. */
 export function formatSse(event: ConversationEvent, seq?: number): string {

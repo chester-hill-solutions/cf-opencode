@@ -19,6 +19,10 @@ describe("formatSse", () => {
     expect(formatSse({ type: "settled" }, 7)).toBe('id: 7\nevent: settled\ndata: {"type":"settled"}\n\n')
   })
 
+  test("formats a reset frame", () => {
+    expect(formatSse({ type: "reset" })).toBe('event: reset\ndata: {"type":"reset"}\n\n')
+  })
+
   test("settled has no payload fields", () => {
     expect(formatSse({ type: "settled" })).toBe('event: settled\ndata: {"type":"settled"}\n\n')
   })
