@@ -1,16 +1,16 @@
 import { describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
-import { basicAuth } from "../src/opencode"
 
 /**
- * OpenCode v2 requires HTTP Basic auth. The control server returns the
- * per-start password from /start; every client request must carry it.
+ * The Durable Object never receives or stores the OpenCode password. The
+ * control server owns it and authenticates `/opencode/*` on loopback, so DO
+ * requests carry only the control token and no basic-auth header.
  */
 
-describe("opencode auth", () => {
-  it("uses the password returned by /start on container requests", async () => {
+describe("opencode auth boundary", () => {
+  it("does not send or store an OpenCode password", async () => {
     const stub = env.CONVERSATION.getByName("C1:auth")
-    await runInDurableObject(stub, async (instance) => {
+    await runInDurableObject(stub, async (instance, state) => {
       const seen: Array<string | null> = []
       instance.transport = (port: number) => ({
         async fetch(input: Request | string | URL): Promise<Response> {
@@ -22,7 +22,8 @@ describe("opencode auth", () => {
           if (port === 4001) {
             if (url.pathname === "/status") return json({ initialized: true })
             if (url.pathname === "/configure") return json({ ok: true })
-            if (url.pathname === "/start") return json({ ok: true, password: "test-pass" })
+            // A current control server returns no secret from /start.
+            if (url.pathname === "/start") return json({ ok: true })
             return json({ error: "not found" }, 404)
           }
 
@@ -45,7 +46,9 @@ describe("opencode auth", () => {
       )
       expect(response.status).toBe(200)
       expect(seen.length).toBeGreaterThan(0)
-      for (const header of seen) expect(header).toBe(basicAuth("test-pass"))
+      for (const header of seen) expect(header).toBeNull()
+      const stored = await state.storage.get("controlToken")
+      expect(typeof stored).toBe("string")
     })
   })
 })

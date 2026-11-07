@@ -132,4 +132,81 @@ describe("ConversationStore", () => {
     expect(state.seen.length).toBe(200)
     expect(state.seen[state.seen.length - 1]).toBe("evt_249")
   })
+
+  test("serializes concurrent patches so no field is lost", async () => {
+    const store = new ConversationStore(fakeStorage())
+    await Promise.all([
+      store.patch({ sessionID: "ses_1" }),
+      store.patch({ lastReply: "one" }),
+      store.patch({ lastSlackReply: "two" }),
+      store.patch({ checkpointFingerprint: "fp" }),
+      store.patch({ lastTurnError: "boom" }),
+    ])
+    expect(await store.get()).toMatchObject({
+      sessionID: "ses_1",
+      lastReply: "one",
+      lastSlackReply: "two",
+      checkpointFingerprint: "fp",
+      lastTurnError: "boom",
+    })
+  })
+
+  test("admits a concurrently delivered event exactly once", async () => {
+    const store = new ConversationStore(fakeStorage())
+    const results = await Promise.all([
+      store.claimEvent("evt_dup"),
+      store.claimEvent("evt_dup"),
+      store.claimEvent("evt_dup"),
+    ])
+    expect(results.filter(Boolean)).toHaveLength(1)
+    expect((await store.get()).seen).toEqual(["evt_dup"])
+  })
+
+  test("keeps every pending permission recorded concurrently", async () => {
+    const store = new ConversationStore(fakeStorage())
+    await Promise.all([
+      store.rememberPermission("req_1", "ses_1"),
+      store.rememberPermission("req_2", "ses_1"),
+      store.rememberPermission("req_3", "ses_1"),
+    ])
+    expect((await store.get()).pending).toEqual({
+      req_1: "ses_1",
+      req_2: "ses_1",
+      req_3: "ses_1",
+    })
+  })
+
+  test("increments a counter atomically", async () => {
+    const store = new ConversationStore(fakeStorage())
+    const values = await Promise.all([
+      store.increment("containerStarts"),
+      store.increment("containerStarts"),
+      store.increment("containerStarts"),
+    ])
+    expect(values.sort((a, b) => a - b)).toEqual([1, 2, 3])
+    expect((await store.get()).containerStarts).toBe(3)
+  })
+
+  test("queues at most one message when callers enqueue together", async () => {
+    const store = new ConversationStore(fakeStorage())
+    const results = await Promise.all([
+      store.enqueue({ text: "one", attempts: 0 }),
+      store.enqueue({ text: "two", attempts: 0 }),
+      store.enqueue({ text: "three", attempts: 0 }),
+    ])
+    expect(results.filter(Boolean)).toHaveLength(1)
+    const state = await store.get()
+    expect(state.phase).toBe("queued")
+    expect(["one", "two", "three"]).toContain(state.queued?.text ?? "none")
+  })
+
+  test("fills missing fields from a record written by an older build", async () => {
+    const storage = fakeStorage()
+    storage.map.set("state", { phase: "idle", sessionID: "ses_old" })
+    const store = new ConversationStore(storage)
+    expect(await store.get()).toMatchObject({ phase: "idle", sessionID: "ses_old", seen: [], pending: {} })
+    // A claim must not throw on the missing `seen` field.
+    expect(await store.claimEvent("evt_1")).toBe(true)
+    expect((await store.get()).seen).toEqual(["evt_1"])
+  })
 })

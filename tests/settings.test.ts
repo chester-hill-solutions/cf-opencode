@@ -1,10 +1,42 @@
 import { describe, expect, test } from "bun:test"
-import { defaultSettings, validateSettings } from "../src/settings"
+import { defaultSettings, normalizeSettings, validateSettings } from "../src/settings"
 
 const base = defaultSettings({
   WORKSPACE_REPO: "https://github.com/chester-hill-solutions/cf-opencode",
   OPENCODE_MODEL: "opencode/deepseek-v4.1-flash",
   POLL_SECONDS: "2",
+})
+
+describe("normalizeSettings", () => {
+  test("returns the defaults when nothing is stored", () => {
+    expect(normalizeSettings(undefined, base)).toBe(base)
+  })
+
+  test("fills every field missing from an older stored record", () => {
+    const stored = { workspaceRepo: "https://github.com/acme/repo", version: 4 } as never
+    const settings = normalizeSettings(stored, base)
+    expect(settings.workspaceRepo).toBe("https://github.com/acme/repo")
+    expect(settings.version).toBe(4)
+    expect(settings.workspaceBranch).toBe(base.workspaceBranch)
+    expect(settings.model).toBe(base.model)
+    expect(settings.pollSeconds).toBe(base.pollSeconds)
+    expect(settings.streaming).toBe(true)
+    expect(settings.dailyBudgetUSD).toBe(0)
+    expect(settings.maxContainers).toBe(2)
+    expect(settings.permissions).toEqual(base.permissions)
+    expect(settings.onboarding).toEqual({})
+  })
+
+  test("fills a partial permission block without dropping stored lists", () => {
+    const stored = {
+      ...base,
+      permissions: { allow: ["ls *"] },
+    } as never
+    const settings = normalizeSettings(stored, base)
+    expect(settings.permissions.allow).toEqual(["ls *"])
+    expect(settings.permissions.ask).toEqual(base.permissions.ask)
+    expect(settings.permissions.deny).toEqual(base.permissions.deny)
+  })
 })
 
 describe("defaultSettings", () => {

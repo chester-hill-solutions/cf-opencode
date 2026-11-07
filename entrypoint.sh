@@ -2,7 +2,31 @@
 set -euo pipefail
 
 WORKSPACE="${WORKSPACE:-/workspace}"
-mkdir -p "$WORKSPACE" "$HOME" "$XDG_CONFIG_HOME/opencode" "$XDG_DATA_HOME" "$XDG_CACHE_HOME"
+STATE_ROOT="${ABOITEAU_STATE_DIR:-/var/lib/aboiteau/state}"
+RUN_DIR="${ABOITEAU_RUN_DIR:-/var/lib/aboiteau/run}"
+AGENT_UID="${AGENT_UID:-1001}"
+AGENT_GID="${AGENT_GID:-1001}"
+
+# Harness state is outside the workspace: OpenCode writes it as the agent user
+# through the group, while the repo cannot touch it.
+export HOME="$STATE_ROOT"
+export XDG_DATA_HOME="$STATE_ROOT/data"
+export XDG_CONFIG_HOME="$STATE_ROOT/config"
+export XDG_CACHE_HOME="$STATE_ROOT/cache"
+export STOW_DIR="${STOW_DIR:-$WORKSPACE/.stow}"
+
+mkdir -p "$WORKSPACE" "$HOME" "$XDG_CONFIG_HOME/opencode" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$RUN_DIR"
+
+# Workspace: owned outright by the agent.
+chown -R "$AGENT_UID:$AGENT_GID" "$WORKSPACE"
+
+# State: root-owned, group agent, group-writable, so OpenCode can write its DB
+# and config while the control server keeps ultimate ownership.
+chown -R root:"$AGENT_GID" "$STATE_ROOT"
+chmod 0770 "$STATE_ROOT"
+find "$STATE_ROOT" -type d -exec chmod 0770 {} +
+find "$STATE_ROOT" -type f -exec chmod 0660 {} +
+chmod 0700 "$RUN_DIR"
 
 # The control server restores the R2 checkpoint (or clones the configured repo)
 # and writes the OpenCode config from the DO's /configure call before starting.

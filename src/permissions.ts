@@ -58,9 +58,17 @@ export const DENY_COMMANDS = [
 
 /**
  * Build the complete rule list for the container config. Order matters: the
- * catch-all asks and configured denials come last so they win.
+ * catch-all asks and hard-coded denials come last so they win.
+ *
+ * `DENY_COMMANDS` and the credential/SSRF denials are appended regardless of
+ * settings. An operator may add denials but cannot remove these: a settings
+ * save must not be able to turn the safety policy off.
  */
 export function buildPermissionRules(lists: PermissionLists = {}, workspace = "/workspace"): PermissionRule[] {
+  const shellDenies = [...(lists.deny ?? [])]
+  for (const command of DENY_COMMANDS) {
+    if (!shellDenies.includes(command)) shellDenies.push(command)
+  }
   return [
     { action: "read", resource: `${workspace}/**`, effect: "allow" },
     { action: "edit", resource: `${workspace}/**`, effect: "allow" },
@@ -70,9 +78,18 @@ export function buildPermissionRules(lists: PermissionLists = {}, workspace = "/
     { action: "shell", resource: "*", effect: "ask" },
     ...(lists.ask ?? []).map((resource) => ({ action: "shell", resource, effect: "ask" as const })),
     { action: "edit", resource: "/**", effect: "ask" },
-    ...(lists.deny ?? []).map((resource) => ({ action: "shell", resource, effect: "deny" as const })),
+    ...shellDenies.map((resource) => ({ action: "shell", resource, effect: "deny" as const })),
+    // Harness state holds the OpenCode config and provider credentials.
     { action: "shell", resource: "*169.254.169.254*", effect: "deny" },
+    { action: "shell", resource: "*.state*", effect: "deny" },
+    { action: "webfetch", resource: "*169.254.169.254*", effect: "deny" },
     { action: "read", resource: "**/.ssh/**", effect: "deny" },
-    { action: "read", resource: "**/.env", effect: "deny" },
+    { action: "edit", resource: "**/.ssh/**", effect: "deny" },
+    { action: "read", resource: "**/.env*", effect: "deny" },
+    { action: "edit", resource: "**/.env*", effect: "deny" },
+    { action: "read", resource: `${workspace}/.state/**`, effect: "deny" },
+    { action: "edit", resource: `${workspace}/.state/**`, effect: "deny" },
+    { action: "read", resource: "/**/.state/**", effect: "deny" },
+    { action: "edit", resource: "/**/.state/**", effect: "deny" },
   ]
 }

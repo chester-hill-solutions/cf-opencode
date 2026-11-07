@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import worker from "../src/index"
 import type { Env } from "../src/env"
 
@@ -27,6 +27,7 @@ function harness() {
   const pending: Promise<unknown>[] = []
   const env = {
     SLACK_SIGNING_SECRET: SECRET,
+    SLACK_BOT_TOKEN: "xoxb-test",
     CONVERSATION: {
       getByName(name: string) {
         return {
@@ -49,39 +50,114 @@ function harness() {
   return { env, ctx, calls, settle: () => Promise.all(pending) }
 }
 
+function stubMembers(members: string[]): void {
+  vi.stubGlobal("fetch", async () =>
+    new Response(JSON.stringify({ ok: true, members }), {
+      headers: { "content-type": "application/json" },
+    }),
+  )
+}
+
+function stubMembersFailure(): void {
+  vi.stubGlobal("fetch", async () =>
+    new Response(JSON.stringify({ ok: false, error: "missing_scope" }), {
+      headers: { "content-type": "application/json" },
+    }),
+  )
+}
+
+async function interact(
+  payload: Record<string, unknown>,
+): Promise<{ response: Response; calls: ReturnType<typeof harness>["calls"] }> {
+  const { env, ctx, calls, settle } = harness()
+  const body = new URLSearchParams({ payload: JSON.stringify(payload) }).toString()
+  const timestamp = String(Math.floor(Date.now() / 1000))
+  const response = await worker.fetch(
+    new Request("https://harness.test/slack/interactivity", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        "x-slack-request-timestamp": timestamp,
+        "x-slack-signature": await sign(body, timestamp),
+      },
+      body,
+    }),
+    env,
+    ctx,
+  )
+  await settle()
+  return { response, calls }
+}
+
+function permissionPayload(options: {
+  userId?: string
+  channelId?: string
+  buttonChannel?: string
+}): Record<string, unknown> {
+  return {
+    type: "block_actions",
+    ...(options.userId ? { user: { id: options.userId } } : {}),
+    ...(options.channelId ? { channel: { id: options.channelId } } : {}),
+    actions: [
+      {
+        action_id: "oc_perm_always",
+        value: JSON.stringify({
+          key: "C1:dm",
+          requestID: "req_1",
+          ...(options.buttonChannel ? { channel: options.buttonChannel } : {}),
+        }),
+      },
+    ],
+  }
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
+
 describe("Slack interactivity", () => {
-  it("forwards an allow decision with the conversation key", async () => {
-    const { env, ctx, calls, settle } = harness()
-    const payload = JSON.stringify({
-      type: "block_actions",
-      actions: [
-        {
-          action_id: "oc_perm_always",
-          value: JSON.stringify({ key: "C1:dm", requestID: "req_1" }),
-        },
-      ],
-    })
-    const body = new URLSearchParams({ payload }).toString()
-    const timestamp = String(Math.floor(Date.now() / 1000))
-    const response = await worker.fetch(
-      new Request("https://harness.test/slack/interactivity", {
-        method: "POST",
-        headers: {
-          "content-type": "application/x-www-form-urlencoded",
-          "x-slack-request-timestamp": timestamp,
-          "x-slack-signature": await sign(body, timestamp),
-        },
-        body,
-      }),
-      env,
-      ctx,
+  it("forwards an allow decision from a channel member", async () => {
+    stubMembers(["U1", "U2"])
+    const { response, calls } = await interact(
+      permissionPayload({ userId: "U1", channelId: "C1", buttonChannel: "C1" }),
     )
-    await settle()
 
     expect(response.status).toBe(200)
     expect(calls).toEqual([
       { key: "C1:dm", path: "/permission", body: { requestID: "req_1", decision: "always" } },
     ])
+  })
+
+  it("ignores an approval from someone outside the channel", async () => {
+    stubMembers(["U2"])
+    const { response, calls } = await interact(
+      permissionPayload({ userId: "U1", channelId: "C1", buttonChannel: "C1" }),
+    )
+
+    expect(response.status).toBe(200)
+    expect(calls).toEqual([])
+    expect(await response.json()).toMatchObject({ response_type: "ephemeral" })
+  })
+
+  it("ignores a button that belongs to another channel", async () => {
+    stubMembers(["U1"])
+    const { response, calls } = await interact(
+      permissionPayload({ userId: "U1", channelId: "C1", buttonChannel: "C2" }),
+    )
+
+    expect(response.status).toBe(200)
+    expect(calls).toEqual([])
+  })
+
+  it("fails closed when channel membership cannot be verified", async () => {
+    stubMembersFailure()
+    const { response, calls } = await interact(
+      permissionPayload({ userId: "U1", channelId: "C1", buttonChannel: "C1" }),
+    )
+
+    expect(response.status).toBe(200)
+    expect(calls).toEqual([])
+    expect(await response.json()).toMatchObject({ response_type: "ephemeral" })
   })
 
   it("rejects a bad signature without dispatching", async () => {

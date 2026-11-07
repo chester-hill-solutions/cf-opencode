@@ -42,4 +42,27 @@ describe("buildPermissionRules", () => {
       expect(rules).toContainEqual({ action: "shell", resource: command, effect: "deny" })
     }
   })
+
+  test("a settings save cannot remove the hard-coded denials", () => {
+    const rules = buildPermissionRules({ deny: [] })
+    for (const command of DENY_COMMANDS) {
+      expect(rules).toContainEqual({ action: "shell", resource: command, effect: "deny" })
+    }
+  })
+
+  test("denies every env variant, harness state and metadata access", () => {
+    const rules = buildPermissionRules({}, "/workspace")
+    const denies = rules.filter((rule) => rule.effect === "deny")
+    for (const action of ["read", "edit"]) {
+      expect(denies).toContainEqual({ action, resource: "**/.env*", effect: "deny" })
+      expect(denies).toContainEqual({ action, resource: "/workspace/.state/**", effect: "deny" })
+      expect(denies).toContainEqual({ action, resource: "/**/.state/**", effect: "deny" })
+    }
+    expect(denies).toContainEqual({
+      action: "webfetch",
+      resource: "*169.254.169.254*",
+      effect: "deny",
+    })
+    expect(denies).toContainEqual({ action: "shell", resource: "*.state*", effect: "deny" })
+  })
 })

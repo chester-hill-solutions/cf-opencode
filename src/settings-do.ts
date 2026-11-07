@@ -1,5 +1,11 @@
 import { DurableObject } from "cloudflare:workers"
-import { defaultSettings, validateSettings, type HarnessSettings, type OnboardingState } from "./settings"
+import {
+  defaultSettings,
+  normalizeSettings,
+  validateSettings,
+  type HarnessSettings,
+  type OnboardingState,
+} from "./settings"
 import { accountVault, workspaceID } from "./vault"
 import { evaluateAlerts } from "./alerts"
 import { decideLease } from "./leases"
@@ -17,7 +23,27 @@ const DAY_PREFIXES = ["metric:", "alert:", "alertMark:", "usage:"]
 
 /** Singleton Durable Object holding the harness-wide settings and secrets. */
 export class Settings extends DurableObject<Env> {
+  /**
+   * Serializes request handling. Several routes read the settings record,
+   * validate it, and write it back; without a queue two concurrent saves can
+   * both write the same version and one update is lost. Serializing the whole
+   * fetch also makes lease acquisition and OAuth-state consumption atomic.
+   */
+  private tail: Promise<unknown> = Promise.resolve()
+
   async fetch(request: Request): Promise<Response> {
+    const run = this.tail.then(
+      () => this.handle(request),
+      () => this.handle(request),
+    )
+    this.tail = run.then(
+      () => undefined,
+      () => undefined,
+    )
+    return run
+  }
+
+  private async handle(request: Request): Promise<Response> {
     const url = new URL(request.url)
     if (url.pathname === "/get") return Response.json(await this.current())
 
@@ -198,7 +224,7 @@ export class Settings extends DurableObject<Env> {
     if (url.pathname === "/secrets" && request.method === "GET") {
       const vault = this.vaultOrError()
       if (vault instanceof Response) return vault
-      return Response.json({ keys: await vault.list(workspaceID(this.env)) })
+      return Response.json({ keys: await vault.listSecrets(workspaceID(this.env)) })
     }
 
     if (url.pathname === "/secrets/put" && request.method === "POST") {
@@ -208,7 +234,7 @@ export class Settings extends DurableObject<Env> {
       if (!body.key || typeof body.value !== "string") {
         return Response.json({ error: "key and value are required" }, { status: 400 })
       }
-      await vault.set(workspaceID(this.env), body.key, body.value)
+      await vault.setSecret(workspaceID(this.env), body.key, body.value)
       return Response.json({ ok: true })
     }
 
@@ -217,7 +243,7 @@ export class Settings extends DurableObject<Env> {
       if (vault instanceof Response) return vault
       const body = (await request.json()) as { key?: string }
       if (!body.key) return Response.json({ error: "key is required" }, { status: 400 })
-      const value = await vault.get(workspaceID(this.env), body.key)
+      const value = await vault.getSecret(workspaceID(this.env), body.key)
       return Response.json({ value })
     }
 
@@ -226,7 +252,7 @@ export class Settings extends DurableObject<Env> {
       if (vault instanceof Response) return vault
       const body = (await request.json()) as { key?: string }
       if (!body.key) return Response.json({ error: "key is required" }, { status: 400 })
-      await vault.delete(workspaceID(this.env), body.key)
+      await vault.deleteSecret(workspaceID(this.env), body.key)
       return Response.json({ ok: true })
     }
 
@@ -251,14 +277,8 @@ export class Settings extends DurableObject<Env> {
 
   async current(): Promise<HarnessSettings> {
     const stored = await this.ctx.storage.get<HarnessSettings>("settings")
-    const settings = stored ?? defaultSettings(this.env)
-    // Records written before these fields existed need defaults filled in.
-    return {
-      ...settings,
-      onboarding: settings.onboarding ?? {},
-      dailyBudgetUSD: settings.dailyBudgetUSD ?? 0,
-      maxContainers: settings.maxContainers ?? 2,
-    }
+    // Records written before a field existed need defaults filled in.
+    return normalizeSettings(stored, defaultSettings(this.env))
   }
 
   /** Merge onboarding metadata without bumping the settings version (no restart). */

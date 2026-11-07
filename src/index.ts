@@ -2,10 +2,15 @@ import { parseInteractionBody, verifySlackSignature, type SlackEventEnvelope } f
 import type { Env } from "./env"
 import type { MessageRequest, PermissionRequest, SlackEventRequest } from "./conversation"
 import { ACCOUNT_STATE_KEY } from "./conversation"
-import { GITHUB_LOGIN_KEY, GITHUB_TOKEN_KEY } from "./vault"
+import { GITHUB_LOGIN_KEY, GITHUB_TOKEN_KEY, workspaceID } from "./vault"
+import { encryptBytes } from "./archive-crypto"
+import { deriveWorkspaceKey } from "@chester-hill-solutions/vault/core"
 import type { Alert } from "./alerts"
 import { annotate, traceId } from "./telemetry"
 import { MODEL_CATALOG, recommendModel } from "./models"
+import { hasConnectedProvider, isOnboardingProxyPath } from "./onboarding"
+import { approvalVerdict, fetchChannelMembers } from "./slack-auth"
+import { logEvent } from "./log"
 
 export { Conversation } from "./conversation"
 export { Settings } from "./settings-do"
@@ -17,6 +22,27 @@ const DECISIONS = {
 } as const
 
 const KEY_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/
+
+/** Decode a path segment without letting a malformed escape reach the router. */
+function safeDecode(value: string): string | undefined {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return undefined
+  }
+}
+
+/** Decode and validate path segments before forwarding them to the container. */
+function decodePathSegments(parts: string[]): string | undefined {
+  const decoded: string[] = []
+  for (const value of parts) {
+    const part = safeDecode(value)
+    if (part === undefined) return undefined
+    if (part === "." || part === ".." || part.includes("/") || part.includes("\\")) return undefined
+    decoded.push(part)
+  }
+  return "/" + decoded.join("/")
+}
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -82,8 +108,36 @@ export default {
       const decision = DECISIONS[action.action_id as keyof typeof DECISIONS]
       if (!decision) return new Response("ok")
 
-      const parsed = JSON.parse(action.value) as { key?: string; requestID?: string }
+      let parsed: { key?: string; requestID?: string; channel?: string }
+      try {
+        parsed = JSON.parse(action.value) as typeof parsed
+      } catch {
+        return new Response("ok")
+      }
       if (!parsed.key || !parsed.requestID) return new Response("ok")
+
+      // A permission decision is only valid from a member of the channel the
+      // request was posted in. Anyone in the channel may approve.
+      const members = await fetchChannelMembers(
+        payload?.channel?.id ?? "",
+        env.SLACK_BOT_TOKEN ?? "",
+      )
+      const verdict = approvalVerdict({
+        userId: payload?.user?.id,
+        channelId: payload?.channel?.id,
+        buttonChannel: parsed.channel,
+        members,
+      })
+      if (verdict !== "allow") {
+        logEvent("permission.unverified", { verdict })
+        const text =
+          verdict === "wrong_channel"
+            ? "This approval belongs to another channel."
+            : verdict === "deny"
+              ? "Only members of this channel can approve this request."
+              : "Couldn't verify channel membership; check the Slack app scopes."
+        return Response.json({ response_type: "ephemeral", text })
+      }
 
       const dispatch: PermissionRequest = { requestID: parsed.requestID, decision }
       ctx.waitUntil(
@@ -191,8 +245,10 @@ async function handleApi(
   if (parts[0] !== "api" || parts[1] !== "conversations" || !parts[2]) {
     return Response.json({ error: "not found" }, { status: 404 })
   }
-  const key = decodeURIComponent(parts[2])
-  if (!KEY_PATTERN.test(key)) return Response.json({ error: "invalid conversation key" }, { status: 400 })
+  const key = safeDecode(parts[2])
+  if (!key || !KEY_PATTERN.test(key)) {
+    return Response.json({ error: "invalid conversation key" }, { status: 400 })
+  }
   annotate({ "conversation.key": key, "http.route": `/api/conversations/{key}/${suffixLabel(parts)}` })
   ctx.waitUntil(settingsDo(env, "/conversations", { key }).catch(() => undefined))
 
@@ -256,9 +312,12 @@ async function handleApi(
   }
 
   if (request.method === "POST" && suffix.length === 2 && suffix[0] === "permissions") {
-    const requestID = decodeURIComponent(suffix[1]!)
+    const requestID = safeDecode(suffix[1]!)
+    if (!requestID) return Response.json({ error: "invalid request id" }, { status: 400 })
     const body = (await request.json()) as { decision?: "once" | "always" | "reject" }
-    if (!body.decision) return Response.json({ error: "decision is required" }, { status: 400 })
+    if (body.decision !== "once" && body.decision !== "always" && body.decision !== "reject") {
+      return Response.json({ error: "decision is required" }, { status: 400 })
+    }
     const res = await conversation.fetch("https://conversation/permission", {
       method: "POST",
       body: JSON.stringify({ requestID, decision: body.decision } satisfies PermissionRequest),
@@ -326,10 +385,13 @@ async function handleOnboarding(
   }
 
   // Provider onboarding is proxied into the conversation container, where
-  // OpenCode owns the OAuth attempt and the live model catalogue.
+  // OpenCode owns the OAuth attempt and the live model catalogue. Only the
+  // wizard's own endpoints are reachable; control-plane routes are internal.
   if (section === "opencode") {
-    const path = "/" + parts.slice(3).join("/")
-    if (!path || path === "/") return Response.json({ error: "not found" }, { status: 404 })
+    const path = decodePathSegments(parts.slice(3))
+    if (!path || !isOnboardingProxyPath(path, request.method)) {
+      return Response.json({ error: "not found" }, { status: 404 })
+    }
     const conversation = conversationStub(env, ONBOARDING_KEY)
     const body =
       request.method === "GET" || request.method === "HEAD" ? undefined : await request.text()
@@ -374,6 +436,26 @@ async function handleOnboarding(
   // Persist the account state (OpenCode config + credentials) so every new
   // conversation starts already connected.
   if (section === "finish" && request.method === "POST") {
+    // The wizard disables Finish without a provider; enforce it on the server
+    // too, since the API is reachable directly.
+    const current = (await (await settingsDo(env, "/get")).json()) as {
+      onboarding?: { opencodeConnectedAt?: number }
+    }
+    if (!current.onboarding?.opencodeConnectedAt) {
+      const conversation = conversationStub(env, ONBOARDING_KEY)
+      const status = await conversation.fetch("https://conversation/onboarding/integrations")
+      if (!status.ok) {
+        return Response.json(
+          { error: "provider status unavailable", retryable: true },
+          { status: 503 },
+        )
+      }
+      const body = (await status.json()) as { data?: Array<{ connections?: unknown[] }> }
+      if (!hasConnectedProvider(body.data ?? [])) {
+        return Response.json({ error: "connect a provider before finishing" }, { status: 400 })
+      }
+    }
+
     let snapshot = false
     try {
       const conversation = conversationStub(env, ONBOARDING_KEY)
@@ -381,8 +463,16 @@ async function handleOnboarding(
       if (res.ok) {
         const bytes = await res.arrayBuffer()
         if (bytes.byteLength > 0) {
-          await env.CHECKPOINTS.put(ACCOUNT_STATE_KEY, bytes, {
+          // The account snapshot carries provider credentials; encrypt it with
+          // the same tenant key as workspace checkpoints when the vault is set.
+          const master = env.VAULT_MASTER_KEY
+          const key = master ? await deriveWorkspaceKey(master, workspaceID(env)) : undefined
+          const stored = key
+            ? await encryptBytes(new Uint8Array(bytes), key)
+            : new Uint8Array(bytes)
+          await env.CHECKPOINTS.put(ACCOUNT_STATE_KEY, stored, {
             httpMetadata: { contentType: "application/gzip" },
+            ...(key ? { customMetadata: { encrypted: "1" } } : {}),
           })
           snapshot = true
         }

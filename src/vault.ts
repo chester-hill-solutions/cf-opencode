@@ -30,8 +30,7 @@ export function workspaceID(env: VaultEnv): string {
 export function accountVault(env: VaultEnv, storage: VaultKeyValueStorage): Vault | undefined {
   const key = env.VAULT_MASTER_KEY
   if (!key) return undefined
-  if (!/^[0-9a-f]{64}$/i.test(key)) {
-    throw new Error("VAULT_MASTER_KEY must be 64 hex characters (32 bytes)")
-  }
+  // The 0.2.0 vault validates the master key in its constructor and derives
+  // the workspace key from it (HKDF input keying material).
   return new Vault(createKeyValueVaultStore(storage), key)
 }

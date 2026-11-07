@@ -135,4 +135,50 @@ describe("worker surface", () => {
     })
     expect(res.status).toBe(200)
   })
+
+  it("returns 400 for a malformed conversation key instead of throwing", async () => {
+    const res = await SELF.fetch(`${BASE}/api/conversations/%E0%A4%A`, { headers: API })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ error: "invalid conversation key" })
+  })
+
+  it("returns 400 for a malformed permission id instead of throwing", async () => {
+    const res = await SELF.fetch(`${BASE}/api/conversations/demo/permissions/%E0%A4%A`, {
+      method: "POST",
+      headers: { ...API, "content-type": "application/json" },
+      body: JSON.stringify({ decision: "once" }),
+    })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ error: "invalid request id" })
+  })
+
+  it("rejects a non-string message body", async () => {
+    const res = await SELF.fetch(`${BASE}/api/conversations/demo/messages`, {
+      method: "POST",
+      headers: { ...API, "content-type": "application/json" },
+      body: JSON.stringify({ text: 123 }),
+    })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ error: "empty message" })
+  })
+
+  it("does not expose control-plane routes through the onboarding proxy", async () => {
+    for (const path of ["configure", "start", "restore", "seed-state", "checkpoint"]) {
+      const res = await SELF.fetch(`${BASE}/api/onboarding/opencode/${path}`, {
+        method: "POST",
+        headers: { ...API, "content-type": "application/json" },
+        body: "{}",
+      })
+      expect(res.status).toBe(404)
+    }
+  })
+
+  it("rejects encoded traversal in the onboarding proxy", async () => {
+    const res = await SELF.fetch(`${BASE}/api/onboarding/opencode/%2e%2e/configure`, {
+      method: "POST",
+      headers: { ...API, "content-type": "application/json" },
+      body: "{}",
+    })
+    expect(res.status).toBe(404)
+  })
 })

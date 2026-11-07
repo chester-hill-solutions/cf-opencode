@@ -1,72 +1,160 @@
-import { encrypt, decrypt, deriveWorkspaceKey } from "./encryption.js";
+import { VaultKeyError, decrypt, deriveWorkspaceKey, encrypt, keyFingerprint, parseCiphertext, parseMasterKey, } from "./encryption.js";
+const DEFAULT_KEY_ID = "default";
+function normalizeKeyring(masterKey) {
+    const candidate = typeof masterKey === "string"
+        ? { activeKeyId: DEFAULT_KEY_ID, keys: { [DEFAULT_KEY_ID]: masterKey } }
+        : { activeKeyId: masterKey?.activeKeyId, keys: masterKey?.keys };
+    if (!candidate.activeKeyId) {
+        throw new VaultKeyError("Vault keyring needs an activeKeyId.");
+    }
+    if (!candidate.keys || typeof candidate.keys !== "object") {
+        throw new VaultKeyError("Vault keyring needs a keys map of master keys.");
+    }
+    const keys = candidate.keys;
+    for (const [id, hex] of Object.entries(keys)) {
+        try {
+            parseMasterKey(hex);
+        }
+        catch (error) {
+            throw new VaultKeyError(`Master key "${id}" is invalid: ${error.message}`);
+        }
+    }
+    if (!keys[candidate.activeKeyId]) {
+        throw new VaultKeyError(`Vault keyring has no master key for the active key id "${candidate.activeKeyId}".`);
+    }
+    return { activeKeyId: candidate.activeKeyId, keys: { ...keys } };
+}
+/**
+ * Per-workspace encrypted credential storage.
+ *
+ * Each workspace's secrets are encrypted with a key derived from the master
+ * key and the workspace id, so one workspace's secrets cannot be read with
+ * another workspace's key, and changing the master key invalidates every
+ * secret written under the old one.
+ */
 export class Vault {
     store;
-    masterKeyHex;
-    constructor(store, masterKeyHex) {
+    keyring;
+    index = null;
+    constructor(store, masterKey) {
         this.store = store;
-        this.masterKeyHex = masterKeyHex;
+        this.keyring = normalizeKeyring(masterKey);
     }
-    async get(workspaceId, key) {
-        const encrypted = await this.store.get(workspaceId, key);
-        if (!encrypted)
+    /** Id of the master key new secrets are encrypted with. */
+    get activeKeyId() {
+        return this.keyring.activeKeyId;
+    }
+    async getSecret(workspaceId, key) {
+        const stored = await this.store.get(workspaceId, key);
+        if (!stored)
             return null;
-        const workspaceKey = await deriveWorkspaceKey(this.masterKeyHex, workspaceId);
-        return decrypt(encrypted, workspaceKey);
+        const { keyRef } = parseCiphertext(stored);
+        return decrypt(stored, await this.workspaceKey(workspaceId, keyRef));
     }
-    async set(workspaceId, key, value) {
-        const workspaceKey = await deriveWorkspaceKey(this.masterKeyHex, workspaceId);
-        const encrypted = await encrypt(value, workspaceKey);
+    async setSecret(workspaceId, key, value) {
+        const activeKeyId = this.keyring.activeKeyId;
+        const activeRef = await this.refFor(activeKeyId);
+        const encrypted = await encrypt(value, await this.workspaceKey(workspaceId, activeRef), activeRef);
         await this.store.set(workspaceId, key, encrypted);
     }
-    async delete(workspaceId, key) {
+    async deleteSecret(workspaceId, key) {
         await this.store.delete(workspaceId, key);
     }
-    async list(workspaceId) {
-        return this.store.list(workspaceId);
+    async listSecrets(workspaceId) {
+        const metadata = await this.store.listMetadata(workspaceId);
+        return metadata.map(entry => entry.key);
+    }
+    /** Describes the secrets a workspace holds, without revealing any of them. */
+    async listSecretMetadata(workspaceId) {
+        return this.store.listMetadata(workspaceId);
+    }
+    /**
+     * Re-encrypts one secret under the active master key.
+     *
+     * Returns false when the secret is missing or already under the active key.
+     */
+    async reencryptSecret(workspaceId, key) {
+        const stored = await this.store.get(workspaceId, key);
+        if (!stored)
+            return false;
+        const { keyRef } = parseCiphertext(stored);
+        const activeRef = await this.refFor(this.keyring.activeKeyId);
+        if (keyRef === activeRef)
+            return false;
+        const plaintext = await decrypt(stored, await this.workspaceKey(workspaceId, keyRef));
+        await this.store.set(workspaceId, key, await encrypt(plaintext, await this.workspaceKey(workspaceId, activeRef), activeRef));
+        return true;
+    }
+    /** Re-encrypts every secret held for a workspace. Returns how many changed. */
+    async reencryptWorkspace(workspaceId) {
+        const keys = await this.listSecrets(workspaceId);
+        let migrated = 0;
+        for (const key of keys) {
+            if (await this.reencryptSecret(workspaceId, key))
+                migrated++;
+        }
+        return migrated;
+    }
+    async workspaceKey(workspaceId, keyRef) {
+        const hex = (await this.keyIndex()).byRef.get(keyRef);
+        if (!hex) {
+            throw new VaultKeyError(`Secret was encrypted with master key ${keyRef}, which is not in the keyring. Add that master key to read it.`);
+        }
+        return deriveWorkspaceKey(hex, workspaceId);
+    }
+    /** The reference a secret written with the given key id carries. */
+    async refFor(keyId) {
+        const ref = (await this.keyIndex()).byId.get(keyId);
+        if (!ref) {
+            throw new VaultKeyError(`Vault keyring has no master key for "${keyId}".`);
+        }
+        return ref;
+    }
+    /**
+     * The keyring's keys, indexed both by the id the operator gave them and by
+     * the reference a secret carries. Built once, on first use.
+     */
+    async keyIndex() {
+        if (!this.index) {
+            const byId = new Map();
+            const byRef = new Map();
+            for (const [id, hex] of Object.entries(this.keyring.keys)) {
+                const ref = await keyFingerprint(hex);
+                byId.set(id, ref);
+                byRef.set(ref, hex);
+            }
+            this.index = { byId, byRef };
+        }
+        return this.index;
     }
 }
 export function createInMemoryVaultStore() {
     const store = new Map();
     return {
         async get(workspaceId, key) {
-            return store.get(workspaceId)?.get(key) ?? null;
+            return store.get(workspaceId)?.get(key)?.value ?? null;
         },
         async set(workspaceId, key, value) {
             if (!store.has(workspaceId))
                 store.set(workspaceId, new Map());
-            store.get(workspaceId).set(key, value);
+            const secrets = store.get(workspaceId);
+            const existing = secrets.get(key);
+            const now = new Date().toISOString();
+            secrets.set(key, {
+                value,
+                createdAt: existing?.createdAt ?? now,
+                updatedAt: now,
+            });
         },
         async delete(workspaceId, key) {
             store.get(workspaceId)?.delete(key);
         },
-        async list(workspaceId) {
-            return Array.from(store.get(workspaceId)?.keys() ?? []);
-        },
-    };
-}
-/**
- * Store vault entries in a key/value backend such as Durable Object storage.
- * Entries are namespaced by workspace id so one account can hold several
- * workspaces without collisions.
- */
-export function createKeyValueVaultStore(storage, prefix = "vault:") {
-    const record = (workspaceId, key) => `${prefix}${workspaceId}:${key}`;
-    const workspacePrefix = (workspaceId) => `${prefix}${workspaceId}:`;
-    return {
-        async get(workspaceId, key) {
-            const value = await storage.get(record(workspaceId, key));
-            return value ?? null;
-        },
-        async set(workspaceId, key, value) {
-            await storage.put(record(workspaceId, key), value);
-        },
-        async delete(workspaceId, key) {
-            await storage.delete(record(workspaceId, key));
-        },
-        async list(workspaceId) {
-            const entries = await storage.list({ prefix: workspacePrefix(workspaceId) });
-            const base = workspacePrefix(workspaceId).length;
-            return Array.from(entries.keys()).map((name) => name.slice(base));
+        async listMetadata(workspaceId) {
+            return Array.from(store.get(workspaceId)?.entries() ?? []).map(([key, entry]) => ({
+                key,
+                createdAt: entry.createdAt,
+                updatedAt: entry.updatedAt,
+            }));
         },
     };
 }

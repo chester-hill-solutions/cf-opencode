@@ -3,6 +3,7 @@ import {
   failureKey,
   isSettled,
   latestAssistantReply,
+  toMillis,
   turnFailure,
   turnMessages,
   type MessageInfo,
@@ -145,15 +146,17 @@ describe("turnFailure", () => {
   })
 
   test("ignores a failure from before this run started", () => {
+    const runStartedAt = 1_700_000_000_000
     const old = assistant(["previous answer"], true)
-    const messages = [user("one"), old, idle({ message: "stale" }, 10), user("two")]
-    expect(turnFailure(messages, old.id, 50)).toBeUndefined()
+    const messages = [user("one"), old, idle({ message: "stale" }, runStartedAt - 10), user("two")]
+    expect(turnFailure(messages, old.id, runStartedAt)).toBeUndefined()
   })
 
   test("reports a failure created during this run", () => {
+    const runStartedAt = 1_700_000_000_000
     const old = assistant(["previous answer"], true)
-    const messages = [user("one"), old, idle({ message: "fresh" }, 60), user("two")]
-    expect(turnFailure(messages, old.id, 50)?.message).toBe("fresh")
+    const messages = [user("one"), old, idle({ message: "fresh" }, runStartedAt + 10), user("two")]
+    expect(turnFailure(messages, old.id, runStartedAt)?.message).toBe("fresh")
   })
 
   test("reports an error attached to a completed assistant step", () => {
@@ -185,5 +188,19 @@ describe("turnFailure", () => {
     expect(first && same && later).toBeTruthy()
     expect(failureKey(first!)).toBe(failureKey(same!))
     expect(failureKey(first!)).not.toBe(failureKey(later!))
+  })
+
+  test("normalises second and millisecond timestamps before comparing", () => {
+    expect(toMillis(1_700_000_000)).toBe(1_700_000_000_000)
+    expect(toMillis(1_700_000_000_000)).toBe(1_700_000_000_000)
+  })
+
+  test("does not treat a seconds-based failure as stale", () => {
+    const runStartedAt = Date.parse("2026-11-07T12:00:00.000Z")
+    const seconds = Math.floor(runStartedAt / 1000) + 5
+    expect(turnFailure([user("go"), idle({ message: "boom" }, seconds)], undefined, runStartedAt)).toEqual({
+      message: "boom",
+      at: seconds,
+    })
   })
 })

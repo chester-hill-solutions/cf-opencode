@@ -46,7 +46,7 @@ describe("accountVault", () => {
 
   test("rejects a master key that is not 32 bytes of hex", () => {
     expect(() => accountVault(env({ VAULT_MASTER_KEY: "too-short" }), fakeStorage())).toThrow(
-      /VAULT_MASTER_KEY/
+      /Master key/
     )
   })
 
@@ -55,8 +55,8 @@ describe("accountVault", () => {
     const vault = accountVault(env({ VAULT_MASTER_KEY: MASTER_KEY }), storage)
     expect(vault).toBeDefined()
 
-    await vault!.set("default", GITHUB_TOKEN_KEY, "ghs_secret_value")
-    expect(await vault!.get("default", GITHUB_TOKEN_KEY)).toBe("ghs_secret_value")
+    await vault!.setSecret("default", GITHUB_TOKEN_KEY, "ghs_secret_value")
+    expect(await vault!.getSecret("default", GITHUB_TOKEN_KEY)).toBe("ghs_secret_value")
     expect(JSON.stringify([...storage.entries])).not.toContain("ghs_secret_value")
   })
 })

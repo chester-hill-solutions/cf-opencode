@@ -105,6 +105,37 @@ export function defaultSettings(env: SettingsDefaults): HarnessSettings {
   }
 }
 
+/**
+ * Fill fields a record written by an older build may not contain. Reads must
+ * never hand callers a settings object with a missing field, because both the
+ * UI and the permission builder assume the whole shape is present.
+ */
+export function normalizeSettings(
+  stored: Partial<HarnessSettings> | undefined,
+  fallback: HarnessSettings,
+): HarnessSettings {
+  if (!stored) return fallback
+  const permissions = stored.permissions
+  return {
+    ...fallback,
+    ...stored,
+    workspaceRepo: stored.workspaceRepo ?? fallback.workspaceRepo,
+    workspaceBranch: stored.workspaceBranch ?? fallback.workspaceBranch,
+    model: stored.model ?? fallback.model,
+    pollSeconds: stored.pollSeconds ?? fallback.pollSeconds,
+    streaming: stored.streaming ?? fallback.streaming,
+    dailyBudgetUSD: stored.dailyBudgetUSD ?? fallback.dailyBudgetUSD,
+    maxContainers: stored.maxContainers ?? fallback.maxContainers,
+    permissions: {
+      allow: Array.isArray(permissions?.allow) ? permissions.allow : fallback.permissions.allow,
+      ask: Array.isArray(permissions?.ask) ? permissions.ask : fallback.permissions.ask,
+      deny: Array.isArray(permissions?.deny) ? permissions.deny : fallback.permissions.deny,
+    },
+    onboarding: stored.onboarding ?? {},
+    version: stored.version ?? fallback.version,
+  }
+}
+
 const MAX_LIST = 200
 const MAX_PATTERN = 200
 

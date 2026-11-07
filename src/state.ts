@@ -30,6 +30,34 @@ export interface SlackTarget {
   replyTs?: string
 }
 
+/** One admission held while the container could not accept it. */
+export interface QueuedMessage {
+  text: string
+  slack?: SlackTarget
+  attempts: number
+  /** When the next admission attempt is due. */
+  nextAttemptAt?: number
+  /** Why the last attempt failed, for operators. */
+  lastError?: string
+}
+
+export interface CheckpointPart {
+  key: string
+  size: number
+  encrypted: boolean
+}
+
+/** A split checkpoint: workspace and harness state are separate R2 objects. */
+export interface CheckpointManifest {
+  workspace: CheckpointPart
+  state?: CheckpointPart
+  /** Workspace fingerprint at archive time. */
+  fingerprint?: string
+  /** State fingerprint at archive time. */
+  stateFingerprint?: string
+  createdAt: number
+}
+
 export interface ConversationState {
   /** Lifecycle phase; absent means "idle" for conversations from older builds. */
   phase?: ConversationPhase
@@ -51,17 +79,17 @@ export interface ConversationState {
   /** Settings version the running container was configured with. */
   settingsVersion?: number
   /** One pending admission when the container could not start. */
-  queued?: {
-    text: string
-    slack?: SlackTarget
-    attempts: number
-    /** When the next admission attempt is due. */
-    nextAttemptAt?: number
-    /** Why the last attempt failed, for operators. */
-    lastError?: string
-  }
+  queued?: QueuedMessage
   /** Fingerprint of the workspace at the last successful checkpoint. */
   checkpointFingerprint?: string
+  /** Fingerprint of the state root at the last successful checkpoint. */
+  checkpointStateFingerprint?: string
+  /** R2 key of the last successful checkpoint, used to prove a 204 is real. */
+  checkpointKey?: string
+  /** Split checkpoint: both archive keys and their verified sizes. */
+  checkpointManifest?: CheckpointManifest
+  /** The stored archive is application-encrypted with the tenant key. */
+  checkpointEncrypted?: boolean
   /** A checkpoint failed and has not been retried to success. */
   checkpointPending?: boolean
   /** Retry count for a pending checkpoint. */
@@ -94,69 +122,127 @@ const SEEN_LIMIT = 200
 const EVENT_LIMIT = 200
 
 export class ConversationStore {
-  /** Serializes event-log read-modify-write cycles within this Durable Object. */
-  private eventTail: Promise<unknown> = Promise.resolve()
+  /**
+   * Serializes every read-modify-write cycle within this Durable Object. A
+   * Durable Object is single-threaded but `await` yields, so two requests can
+   * interleave between `get` and `put` unless mutations are queued here.
+   */
+  private tail: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly storage: KeyValueStorage) {}
 
   private serial<T>(task: () => Promise<T>): Promise<T> {
-    const run = this.eventTail.then(task, task)
-    this.eventTail = run.then(
+    const run = this.tail.then(task, task)
+    this.tail = run.then(
       () => undefined,
       () => undefined,
     )
     return run
   }
 
-  async get(): Promise<ConversationState> {
+  /**
+   * Read the state, filling fields that older records may not have written.
+   * Never hand a caller a state with a missing `seen` or `pending` field.
+   */
+  private async read(): Promise<ConversationState> {
     const state = await this.storage.get<ConversationState>("state")
-    return state ?? { seen: [], pending: {} }
+    return {
+      ...(state ?? {}),
+      seen: Array.isArray(state?.seen) ? state.seen : [],
+      pending: state?.pending && typeof state.pending === "object" ? state.pending : {},
+    }
   }
 
-  async save(state: ConversationState): Promise<void> {
-    await this.storage.put("state", state)
+  /**
+   * Apply a mutation to the latest state as one serialized step. `task` gets the
+   * current state and returns the state to persist (omit `next` to leave storage
+   * untouched) plus the caller's result.
+   */
+  private transact<T>(
+    task: (state: ConversationState) => { next?: ConversationState; result: T },
+  ): Promise<T> {
+    return this.serial(async () => {
+      const state = await this.read()
+      const { next, result } = task(state)
+      if (next) await this.storage.put("state", next)
+      return result
+    })
+  }
+
+  /** Read the latest state. Reads may interleave; mutations are serialized. */
+  async get(): Promise<ConversationState> {
+    return this.read()
   }
 
   /** Claim an event for processing; false when it was already claimed. */
   async claimEvent(eventID: string): Promise<boolean> {
-    const state = await this.get()
-    if (state.seen.includes(eventID)) return false
-    state.seen = [...state.seen, eventID].slice(-SEEN_LIMIT)
-    await this.save(state)
-    return true
+    return this.transact((state) => {
+      if (state.seen.includes(eventID)) return { result: false }
+      return {
+        next: { ...state, seen: [...state.seen, eventID].slice(-SEEN_LIMIT) },
+        result: true,
+      }
+    })
   }
 
   /** Release a claim after a failed admission so a redelivery can be processed. */
   async releaseEvent(eventID: string): Promise<void> {
-    const state = await this.get()
-    state.seen = state.seen.filter((id) => id !== eventID)
-    await this.save(state)
+    await this.transact((state) => ({
+      next: { ...state, seen: state.seen.filter((id) => id !== eventID) },
+      result: undefined,
+    }))
   }
 
   /** Move the lifecycle forward; an invalid transition is ignored, not thrown. */
   async advance(to: ConversationPhase): Promise<boolean> {
-    const state = await this.get()
-    const from = state.phase ?? "idle"
-    if (from === to) return true
-    if (!canTransition(from, to)) return false
-    await this.save({ ...state, phase: to })
-    return true
+    return this.transact((state) => {
+      const from = state.phase ?? "idle"
+      if (from === to) return { result: true }
+      if (!canTransition(from, to)) return { result: false }
+      return { next: { ...state, phase: to }, result: true }
+    })
   }
 
   /** Merge fields into the latest state instead of writing a stale snapshot. */
   async patch(patch: Partial<ConversationState>): Promise<ConversationState> {
-    const state = await this.get()
-    const next = { ...state, ...patch }
-    await this.save(next)
-    return next
+    return this.transact((state) => {
+      const next = { ...state, ...patch }
+      return { next, result: next }
+    })
+  }
+
+  /** Increment one numeric counter atomically and return the new value. */
+  async increment(field: "containerStarts", by = 1): Promise<number> {
+    return this.transact((state) => {
+      const value = (state[field] ?? 0) + by
+      return { next: { ...state, [field]: value }, result: value }
+    })
+  }
+
+  /**
+   * Claim the single queue slot. Concurrent callers race on this one
+   * check-and-set, so exactly one message can be queued and none is dropped by
+   * a stale read.
+   */
+  async enqueue(entry: QueuedMessage): Promise<boolean> {
+    return this.transact((state) => {
+      if (state.queued) return { result: false }
+      const from = state.phase ?? "idle"
+      const phase = from === "queued" || canTransition(from, "queued") ? "queued" : state.phase
+      return { next: { ...state, queued: entry, phase }, result: true }
+    })
   }
 
   async setSession(sessionID: string, transport: Transport, slack?: SlackTarget): Promise<void> {
-    const state = await this.get()
-    state.sessionID = sessionID
-    state.transport = transport
-    if (slack) state.slack = slack
-    await this.save(state)
+    await this.transact((state) => ({
+      next: {
+        ...state,
+        sessionID,
+        transport,
+        ...(slack ? { slack } : {}),
+      },
+      result: undefined,
+    }))
   }
 
   /**
@@ -192,9 +278,11 @@ export class ConversationStore {
   /** Record several pending permissions with one read and one write. */
   async rememberPermissions(requestIDs: string[], sessionID: string): Promise<void> {
     if (requestIDs.length === 0) return
-    const state = await this.get()
-    for (const requestID of requestIDs) state.pending[requestID] = sessionID
-    await this.save(state)
+    await this.transact((state) => {
+      const pending = { ...state.pending }
+      for (const requestID of requestIDs) pending[requestID] = sessionID
+      return { next: { ...state, pending }, result: undefined }
+    })
   }
 
   async peekPermission(requestID: string): Promise<string | undefined> {
@@ -203,9 +291,11 @@ export class ConversationStore {
 
   /** Remove a permission only after the decision was recorded. */
   async clearPermission(requestID: string): Promise<void> {
-    const state = await this.get()
-    if (!state.pending[requestID]) return
-    delete state.pending[requestID]
-    await this.save(state)
+    await this.transact((state) => {
+      if (!state.pending[requestID]) return { result: undefined }
+      const pending = { ...state.pending }
+      delete pending[requestID]
+      return { next: { ...state, pending }, result: undefined }
+    })
   }
 }

@@ -13,6 +13,8 @@ interface Message {
   content?: Array<{ type: string; text: string }>
   time?: { created?: number; completed?: number }
   finish?: string
+  cost?: number
+  tokens?: { input?: number; output?: number }
 }
 
 function fakeContainer(options: {
@@ -126,5 +128,59 @@ describe("turn settlement", () => {
       await instance.alarm()
       expect(checkpoints.count).toBe(1)
     })
+  })
+
+  it("records usage at settle when streaming is off", async () => {
+    const settings = env.SETTINGS.getByName("global")
+    await runInDurableObject(settings, async (_instance, storage) => {
+      await storage.storage.deleteAll()
+    })
+    const configured = await settings.fetch("https://settings/put", {
+      method: "POST",
+      body: JSON.stringify({ streaming: false }),
+    })
+    expect(configured.ok).toBe(true)
+
+    const stub = env.CONVERSATION.getByName("C1:usage")
+    const phase = await runInDurableObject(stub, async (instance) => {
+      const now = Date.now()
+      const messages: Message[] = [user("u1", "hello")]
+      const answers: Message[] = [
+        ...messages,
+        {
+          id: "a1",
+          type: "assistant",
+          content: [{ type: "text", text: "done" }],
+          time: { created: now, completed: now },
+          finish: "stop",
+          cost: 0.25,
+          tokens: { input: 100, output: 20 },
+        },
+      ]
+      instance.transport = fakeContainer({
+        beforePrompt: messages,
+        afterPrompt: () => answers,
+      })
+
+      const sent = await instance.fetch(
+        new Request("https://conversation/message", {
+          method: "POST",
+          body: JSON.stringify({ text: "hello" }),
+        }),
+      )
+      await sent.text()
+      await instance.alarm()
+      return (await state(instance)).phase
+    })
+
+    expect(phase).toBe("idle")
+    const usage = (await (await settings.fetch("https://settings/usage/today")).json()) as {
+      costUSD: number
+      input: number
+      output: number
+    }
+    expect(usage.costUSD).toBeCloseTo(0.25)
+    expect(usage.input).toBe(100)
+    expect(usage.output).toBe(20)
   })
 })

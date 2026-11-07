@@ -1,7 +1,9 @@
 import { DurableObject } from "cloudflare:workers"
-import { basicAuth, makeClient, portFetch, type ContainerPort } from "./opencode"
+import { makeClient, portFetch, type ContainerPort } from "./opencode"
+import { opencodeViaControl } from "./opencode-proxy"
 import {
   ConversationStore,
+  type CheckpointManifest,
   type ConversationPhase,
   type ConversationState,
   type SlackTarget,
@@ -18,6 +20,7 @@ import {
   failureKey,
   isSettled,
   latestAssistantReply,
+  toMillis,
   turnFailure,
   type MessageInfo,
   type TurnFailure,
@@ -31,8 +34,15 @@ import { logEvent } from "./log"
 import { withSpan } from "./telemetry"
 import type { HarnessSettings } from "./settings"
 import { staleAction } from "./lifecycle"
-import { budgetExceeded } from "./budget"
-import { GITHUB_TOKEN_KEY } from "./vault"
+import { budgetExceeded, nextBudgetReset } from "./budget"
+import { GITHUB_TOKEN_KEY, workspaceID } from "./vault"
+import {
+  decryptTransform,
+  encryptBytes,
+  encryptTransform,
+  encryptedLength,
+} from "./archive-crypto"
+import { deriveWorkspaceKey } from "@chester-hill-solutions/vault/core"
 
 /** The fields of a pending permission the harness forwards. */
 interface PermissionSummary {
@@ -94,8 +104,8 @@ export class Conversation extends DurableObject<Env> {
   /** This instance has verified the container for the current spec. */
   private ready = false
   private opencodePort?: ContainerPort
-  /** Password for the current OpenCode server process. */
-  private opencodePassword?: string
+  /** Bearer token the container control server requires. */
+  private controlTokenValue?: string
   /** Event names seen on the warm stream, for diagnostics. */
   private seenEvents = new Map<string, number>()
   /** Last state of the warm stream: opened, an error, or idle. */
@@ -162,23 +172,36 @@ export class Conversation extends DurableObject<Env> {
   // --------------------------------------------------------------- HTTP adapter
 
   private async onMessage(input: MessageRequest): Promise<Response> {
-    const text = input.text.trim()
+    // Body shape is not guaranteed by the route; reject anything non-string
+    // before calling string methods on it.
+    const text = typeof input.text === "string" ? input.text.trim() : ""
     if (!text) return Response.json({ ok: false, error: "empty message" }, { status: 400 })
 
-    if (input.idempotencyKey) {
-      if (!/^[A-Za-z0-9:_-]{1,128}$/.test(input.idempotencyKey)) {
+    const idempotencyKey = typeof input.idempotencyKey === "string" ? input.idempotencyKey : undefined
+    if (input.idempotencyKey !== undefined && idempotencyKey === undefined) {
+      return Response.json({ ok: false, error: "invalid idempotencyKey" }, { status: 400 })
+    }
+    if (idempotencyKey) {
+      if (!/^[A-Za-z0-9:_-]{1,128}$/.test(idempotencyKey)) {
         return Response.json({ ok: false, error: "invalid idempotencyKey" }, { status: 400 })
       }
-      if (!(await this.store.claimEvent(`msg:${input.idempotencyKey}`))) {
+      if (!(await this.store.claimEvent(`msg:${idempotencyKey}`))) {
         const current = await this.store.get()
         return Response.json({ ok: true, duplicate: true, sessionID: current.sessionID })
       }
+    }
+    // Only a message that was accepted (prompted or queued) may consume the
+    // key; otherwise a retry must be able to prompt.
+    const releaseClaim = async (): Promise<void> => {
+      if (!idempotencyKey) return
+      await this.store.releaseEvent(`msg:${idempotencyKey}`).catch(() => {})
     }
 
     const prompt = input.user ? `${input.user}: ${text}` : text
 
     const spent = await this.budgetBlocked()
     if (spent !== undefined) {
+      await releaseClaim()
       return Response.json(
         { ok: false, error: "daily budget reached", spentUSD: spent },
         { status: 429 },
@@ -187,15 +210,19 @@ export class Conversation extends DurableObject<Env> {
 
     if (!(await this.claimAdmission())) {
       const queued = await this.enqueue(prompt, undefined)
-      if (!queued) return Response.json({ ok: false, error: "busy" }, { status: 503 })
+      if (!queued) {
+        await releaseClaim()
+        return Response.json({ ok: false, error: "busy" }, { status: 503 })
+      }
       return Response.json({ ok: true, queued: true }, { status: 202 })
     }
     let sessionID = ""
+    let baseline: string | undefined
     try {
       sessionID = await this.ensureSession(text, input.transport ?? "http", input.slack)
-      const baseline = await this.turnBaseline(sessionID)
+      baseline = await this.turnBaseline(sessionID)
+      // Once this call returns, the prompt has been accepted by OpenCode.
       await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
-      await this.startRun(baseline)
     } catch (err) {
       this.admitting = false
       void this.count("admission.failed")
@@ -203,14 +230,32 @@ export class Conversation extends DurableObject<Env> {
       const queued = await this.enqueue(prompt, undefined)
       if (!queued) {
         await this.store.advance("idle")
+        await releaseClaim()
         return Response.json({ ok: false, error: "busy" }, { status: 503 })
       }
       return Response.json({ ok: true, queued: true, error: errorMessage(err) }, { status: 202 })
     }
-    // The prompt is accepted; a settings/stream failure must not re-enqueue it.
+    // The prompt is accepted; a bookkeeping or stream failure must not
+    // re-enqueue it, or the model would be charged twice for one message.
+    await this.recordAcceptedTurn(baseline)
     const settings = await this.settings().catch(() => undefined)
     if (settings?.streaming) this.ctx.waitUntil(this.startStream(sessionID))
     return Response.json({ ok: true, sessionID })
+  }
+
+  /**
+   * Record a turn whose prompt OpenCode has already accepted. Bookkeeping
+   * failures must never cause the prompt to be sent again, so a failure is
+   * reported and the turn is made visible on a best-effort basis.
+   */
+  private async recordAcceptedTurn(baseline: string | undefined): Promise<void> {
+    try {
+      await this.startRun(baseline)
+    } catch (err) {
+      logEvent("turn.record_failed", { error: errorMessage(err) })
+      await this.store.patch({ phase: "running", turnBaseline: baseline }).catch(() => {})
+      await this.ctx.storage.setAlarm(Date.now() + POLL_MS).catch(() => {})
+    }
   }
 
   private async settings(): Promise<HarnessSettings> {
@@ -276,9 +321,23 @@ export class Conversation extends DurableObject<Env> {
     await this.releaseLease()
     this.ready = false
     this.opencodePort = undefined
-    this.opencodePassword = undefined
+    // A reset must not leave a checkpoint that the next cold start would
+    // restore over the freshly cleared conversation.
+    await this.deleteCheckpoints()
     await this.ctx.storage.deleteAll()
     return Response.json({ ok: true })
+  }
+
+  /** Remove every archived workspace for this conversation, including legacy keys. */
+  private async deleteCheckpoints(): Promise<void> {
+    const prefix = this.checkpointPrefix()
+    let cursor: string | undefined
+    do {
+      const page = await this.env.CHECKPOINTS.list({ prefix, cursor })
+      for (const object of page.objects) await this.env.CHECKPOINTS.delete(object.key)
+      cursor = page.truncated ? page.cursor : undefined
+    } while (cursor)
+    await this.env.CHECKPOINTS.delete(`workspaces/${this.ctx.id.toString()}.tar.gz`)
   }
 
   /**
@@ -286,9 +345,10 @@ export class Conversation extends DurableObject<Env> {
    * kept: this is what a long-lived conversation needs after an image deploy.
    */
   private async onRecycle(): Promise<Response> {
-    // Capture a snapshot before stopping so the next start is fast. Snapshots
-    // are large (the writable root) and immutable with a 30-day TTL, so this
-    // happens on an explicit recycle, not on every turn.
+    // Capture a snapshot before stopping so the next start is fast. The R2
+    // archive is the portable source of truth, so make sure it is current
+    // before the image snapshot can be invalidated.
+    await this.checkpoint()
     await this.captureSnapshot()
     try {
       await this.ctx.container?.destroy()
@@ -298,7 +358,6 @@ export class Conversation extends DurableObject<Env> {
     await this.releaseLease()
     this.ready = false
     this.opencodePort = undefined
-    this.opencodePassword = undefined
     return Response.json({ ok: true })
   }
 
@@ -312,11 +371,7 @@ export class Conversation extends DurableObject<Env> {
     await this.releaseLease()
     this.ready = false
     this.opencodePort = undefined
-    this.opencodePassword = undefined
-    const id = this.ctx.id.toString()
-    const list = await this.env.CHECKPOINTS.list({ prefix: this.checkpointPrefix() })
-    for (const object of list.objects) await this.env.CHECKPOINTS.delete(object.key)
-    await this.env.CHECKPOINTS.delete(`workspaces/${id}.tar.gz`)
+    await this.deleteCheckpoints()
     await this.ctx.storage.deleteAll()
     logEvent("conversation.deleted")
     return Response.json({ ok: true })
@@ -336,6 +391,25 @@ export class Conversation extends DurableObject<Env> {
 
   // ------------------------------------------------------------ container start
 
+  /**
+   * Load or create the control-plane token. It is persisted so a restarted DO
+   * instance can still drive the container the previous instance started.
+   */
+  private async controlToken(): Promise<string> {
+    if (this.controlTokenValue) return this.controlTokenValue
+    const stored = await this.ctx.storage.get<string>("controlToken")
+    if (stored) {
+      this.controlTokenValue = stored
+      return stored
+    }
+    const bytes = new Uint8Array(32)
+    crypto.getRandomValues(bytes)
+    const token = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")
+    await this.ctx.storage.put("controlToken", token)
+    this.controlTokenValue = token
+    return token
+  }
+
   /** Startup options for the scheduling policy in use. */
   protected startOptions(): ContainerStartupOptions {
     const images = (this.ctx.container as unknown as { images?: Record<string, string> } | undefined)
@@ -346,6 +420,7 @@ export class Conversation extends DurableObject<Env> {
       // `basic` has no exact equivalent on this policy; standard-1 is the
       // closest size with enough memory for OpenCode plus stow.
       instance: "standard-1",
+      ...(this.controlTokenValue ? { env: { CONTROL_TOKEN: this.controlTokenValue } } : {}),
     } as ContainerStartupOptions
   }
 
@@ -424,6 +499,9 @@ export class Conversation extends DurableObject<Env> {
   private async startContainer(): Promise<boolean> {
     const container = this.ctx.container
     if (!container) throw new Error("no container bound")
+    // The token must exist before the container process starts, because it is
+    // passed in the container environment.
+    await this.controlToken()
     await this.acquireLease()
     try {
       return await this.startBoundContainer(container)
@@ -502,11 +580,27 @@ export class Conversation extends DurableObject<Env> {
     if (!text) return Response.json({ ok: true })
 
     const target: SlackTarget = { channel: event.channel, ...(input.replyTs ? { replyTs: input.replyTs } : {}) }
+
+    // The daily budget is a ceiling for every transport, not just HTTP.
+    const spent = await this.budgetBlocked()
+    if (spent !== undefined) {
+      await this.postChunked(
+        target.channel,
+        `⚠️ Daily budget reached (spent $${spent.toFixed(2)}). Raise the budget in settings or wait for the daily reset.`,
+        target.replyTs,
+      ).catch(() => {})
+      return Response.json({ ok: true })
+    }
+
     let prompt = text
+    let sessionID = ""
+    let baseline: string | undefined
+    let accepted = false
     try {
       prompt = await this.buildPrompt(event.channel, event.ts, event.thread_ts, text)
       if (!(await this.claimAdmission())) {
         const queued = await this.enqueue(prompt, target)
+        accepted = queued
         if (!queued) {
           await this.postChunked(
             target.channel,
@@ -516,17 +610,16 @@ export class Conversation extends DurableObject<Env> {
         }
         return Response.json({ ok: true, queued })
       }
-      const sessionID = await this.ensureSession(text, "slack", target)
-      const baseline = await this.turnBaseline(sessionID)
+      sessionID = await this.ensureSession(text, "slack", target)
+      baseline = await this.turnBaseline(sessionID)
+      // Once this call returns, the prompt has been accepted by OpenCode.
       await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
-      await this.startRun(baseline)
-      const settings = await this.settings().catch(() => undefined)
-      if (settings?.streaming) this.ctx.waitUntil(this.startStream(sessionID))
-      return Response.json({ ok: true, sessionID })
+      accepted = true
     } catch (err) {
-      if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
+      this.admitting = false
       logEvent("admission.failed", { transport: "slack" })
       const queued = await this.enqueue(prompt, target)
+      accepted = queued
       if (!queued) {
         await this.store.advance("idle")
         await this.postChunked(
@@ -536,7 +629,16 @@ export class Conversation extends DurableObject<Env> {
         ).catch(() => {})
       }
       return Response.json({ ok: true, queued })
+    } finally {
+      // Only a message we could not accept is released for a Slack redelivery.
+      if (!accepted && input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
     }
+
+    // The prompt is accepted; bookkeeping and stream failures must not re-send it.
+    await this.recordAcceptedTurn(baseline)
+    const settings = await this.settings().catch(() => undefined)
+    if (settings?.streaming) this.ctx.waitUntil(this.startStream(sessionID))
+    return Response.json({ ok: true, sessionID })
   }
 
   private async onPermission(input: PermissionRequest): Promise<Response> {
@@ -669,12 +771,17 @@ export class Conversation extends DurableObject<Env> {
 
   private async ensureSession(text: string, transport: Transport, slack?: SlackTarget): Promise<string> {
     const state = await this.store.get()
-    if (state.sessionID) {
+    if (state.sessionID && (await this.sessionUsable(state.sessionID))) {
       if (slack && (state.slack?.channel !== slack.channel || state.slack?.replyTs !== slack.replyTs)) {
-        state.slack = slack
-        await this.store.save(state)
+        await this.store.patch({ slack })
       }
       return state.sessionID
+    }
+    if (state.sessionID) {
+      // The OpenCode database was reset or restored without this session.
+      // Create a replacement before clearing the old one, so a transient
+      // container failure cannot erase a session that still exists.
+      logEvent("session.stale", { sessionID: state.sessionID })
     }
 
     const session = await this.withClient((client) =>
@@ -691,8 +798,43 @@ export class Conversation extends DurableObject<Env> {
     if (model) {
       await this.withClient((client) => client.session.switchModel({ sessionID, model }))
     }
-    await this.store.setSession(sessionID, transport, slack)
+    await this.store.patch({
+      sessionID,
+      transport,
+      ...(slack ? { slack } : {}),
+      // A replacement session has no history: baseline, pending requests and
+      // per-session usage all belong to the session that disappeared.
+      ...(state.sessionID
+        ? {
+            pending: {},
+            turnBaseline: undefined,
+            lastReply: undefined,
+            lastSlackReply: undefined,
+            reportedError: undefined,
+            usage: undefined,
+            usageError: undefined,
+          }
+        : {}),
+    })
     return sessionID
+  }
+
+  /** Is this session still present in OpenCode? */
+  private async sessionUsable(sessionID: string): Promise<boolean> {
+    try {
+      return await this.withClient(async (client) => {
+        try {
+          await client.session.get({ sessionID })
+          return true
+        } catch {
+          // A missing session is an expected outcome, not a container failure:
+          // handle it here so it does not trip the readiness breaker.
+          return false
+        }
+      })
+    } catch {
+      return false
+    }
   }
 
   /**
@@ -725,7 +867,7 @@ export class Conversation extends DurableObject<Env> {
     if (!(await this.store.advance("running"))) {
       // A concurrent alarm may have reset the admission; the prompt is already
       // sent, so force the phase rather than leaving the turn invisible.
-      await this.store.save({ ...(await this.store.get()), phase: "running" })
+      await this.store.patch({ phase: "running" })
     }
     await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
   }
@@ -783,7 +925,6 @@ export class Conversation extends DurableObject<Env> {
       const res = await port.fetch("http://container/api/event", {
         headers: {
           accept: "text/event-stream",
-          ...(this.opencodePassword ? { authorization: basicAuth(this.opencodePassword) } : {}),
         },
         signal: controller.signal,
       })
@@ -876,7 +1017,7 @@ export class Conversation extends DurableObject<Env> {
       await this.pollPermissions(sessionID, pending)
 
       if (settled || failure) {
-        await this.finishTurn(state, reply, failure)
+        await this.finishTurn(state, reply, failure, messages)
         return true
       }
       return false
@@ -893,6 +1034,7 @@ export class Conversation extends DurableObject<Env> {
     state: ConversationState,
     reply: string,
     failure?: TurnFailure,
+    messages?: MessageInfo[],
   ): Promise<void> {
     return withSpan(
       "conversation.settle",
@@ -902,7 +1044,7 @@ export class Conversation extends DurableObject<Env> {
           ...(state.runStartedAt ? { "conversation.turn_ms": Date.now() - state.runStartedAt } : {}),
           "conversation.reply_chars": reply.length,
         })
-        await this.settleTurn(state, reply, failure)
+        await this.settleTurn(state, reply, failure, messages)
       },
       { "conversation.key": this.key ?? "unknown" },
     )
@@ -913,6 +1055,7 @@ export class Conversation extends DurableObject<Env> {
     state: ConversationState,
     reply: string,
     failure?: TurnFailure,
+    messages?: MessageInfo[],
   ): Promise<void> {
     await this.store.advance("settling")
     void this.count(failure ? "turn.failed" : "turn.settled")
@@ -921,6 +1064,10 @@ export class Conversation extends DurableObject<Env> {
       ...(failure ? { error: failure.message.slice(0, 200) } : {}),
       queued: Boolean(state.queued),
     })
+    // Usage must not depend on the warm event stream: a deployment with
+    // streaming off still has to feed the daily ledger. The context carries
+    // each step's cost, and the report is absolute per conversation per day.
+    if (messages) await this.recordContextUsage(messages).catch(() => {})
     if (failure) {
       const key = failureKey(failure)
       if (key !== state.reportedError) {
@@ -982,6 +1129,35 @@ export class Conversation extends DurableObject<Env> {
     } catch (error) {
       await this.store.patch({ usageError: errorMessage(error) }).catch(() => {})
     }
+  }
+
+  /**
+   * Record today's spend for this conversation from the message context. This
+   * is the streaming-independent path: it runs at settle time and writes an
+   * absolute per-conversation entry, so a retry or a later poll overwrites
+   * instead of double counting.
+   */
+  private async recordContextUsage(messages: MessageInfo[]): Promise<void> {
+    const date = new Date().toISOString().slice(0, 10)
+    const startOfDay = Date.parse(`${date}T00:00:00.000Z`)
+    let costUSD = 0
+    let input = 0
+    let output = 0
+    for (const message of messages) {
+      if (message.type !== "assistant") continue
+      const created = message.time?.created
+      if (typeof created === "number" && toMillis(created) < startOfDay) continue
+      costUSD += Number(message.cost ?? 0) || 0
+      input += Number(message.tokens?.input ?? 0) || 0
+      output += Number(message.tokens?.output ?? 0) || 0
+    }
+    if (costUSD === 0 && input === 0 && output === 0) return
+    const usage = { date, costUSD, input, output }
+    await this.store.patch({ usage, usageError: undefined })
+    await this.env.SETTINGS.getByName("global").fetch("https://settings/usage", {
+      method: "POST",
+      body: JSON.stringify({ conversationID: this.ctx.id.toString(), ...usage }),
+    })
   }
 
   /** Spend so far today, or undefined when the budget is disabled or unreadable. */
@@ -1066,15 +1242,48 @@ export class Conversation extends DurableObject<Env> {
   transport?: (number: number) => ContainerPort
 
   private async port(number: number): Promise<ContainerPort> {
+    if (number === OPENCODE_PORT) {
+      // The test seam replaces the container port directly. In production the
+      // DO has no OpenCode password, so it goes through the control server,
+      // which authenticates to OpenCode on loopback.
+      if (this.transport) return this.rawPort(number)
+      return opencodeViaControl(await this.controlPort())
+    }
+    const base = await this.rawPort(number)
+    if (number !== CONTROL_PORT) return base
+    return this.withControlAuth(base)
+  }
+
+  private async controlPort(): Promise<ContainerPort> {
+    return this.port(CONTROL_PORT)
+  }
+
+  private async withControlAuth(base: ContainerPort): Promise<ContainerPort> {
+    const token = await this.controlToken()
+    return {
+      fetch: (input, init) => {
+        const request = new Request(input as any, init)
+        request.headers.set("authorization", `Bearer ${token}`)
+        return base.fetch(request)
+      },
+    }
+  }
+
+  private async rawPort(number: number): Promise<ContainerPort> {
     if (this.transport) return this.transport(number)
     if (this.env.CONTAINER_URL) {
       const host = new URL(this.env.CONTAINER_URL).hostname
       return {
         fetch: (input, init) => {
-          const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url)
+          const original = input instanceof Request ? input : new Request(input as any, init)
+          const url = new URL(original.url)
           url.hostname = host
           url.port = String(number)
-          return fetch(url.toString(), init)
+          return fetch(url.toString(), {
+            method: original.method,
+            headers: original.headers,
+            body: original.body,
+          })
         },
       }
     }
@@ -1085,16 +1294,11 @@ export class Conversation extends DurableObject<Env> {
     let usedSnapshot = false
     if (!container.running) usedSnapshot = await this.startContainer()
     const port = container.getTcpPort(number)
-    const path = number === OPENCODE_PORT ? "/api/info" : "/health"
-    const headers =
-      number === OPENCODE_PORT && this.opencodePassword
-        ? { authorization: basicAuth(this.opencodePassword) }
-        : undefined
+    const path = "/health"
     const ready = async (limit: number): Promise<boolean> => {
       for (let attempt = 0; attempt < limit; attempt++) {
         try {
           const res = await port.fetch(`http://container${path}`, {
-            headers,
             signal: AbortSignal.timeout(2000),
           })
           if (res.ok) return true
@@ -1124,7 +1328,7 @@ export class Conversation extends DurableObject<Env> {
   private async withClient<T>(fn: (client: ReturnType<typeof makeClient>) => Promise<T>): Promise<T> {
     try {
       const port = await this.ensureReady()
-      const client = makeClient(portFetch(port), this.opencodePassword)
+      const client = makeClient(portFetch(port))
       const result = await fn(client)
       this.consecutiveFailures = 0
       return result
@@ -1198,21 +1402,60 @@ export class Conversation extends DurableObject<Env> {
 
     if (!status.initialized) {
       const checkpoint = await this.latestCheckpoint()
-      if (checkpoint?.body) {
-        await control.fetch("http://container/restore", {
-          method: "POST",
-          body: checkpoint.body,
-          signal: AbortSignal.timeout(60_000),
+      if (checkpoint) {
+        const workspace = await this.decryptCheckpointBody(
+          checkpoint.workspace.body,
+          checkpoint.workspace.customMetadata?.encrypted === "1",
+        )
+        const workspaceQuery = checkpoint.split
+          ? `?part=workspace${checkpoint.state ? "" : "&final=1"}`
+          : ""
+        const restoredWorkspace = await control.fetch(
+          `http://container/restore${workspaceQuery}`,
+          {
+            method: "POST",
+            body: workspace,
+            signal: AbortSignal.timeout(60_000),
+          },
+        )
+        if (!restoredWorkspace.ok) {
+          logEvent("checkpoint.restore.failed", {
+            part: "workspace",
+            status: restoredWorkspace.status,
+          })
+          throw new Error(`workspace restore failed: ${restoredWorkspace.status}`)
+        }
+        if (checkpoint.state) {
+          const state = await this.decryptCheckpointBody(
+            checkpoint.state.body,
+            checkpoint.state.customMetadata?.encrypted === "1",
+          )
+          const restoredState = await control.fetch("http://container/restore?part=state", {
+            method: "POST",
+            body: state,
+            signal: AbortSignal.timeout(60_000),
+          })
+          if (!restoredState.ok) {
+            logEvent("checkpoint.restore.failed", { part: "state", status: restoredState.status })
+            throw new Error(`state restore failed: ${restoredState.status}`)
+          }
+        }
+        await this.store.patch({
+          checkpointFingerprint: undefined,
+          checkpointStateFingerprint: undefined,
         })
-        await this.store.patch({ checkpointFingerprint: undefined })
       } else {
         // A fresh conversation inherits the account's provider credentials, so
         // onboarding only has to happen once.
         const seed = await this.env.CHECKPOINTS.get(ACCOUNT_STATE_KEY)
         if (seed?.body) {
+          const body =
+            seed.customMetadata?.encrypted === "1"
+              ? await this.decryptCheckpointBody(seed.body, true)
+              : seed.body
           const seeded = await control.fetch("http://container/seed-state", {
             method: "POST",
-            body: seed.body,
+            body,
             signal: AbortSignal.timeout(60_000),
           })
           if (!seeded.ok) logEvent("account.seed.failed", { status: seeded.status })
@@ -1237,11 +1480,8 @@ export class Conversation extends DurableObject<Env> {
       signal: AbortSignal.timeout(120_000),
     })
     if (!started.ok) throw new Error(`container start failed: ${await started.text()}`)
-    const startedBody = (await started.json()) as { password?: string }
-    if (startedBody.password) this.opencodePassword = startedBody.password
-    await this.store.patch({
-      containerStarts: ((await this.store.get()).containerStarts ?? 0) + 1,
-    })
+    // The control server keeps the OpenCode password; /start returns no secret.
+    await this.store.increment("containerStarts")
 
     if (state.settingsVersion !== settings.version) {
       await this.store.patch({ settingsVersion: settings.version })
@@ -1256,13 +1496,14 @@ export class Conversation extends DurableObject<Env> {
 
   /** Hold one admission when the container cannot start; drain it from the alarm. */
   private async enqueue(text: string, slack?: SlackTarget): Promise<boolean> {
-    const state = await this.store.get()
-    if (state.queued) return false
     const nextAttemptAt = Date.now() + 5000
-    await this.store.patch({
-      queued: { text, ...(slack ? { slack } : {}), attempts: 0, nextAttemptAt },
+    const claimed = await this.store.enqueue({
+      text,
+      ...(slack ? { slack } : {}),
+      attempts: 0,
+      nextAttemptAt,
     })
-    await this.store.advance("queued")
+    if (!claimed) return false
     void this.count("queue.enqueued")
     logEvent("queue.enqueued", { transport: slack ? "slack" : "http" })
     if (slack) {
@@ -1287,17 +1528,33 @@ export class Conversation extends DurableObject<Env> {
     })
     if (!queued) return false
 
+    // A queued message is still subject to the same ceiling as a live one.
+    // Keep it queued and retry after the ledger rolls over instead of dropping it.
+    const spent = await this.budgetBlocked()
+    if (spent !== undefined) {
+      this.admitting = false
+      const retryAt = nextBudgetReset(Date.now())
+      const notice = "daily budget reached"
+      if (queued.slack && queued.lastError !== notice) {
+        await this.postChunked(
+          queued.slack.channel,
+          `⚠️ Daily budget reached (spent $${spent.toFixed(2)}). I'll retry this queued message after the daily reset.`,
+          queued.slack.replyTs,
+        ).catch(() => {})
+      }
+      await this.store.patch({ queued: { ...queued, lastError: notice, nextAttemptAt: retryAt } })
+      await this.store.advance("queued")
+      await this.ctx.storage.setAlarm(retryAt)
+      return false
+    }
+
+    let sessionID = ""
+    let baseline: string | undefined
     try {
-      const sessionID = await this.ensureSession(queued.text, queued.slack ? "slack" : "http", queued.slack)
-      const baseline = await this.turnBaseline(sessionID)
+      sessionID = await this.ensureSession(queued.text, queued.slack ? "slack" : "http", queued.slack)
+      baseline = await this.turnBaseline(sessionID)
+      // Once this call returns, the prompt has been accepted by OpenCode.
       await this.withClient((client) => client.session.prompt({ sessionID, text: queued.text }))
-      await this.store.patch({ queued: undefined })
-      void this.count("queue.drained")
-      logEvent("queue.drained", { attempts: queued.attempts })
-      await this.startRun(baseline)
-      const settings = await this.settings()
-      if (settings.streaming) this.ctx.waitUntil(this.startStream(sessionID))
-      return true
     } catch (err) {
       this.admitting = false
       const attempts = queued.attempts + 1
@@ -1328,28 +1585,71 @@ export class Conversation extends DurableObject<Env> {
       await this.ctx.storage.setAlarm(Date.now() + Math.min(5000 * attempts, 30_000))
       return false
     }
+
+    // The prompt is accepted. Clear the queue before recording the turn, so a
+    // bookkeeping failure cannot cause the same message to be prompted again.
+    await this.store.patch({ queued: undefined })
+    void this.count("queue.drained")
+    logEvent("queue.drained", { attempts: queued.attempts })
+    await this.recordAcceptedTurn(baseline)
+    const settings = await this.settings().catch(() => undefined)
+    if (settings?.streaming) this.ctx.waitUntil(this.startStream(sessionID))
+    return true
   }
 
   private checkpointPrefix(): string {
     return `workspaces/${this.ctx.id.toString()}/`
   }
 
-  /** Newest checkpoint, with a fallback to the pre-versioning single object. */
-  private async latestCheckpoint(): Promise<R2ObjectBody | null> {
+  /**
+   * Newest checkpoint. A manifest describes two independent objects; the
+   * pre-split layout is a single object and stays read-only during migration.
+   */
+  private async latestCheckpoint(): Promise<{
+    workspace: R2ObjectBody
+    state: R2ObjectBody | null
+    split: boolean
+  } | null> {
+    const manifest = (await this.store.get()).checkpointManifest
+    if (manifest?.workspace) {
+      const workspace = await this.env.CHECKPOINTS.get(manifest.workspace.key)
+      if (workspace) {
+        const state = manifest.state
+          ? await this.env.CHECKPOINTS.get(manifest.state.key)
+          : null
+        return { workspace, state, split: true }
+      }
+      logEvent("checkpoint.manifest.missing", { key: manifest.workspace.key })
+    }
     const list = await this.env.CHECKPOINTS.list({ prefix: this.checkpointPrefix() })
     const newest = list.objects
       .map((object) => object.key)
+      // Do not mistake a split state archive for a legacy workspace archive.
+      .filter((key) => !/\/state-[^/]*\.tar\.gz$/.test(key))
       .sort()
       .at(-1)
-    if (newest) return this.env.CHECKPOINTS.get(newest)
-    return this.env.CHECKPOINTS.get(`workspaces/${this.ctx.id.toString()}.tar.gz`)
+    const legacy = await this.env.CHECKPOINTS.get(
+      newest ?? `workspaces/${this.ctx.id.toString()}.tar.gz`,
+    )
+    return legacy ? { workspace: legacy, state: null, split: false } : null
   }
 
-  /** Drop old versions, keeping the most recent few for recovery. */
+  /** Drop old versions, keeping the most recent few of each part. */
   private async pruneCheckpoints(): Promise<void> {
     const list = await this.env.CHECKPOINTS.list({ prefix: this.checkpointPrefix() })
-    const keys = list.objects.map((object) => object.key).sort()
-    const stale = keys.slice(0, Math.max(0, keys.length - CHECKPOINT_KEEP))
+    const keys = list.objects
+      .map((object) => object.key)
+      // A split checkpoint pairs a workspace and a state object. Pruning by
+      // total count could delete one half of a pair; prune per part instead.
+      .sort()
+    const workspaceKeys = keys.filter((key) => /-workspace-/.test(key))
+    const stateKeys = keys.filter((key) => /-state-/.test(key))
+    const legacyKeys = keys.filter((key) => !/-(workspace|state)-/.test(key))
+    const stale = [
+      ...workspaceKeys.slice(0, Math.max(0, workspaceKeys.length - CHECKPOINT_KEEP)),
+      ...stateKeys.slice(0, Math.max(0, stateKeys.length - CHECKPOINT_KEEP)),
+      ...legacyKeys.slice(0, Math.max(0, legacyKeys.length - CHECKPOINT_KEEP)),
+    ]
     for (const key of stale) await this.env.CHECKPOINTS.delete(key)
     if (stale.length) logEvent("checkpoint.pruned", { count: stale.length })
   }
@@ -1363,6 +1663,10 @@ export class Conversation extends DurableObject<Env> {
     if (attempts >= CHECKPOINT_RETRY_LIMIT) {
       await this.store.patch({ checkpointPending: undefined, checkpointAttempts: undefined })
       logEvent("checkpoint.abandoned", { attempts })
+      await this.deliver({
+        type: "error",
+        message: "workspace checkpoint failed repeatedly; recent changes may not be recoverable",
+      }).catch(() => {})
       return false
     }
     const saved = await this.checkpoint()
@@ -1376,51 +1680,225 @@ export class Conversation extends DurableObject<Env> {
     return false
   }
 
+  /** Tenant-scoped archive key, or undefined when the vault is not configured. */
+  private async checkpointCryptoKey(): Promise<CryptoKey | undefined> {
+    const master = this.env.VAULT_MASTER_KEY
+    if (!master) return undefined
+    return deriveWorkspaceKey(master, workspaceID(this.env))
+  }
+
+  /** Decrypt a stored archive before handing it to the restore endpoint. */
+  private async decryptCheckpointBody(
+    body: ReadableStream,
+    encrypted: boolean,
+  ): Promise<ReadableStream> {
+    if (!encrypted) return body
+    const key = await this.checkpointCryptoKey()
+    if (!key) {
+      throw new Error("checkpoint is encrypted but VAULT_MASTER_KEY is not configured")
+    }
+    return body.pipeThrough(decryptTransform(key))
+  }
+
+  /** Stream one checkpoint part into R2 and prove the object is complete. */
+  private async uploadCheckpointPart(
+    key: string,
+    response: Response,
+    cryptoKey: CryptoKey | undefined,
+  ): Promise<number> {
+    if (!response.body) throw new Error("checkpoint part has no body")
+    const encrypted = Boolean(cryptoKey)
+    const length = Number(response.headers.get("content-length"))
+    const metadata = { customMetadata: { encrypted: encrypted ? "1" : "0" } }
+    let bytes: number
+    if (cryptoKey) {
+      if (Number.isFinite(length) && length > 0) {
+        // Encrypt as the body streams; the framed format has a deterministic
+        // length, so R2 still gets a fixed-length stream.
+        const sealed = response.body.pipeThrough(encryptTransform(cryptoKey))
+        const cipherLength = encryptedLength(length)
+        const fixed = new FixedLengthStream(cipherLength)
+        const piping = sealed.pipeTo(fixed.writable)
+        await Promise.all([this.env.CHECKPOINTS.put(key, fixed.readable, metadata), piping])
+        bytes = cipherLength
+      } else {
+        const plain = new Uint8Array(await response.arrayBuffer())
+        const sealed = await encryptBytes(plain, cryptoKey)
+        await this.env.CHECKPOINTS.put(key, sealed, metadata)
+        bytes = sealed.byteLength
+      }
+    } else if (Number.isFinite(length) && length > 0) {
+      // R2 needs a stream of known length; the control server sends one.
+      const counted = countedStream(response.body)
+      const fixed = new FixedLengthStream(length)
+      const piping = counted.stream.pipeTo(fixed.writable)
+      // Await both: a stream error must fail the checkpoint, not be silently
+      // swallowed while R2 keeps a truncated object.
+      await Promise.all([this.env.CHECKPOINTS.put(key, fixed.readable, metadata), piping])
+      bytes = counted.bytes()
+    } else {
+      // Older control servers streamed without a length.
+      const buffer = await response.arrayBuffer()
+      await this.env.CHECKPOINTS.put(key, buffer, metadata)
+      bytes = buffer.byteLength
+    }
+    const stored = await this.env.CHECKPOINTS.head(key)
+    if (!stored) throw new Error("checkpoint upload disappeared")
+    if (stored.size !== bytes) {
+      await this.env.CHECKPOINTS.delete(key)
+      throw new Error(`checkpoint size mismatch: ${stored.size} != ${bytes}`)
+    }
+    return bytes
+  }
+
+  /** Verify a part that the control server reported as unchanged. */
+  private async requireCheckpointPart(
+    part: { key: string } | undefined,
+    kind: "workspace" | "state",
+  ): Promise<void> {
+    if (!part) return
+    const head = await this.env.CHECKPOINTS.head(part.key)
+    if (head) return
+    logEvent("checkpoint.missing", { key: part.key })
+    await this.store.patch(
+      kind === "workspace"
+        ? { checkpointFingerprint: undefined, checkpointKey: undefined }
+        : { checkpointStateFingerprint: undefined },
+    )
+    throw new Error("checkpoint was skipped but the archive is missing")
+  }
+
   private async checkpoint(): Promise<boolean> {
     // The control server archives the workspace without stopping OpenCode, so
     // the cached port stays valid across a checkpoint.
     return withSpan("conversation.checkpoint", async (span) => {
-      const key = `${this.checkpointPrefix()}${Date.now()}.tar.gz`
+      const stamp = Date.now()
+      const prefix = this.checkpointPrefix()
+      const workspaceKey = `${prefix}workspace-${stamp}.tar.gz`
+      const stateKey = `${prefix}state-${stamp}.tar.gz`
       try {
         await withRetries(
           async () => {
             const state = await this.store.get()
-            const since = state.checkpointFingerprint ?? ""
+            const cryptoKey = await this.checkpointCryptoKey()
+            const encrypted = Boolean(cryptoKey)
+            // Toggling encryption must not be skipped by a matching fingerprint.
+            const matching = state.checkpointEncrypted === encrypted
+            const workspaceSince = matching ? state.checkpointFingerprint ?? "" : ""
+            const stateSince = matching ? state.checkpointStateFingerprint ?? "" : ""
             const control = await this.port(CONTROL_PORT)
             const response = await control.fetch(
-              `http://container/checkpoint?since=${encodeURIComponent(since)}`,
+              `http://container/checkpoint?part=workspace&since=${encodeURIComponent(workspaceSince)}`,
               { signal: AbortSignal.timeout(120_000) },
             )
+            const split = response.headers.get("x-aboiteau-checkpoint") === "split"
+
+            if (!split) {
+              // Legacy control server: one archive, one key. Kept for rolling
+              // deploys so an older image still checkpoints.
+              if (response.status === 204) {
+                await this.requireCheckpointPart(
+                  state.checkpointKey ? { key: state.checkpointKey } : undefined,
+                  "workspace",
+                )
+                void this.count("checkpoint.skipped")
+                logEvent("checkpoint.skipped")
+                return
+              }
+              if (!response.ok) throw new Error(`checkpoint returned ${response.status}`)
+              const bytes = await this.uploadCheckpointPart(workspaceKey, response, cryptoKey)
+              span.setAttribute("checkpoint.bytes", bytes)
+              void this.count("checkpoint.saved")
+              logEvent("checkpoint.saved", { bytes })
+              await this.store.patch({
+                checkpointSize: bytes,
+                checkpointKey: workspaceKey,
+                checkpointEncrypted: encrypted,
+              })
+              const fingerprint = response.headers.get("x-workspace-fingerprint")
+              if (fingerprint) await this.store.patch({ checkpointFingerprint: fingerprint })
+              await this.pruneCheckpoints()
+              return
+            }
+
+            let manifest = state.checkpointManifest
+            let workspacePart = manifest?.workspace
+            let statePart = manifest?.state
+            let uploaded = false
+
             if (response.status === 204) {
+              if (!workspacePart) {
+                // No archive to reuse: retry as a full checkpoint.
+                await this.store.patch({ checkpointFingerprint: undefined })
+                throw new Error("checkpoint was skipped but no manifest exists")
+              }
+              await this.requireCheckpointPart(workspacePart, "workspace")
+            } else if (response.ok) {
+              const bytes = await this.uploadCheckpointPart(workspaceKey, response, cryptoKey)
+              workspacePart = { key: workspaceKey, size: bytes, encrypted }
+              uploaded = true
+            } else {
+              throw new Error(`checkpoint returned ${response.status}`)
+            }
+
+            const stateResponse = await control.fetch(
+              `http://container/checkpoint?part=state&since=${encodeURIComponent(stateSince)}`,
+              { signal: AbortSignal.timeout(120_000) },
+            )
+            let stateFingerprint = manifest?.stateFingerprint
+            if (stateResponse.status === 204) {
+              if (!statePart) {
+                // The control server says "unchanged" but we hold no archive to
+                // restore from. Force a full state archive on the retry.
+                await this.store.patch({ checkpointStateFingerprint: undefined })
+                throw new Error("state checkpoint was skipped but no archive exists")
+              }
+              await this.requireCheckpointPart(statePart, "state")
+              stateFingerprint =
+                stateResponse.headers.get("x-state-fingerprint") ?? stateFingerprint
+            } else if (stateResponse.status === 404) {
+              // Fresh conversation: no state root yet.
+              statePart = undefined
+              stateFingerprint = undefined
+            } else if (stateResponse.ok) {
+              const bytes = await this.uploadCheckpointPart(stateKey, stateResponse, cryptoKey)
+              statePart = { key: stateKey, size: bytes, encrypted }
+              stateFingerprint =
+                stateResponse.headers.get("x-state-fingerprint") ?? stateFingerprint
+              uploaded = true
+            } else {
+              throw new Error(`state checkpoint returned ${stateResponse.status}`)
+            }
+
+            const fingerprint =
+              response.headers.get("x-workspace-fingerprint") ?? manifest?.fingerprint
+
+            if (!uploaded) {
+              // Both parts unchanged and both objects verified.
               void this.count("checkpoint.skipped")
               logEvent("checkpoint.skipped")
               return
             }
-            if (!response.ok || !response.body) throw new Error(`checkpoint returned ${response.status}`)
-            // From here on a failure is a failed upload, not a paused server.
-            const length = Number(response.headers.get("content-length"))
-            if (Number.isFinite(length) && length > 0) {
-              // R2 needs a stream of known length; the control server sends one.
-              const counted = countedStream(response.body)
-              const fixed = new FixedLengthStream(length)
-              const piping = counted.stream.pipeTo(fixed.writable).catch(() => {})
-              await this.env.CHECKPOINTS.put(key, fixed.readable)
-              await piping
-              span.setAttribute("checkpoint.bytes", counted.bytes())
-              void this.count("checkpoint.saved")
-              logEvent("checkpoint.saved", { bytes: counted.bytes() })
-              await this.store.patch({ checkpointSize: counted.bytes() })
-            } else {
-              // Older control servers streamed without a length.
-              const bytes = await response.arrayBuffer()
-              await this.env.CHECKPOINTS.put(key, bytes)
-              span.setAttribute("checkpoint.bytes", bytes.byteLength)
-              void this.count("checkpoint.saved")
-              logEvent("checkpoint.saved", { bytes: bytes.byteLength })
-              await this.store.patch({ checkpointSize: bytes.byteLength })
+
+            const next: CheckpointManifest = {
+              workspace: workspacePart!,
+              ...(statePart ? { state: statePart } : {}),
+              ...(fingerprint ? { fingerprint } : {}),
+              ...(stateFingerprint ? { stateFingerprint } : {}),
+              createdAt: Date.now(),
             }
-            const fingerprint = response.headers.get("x-workspace-fingerprint")
-            if (fingerprint) await this.store.patch({ checkpointFingerprint: fingerprint })
+            const bytes = next.workspace.size + (next.state?.size ?? 0)
+            span.setAttribute("checkpoint.bytes", bytes)
+            void this.count("checkpoint.saved")
+            logEvent("checkpoint.saved", { bytes })
+            await this.store.patch({
+              checkpointManifest: next,
+              checkpointKey: next.workspace.key,
+              checkpointSize: bytes,
+              checkpointEncrypted: encrypted,
+              ...(fingerprint ? { checkpointFingerprint: fingerprint } : {}),
+              ...(stateFingerprint ? { checkpointStateFingerprint: stateFingerprint } : {}),
+            })
             await this.pruneCheckpoints()
           },
           { attempts: 3, delayMs: 1000 },
@@ -1448,7 +1926,6 @@ export class Conversation extends DurableObject<Env> {
   private invalidateOpenCode(): void {
     this.ready = false
     this.opencodePort = undefined
-    this.opencodePassword = undefined
   }
 
   // -------------------------------------------------------------------- Slack
@@ -1481,9 +1958,9 @@ export class Conversation extends DurableObject<Env> {
         {
           type: "actions",
           elements: [
-            button("Approve once", "primary", "oc_perm_once", key, event.requestID),
-            button("Always allow", undefined, "oc_perm_always", key, event.requestID),
-            button("Deny", "danger", "oc_perm_reject", key, event.requestID),
+            button("Approve once", "primary", "oc_perm_once", key, event.requestID, target.channel),
+            button("Always allow", undefined, "oc_perm_always", key, event.requestID, target.channel),
+            button("Deny", "danger", "oc_perm_reject", key, event.requestID, target.channel),
           ],
         },
       ],
@@ -1527,13 +2004,14 @@ function button(
   actionID: string,
   key: string,
   requestID: string,
+  channel: string,
 ): Record<string, unknown> {
   return {
     type: "button",
     text: { type: "plain_text", text: label },
     ...(style ? { style } : {}),
     action_id: actionID,
-    value: JSON.stringify({ key, requestID }),
+    value: JSON.stringify({ key, requestID, channel }),
   }
 }
 

@@ -2,11 +2,12 @@ import { describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
 
 /**
- * Checkpoint interlock: archiving pauses OpenCode. The DO must stop reusing its
- * cached port afterwards, and must not restart it for a no-op checkpoint.
+ * Checkpoint interlock: the control server archives the workspace while
+ * OpenCode keeps running, so the cached port stays usable. A no-op checkpoint
+ * must not restart anything either.
  */
 
-function fakeContainer(options: { killOnCheckpoint: boolean }) {
+function fakeContainer(options: { killOnCheckpoint?: boolean; archive?: boolean }) {
   let down = false
   let prompted = false
   const counters = { starts: 0, promptOK: 0, promptFail: 0, checkpoints: 0 }
@@ -26,8 +27,8 @@ function fakeContainer(options: { killOnCheckpoint: boolean }) {
         }
         if (url.pathname === "/checkpoint") {
           counters.checkpoints++
-          if (!options.killOnCheckpoint) return new Response(null, { status: 204 })
-          down = true
+          if (!options.killOnCheckpoint && !options.archive) return new Response(null, { status: 204 })
+          if (options.killOnCheckpoint) down = true
           return new Response(new Uint8Array([1, 2, 3]), {
             status: 200,
             headers: {
@@ -88,10 +89,10 @@ async function state(instance: { fetch(request: Request): Promise<Response> }) {
 }
 
 describe("checkpoint and the opencode port", () => {
-  it("restarts opencode after an archived checkpoint without queueing the next turn", async () => {
+  it("keeps serving turns after an archived checkpoint", async () => {
     const stub = env.CONVERSATION.getByName("C1:checkpoint-archived")
     await runInDurableObject(stub, async (instance) => {
-      const fake = fakeContainer({ killOnCheckpoint: true })
+      const fake = fakeContainer({ archive: true })
       instance.transport = fake.transport
 
       const first = await send(instance, "hello")
@@ -99,13 +100,13 @@ describe("checkpoint and the opencode port", () => {
       await instance.alarm()
       expect(fake.counters.checkpoints).toBe(1)
 
+      // The archive must not pause OpenCode, so this needs no restart.
       const second = await send(instance, "again")
       expect(second.status).toBe(200)
       expect(second.body).not.toHaveProperty("queued")
       expect(fake.counters.promptFail).toBe(0)
       expect(fake.counters.promptOK).toBe(2)
-      // First container start, then a restart after the archive.
-      expect(fake.counters.starts).toBe(2)
+      expect(fake.counters.starts).toBe(1)
       expect((await state(instance)).queued).toBeUndefined()
     })
   })

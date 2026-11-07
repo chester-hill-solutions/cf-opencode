@@ -11,6 +11,7 @@ export default defineConfig({
           SLACK_SIGNING_SECRET: "test-secret",
           SLACK_BOT_TOKEN: "xoxb-test",
           SLACK_BOT_USER_ID: "UBOT",
+          VAULT_MASTER_KEY: "aa".repeat(32),
         },
       },
     }),

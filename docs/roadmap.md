@@ -87,7 +87,7 @@ model and permissions.
 
 | ID | Ticket | Size | Depends |
 |---|---|---|---|
-| R1-1 | Stable checkpoint keys (`workspaces/<conversationKey>.tar.gz`) + copy job for existing checkpoints | S | — |
+| R1-1 | Stable checkpoint keys + copy job for existing checkpoints — **partial:** split workspace/state keys and manifest landed; legacy copy job open | S | — |
 | R1-2 | Migrate to `scheduling_policy: "durable_object"` with the current image, behaviour unchanged | L | R1-1 |
 | R1-3 | Per-conversation container lifecycle: `start({image, instance, enableInternet})`, `inspect`, `monitor`, `setInactivityTimeout` | M | R1-2 |
 | R1-4 | Extract `ContainerRuntime` and `EventStream` from `conversation.ts` (audit 24) | M | R1-2 |

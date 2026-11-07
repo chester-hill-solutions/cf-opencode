@@ -9,6 +9,17 @@ export interface MessageInfo {
   finish?: string
   /** Provider/runtime failure attached to a terminal `idle` message. */
   error?: { type?: string; message?: string } | string
+  /** Spend for this step, when the runtime reports it. */
+  cost?: number
+  tokens?: { input?: number; output?: number }
+}
+
+/**
+ * OpenCode timestamps are documented as milliseconds but some responses use
+ * Unix seconds. Normalise before comparing with `Date.now()`.
+ */
+export function toMillis(value: number): number {
+  return value < 1e12 ? value * 1000 : value
 }
 
 /**
@@ -86,7 +97,7 @@ export function turnFailure(
     .at(-1)
   if (assistant?.error) {
     const at = assistant.time?.created
-    if (!runStartedAt || typeof at !== "number" || at >= runStartedAt) {
+    if (!runStartedAt || typeof at !== "number" || toMillis(at) >= runStartedAt) {
       return { message: errorText(assistant.error), at }
     }
   }
@@ -94,7 +105,7 @@ export function turnFailure(
   const idle = turn.filter((message) => message.type === "idle" && message.error).at(-1)
   if (!idle?.error) return undefined
   const at = idle.time?.created
-  if (runStartedAt && typeof at === "number" && at < runStartedAt) return undefined
+  if (runStartedAt && typeof at === "number" && toMillis(at) < runStartedAt) return undefined
   return { message: errorText(idle.error), at }
 }
 
