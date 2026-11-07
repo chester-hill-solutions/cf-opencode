@@ -8,20 +8,48 @@
 # Cold storage: the Durable Object streams tar checkpoints to R2.
 #
 # Pins:
+#   base image       — oven/bun:1.3 pinned by manifest-list digest
 #   OPENCODE_VERSION — must match the client contract the Worker is built against
 #   STOW_VERSION     — native stow-s3 release used for the local S3 workspace
+#
+# OpenCode is installed from its npm tarball and verified against the registry's
+# sha512 integrity, so the download cannot be swapped between build and run.
 
-FROM oven/bun:1.3
+FROM oven/bun:1.3@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git jq ripgrep sqlite3 tar util-linux \
+      ca-certificates curl git jq openssl ripgrep sqlite3 tar util-linux \
     && groupadd --gid 1001 agent \
     && useradd --uid 1001 --gid agent --create-home --shell /bin/bash agent \
     && rm -rf /var/lib/apt/lists/*
 
 ARG OPENCODE_VERSION=2.2.5
-RUN curl -fsSL https://opencode.ai/v2/install | bash -s -- --version "${OPENCODE_VERSION}" \
-    && mv /root/.opencode/bin/opencode /usr/local/bin/opencode
+ARG TARGETARCH
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+      amd64) target="x64-baseline" ;; \
+      arm64) target="arm64" ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    package="@opencode/cli-linux-${target}"; \
+    metadata=/tmp/opencode-package.json; \
+    curl -fsSL "https://registry.npmjs.org/@opencode%2fcli-linux-${target}/${OPENCODE_VERSION}" -o "${metadata}"; \
+    url=$(jq -r '.dist.tarball' "${metadata}"); \
+    integrity=$(jq -r '.dist.integrity' "${metadata}"); \
+    echo "installing ${package}@${OPENCODE_VERSION}"; \
+    curl -fsSL "${url}" -o /tmp/opencode.tgz; \
+    expected=${integrity#sha512-}; \
+    actual=$(openssl dgst -sha512 -binary /tmp/opencode.tgz | openssl base64 -A); \
+    if [ "${expected}" != "${actual}" ]; then \
+      echo "opencode tarball integrity mismatch" >&2; \
+      exit 1; \
+    fi; \
+    mkdir -p /tmp/opencode; \
+    tar -xzf /tmp/opencode.tgz -C /tmp/opencode; \
+    mv /tmp/opencode/package/bin/opencode /usr/local/bin/opencode; \
+    chmod +x /usr/local/bin/opencode; \
+    rm -rf /tmp/opencode /tmp/opencode.tgz "${metadata}"; \
+    opencode --version
 
 ARG STOW_VERSION=0.3.7
 ARG TARGETARCH

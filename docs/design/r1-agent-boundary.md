@@ -300,8 +300,9 @@ Remaining:
   keeps the state root `root:agent` `0770`, and gives its contents to `agent`
   (OpenCode must own its database to chmod it).
 - The old `ENV HOME=/workspace/.state` and related XDG vars are gone.
-- Remaining: pin the base image by digest and verify the OpenCode artifact
-  (stow-s3 is already checksum-verified).
+- The base image is pinned by manifest-list digest, and OpenCode is installed
+  from its npm tarball with the registry's sha512 integrity check (stow-s3 is
+  already checksum-verified). The install script is no longer used.
 
 ### `src/conversation.ts`
 
