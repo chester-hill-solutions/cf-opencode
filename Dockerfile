@@ -14,7 +14,7 @@
 FROM oven/bun:1.3
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git jq ripgrep sqlite3 tar \
+      ca-certificates curl git jq ripgrep sqlite3 tar util-linux \
     && groupadd --gid 1001 agent \
     && useradd --uid 1001 --gid agent --create-home --shell /bin/bash agent \
     && rm -rf /var/lib/apt/lists/*

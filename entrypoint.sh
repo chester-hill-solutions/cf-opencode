@@ -20,12 +20,13 @@ mkdir -p "$WORKSPACE" "$HOME" "$XDG_CONFIG_HOME/opencode" "$XDG_DATA_HOME" "$XDG
 # Workspace: owned outright by the agent.
 chown -R "$AGENT_UID:$AGENT_GID" "$WORKSPACE"
 
-# State: root-owned, group agent, group-writable, so OpenCode can write its DB
-# and config while the control server keeps ultimate ownership.
-chown -R root:"$AGENT_GID" "$STATE_ROOT"
+# State: the top-level directory is root-owned and only the agent group can
+# enter it. Its contents belong to the agent because OpenCode owns its database.
+chown root:"$AGENT_GID" "$STATE_ROOT"
 chmod 0770 "$STATE_ROOT"
-find "$STATE_ROOT" -type d -exec chmod 0770 {} +
-find "$STATE_ROOT" -type f -exec chmod 0660 {} +
+find "$STATE_ROOT" -mindepth 1 -exec chown "$AGENT_UID:$AGENT_GID" {} +
+find "$STATE_ROOT" -mindepth 1 -type d -exec chmod 0770 {} +
+find "$STATE_ROOT" -mindepth 1 -type f -exec chmod 0660 {} +
 chmod 0700 "$RUN_DIR"
 
 # The control server restores the R2 checkpoint (or clones the configured repo)

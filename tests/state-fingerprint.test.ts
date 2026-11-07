@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { stateFingerprint } from "../control-server"
+import { stateFingerprint, databasePath } from "../control-server"
 
 const roots: string[] = []
 
@@ -34,5 +34,15 @@ describe("state checkpoint fingerprint", () => {
     mkdirSync(join(dir, "log"))
     writeFileSync(join(dir, "log", "run.log"), "noise")
     expect(stateFingerprint(dir)).toBe(second)
+  })
+
+  test("finds the v2 database path before the legacy one", () => {
+    const dir = root()
+    expect(databasePath(dir)).toBeUndefined()
+    mkdirSync(join(dir, "opencode"), { recursive: true })
+    writeFileSync(join(dir, "opencode", "opencode.db"), "v2")
+    expect(databasePath(dir)).toBe(join(dir, "opencode", "opencode.db"))
+    writeFileSync(join(dir, "opencode.db"), "legacy")
+    expect(databasePath(dir)).toBe(join(dir, "opencode", "opencode.db"))
   })
 })

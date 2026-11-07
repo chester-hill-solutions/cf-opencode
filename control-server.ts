@@ -77,6 +77,38 @@ function basicAuth(password: string): Record<string, string> {
 }
 
 /**
+ * Drop privileges for a command.
+ *
+ * Bun's `spawn` accepts `uid`/`gid` but ignores them on Linux (verified in the
+ * image: a child spawned with uid 1001 still ran as root). `setpriv` is part of
+ * util-linux and performs the setuid/setgid exec reliably, while preserving the
+ * curated environment Bun passes.
+ */
+export function buildAgentCommand(
+  command: string[],
+  uid = AGENT_UID,
+  gid = AGENT_GID,
+): string[] {
+  return [
+    "setpriv",
+    "--reuid",
+    String(uid),
+    "--regid",
+    String(gid),
+    "--init-groups",
+    "--",
+    ...command,
+  ]
+}
+
+/** Drop privileges only when running as root (the container); local tests run
+ * unprivileged already and setpriv is Linux-only. */
+export function asAgentCommand(command: string[]): string[] {
+  if (typeof process.getuid === "function" && process.getuid() !== 0) return command
+  return buildAgentCommand(command)
+}
+
+/**
  * OpenCode's own HTTP API, for onboarding: provider integrations and the live
  * model catalogue. The DO is the only caller; never exposed publicly.
  */
@@ -129,8 +161,10 @@ async function startStow(): Promise<void> {
   if (stow && stow.exitCode === null) return
   if (stow) stow = undefined
   mkdirSync(STOW_DIR, { recursive: true })
+  // The control server creates this directory as root; stow runs as agent.
+  chownTree(STOW_DIR, AGENT_UID, AGENT_GID)
   stow = spawn(
-    [
+    asAgentCommand([
       "stow-s3",
       "serve",
       "--port",
@@ -145,8 +179,8 @@ async function startStow(): Promise<void> {
       STOW_ACCESS_KEY,
       "--secret-key",
       STOW_SECRET_KEY,
-    ],
-    { cwd: WORKSPACE, env: process.env, uid: AGENT_UID, gid: AGENT_GID, stdout: "inherit", stderr: "inherit" },
+    ]),
+    { cwd: WORKSPACE, env: process.env, stdout: "inherit", stderr: "inherit" },
   )
   await waitFor(`http://127.0.0.1:${STOW_PORT}/_stow/health`)
 }
@@ -158,12 +192,17 @@ async function startOpencode(): Promise<void> {
   // Worker and container can share it; otherwise generate a per-start secret.
   opencodePassword = process.env.OPENCODE_PASSWORD ?? randomBytes(32).toString("base64url")
   opencode = spawn(
-    ["opencode", "serve", "--hostname", "127.0.0.1", "--port", String(OPENCODE_PORT)],
+    asAgentCommand([
+      "opencode",
+      "serve",
+      "--hostname",
+      "127.0.0.1",
+      "--port",
+      String(OPENCODE_PORT),
+    ]),
     {
       cwd: WORKSPACE,
       env: buildOpencodeEnv(process.env, opencodePassword),
-      uid: AGENT_UID,
-      gid: AGENT_GID,
       stdout: "inherit",
       stderr: "inherit",
     },
@@ -283,6 +322,22 @@ function chown(path: string, uid: number, gid: number): void {
   }
 }
 
+/** Recursively hand a tree to the agent; used for stow's derived data. */
+function chownTree(path: string, uid: number, gid: number): void {
+  chown(path, uid, gid)
+  let entries
+  try {
+    entries = readdirSync(path, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const entry of entries) {
+    const child = `${path}/${entry.name}`
+    if (entry.isDirectory()) chownTree(child, uid, gid)
+    else chown(child, uid, gid)
+  }
+}
+
 /** The workspace belongs to the agent. */
 function fixWorkspacePermissions(): void {
   if (!existsSync(WORKSPACE)) return
@@ -294,15 +349,16 @@ function fixWorkspacePermissions(): void {
 }
 
 /**
- * State is root-owned and group-writable by the agent, so OpenCode can write its
- * database but the repo cannot rewrite harness config or credentials.
+ * State contents belong to the agent: OpenCode must own its database to chmod
+ * it, and it already has to read its own credentials. The top-level directory
+ * stays root-owned so a future non-agent process cannot replace it.
  */
 function fixStatePermissions(): void {
   if (!existsSync(STATE_ROOT)) return
   chown(STATE_ROOT, 0, AGENT_GID)
   chmodSync(STATE_ROOT, 0o770)
   for (const file of stateFiles()) {
-    chown(file, 0, AGENT_GID)
+    chown(file, AGENT_UID, AGENT_GID)
     try {
       const stat = statSync(file)
       chmodSync(file, stat.isDirectory() ? 0o770 : 0o660)
@@ -320,8 +376,7 @@ function initialized(): boolean {
 }
 
 async function run(command: string[], asAgent = true): Promise<number> {
-  const proc = spawn(command, {
-    ...(asAgent ? { uid: AGENT_UID, gid: AGENT_GID } : {}),
+  const proc = spawn(asAgent ? asAgentCommand(command) : command, {
     stdout: "inherit",
     stderr: "inherit",
   })
@@ -329,8 +384,7 @@ async function run(command: string[], asAgent = true): Promise<number> {
 }
 
 async function runCapture(command: string[], asAgent = true): Promise<string> {
-  const proc = spawn(command, {
-    ...(asAgent ? { uid: AGENT_UID, gid: AGENT_GID } : {}),
+  const proc = spawn(asAgent ? asAgentCommand(command) : command, {
     stdout: "pipe",
     stderr: "ignore",
   })
@@ -355,6 +409,17 @@ async function drainToFile(body: ReadableStream, path: string): Promise<void> {
 }
 
 /**
+ * Locate OpenCode's SQLite database. v2 uses `$XDG_DATA_HOME/opencode/opencode.db`;
+ * older layouts used `$XDG_DATA_HOME/opencode.db`. Guessing wrong silently
+ * archives a live WAL instead of a consistent backup.
+ */
+export function databasePath(dataDir = STATE_DIR): string | undefined {
+  return [`${dataDir}/opencode/opencode.db`, `${dataDir}/opencode.db`].find((path) =>
+    existsSync(path),
+  )
+}
+
+/**
  * Archive harness state with a consistent SQLite database. The live DB files
  * are excluded and replaced by `.backup` output, so OpenCode can keep running.
  */
@@ -366,13 +431,19 @@ async function archiveState(archive: string): Promise<number> {
   rmSync(backupDir, { recursive: true, force: true })
   mkdirSync(backupDir, { recursive: true })
   chown(backupDir, AGENT_UID, AGENT_GID)
-  const database = `${STATE_DIR}/opencode.db`
-  const relativeDatabase = relative(STATE_ROOT, database)
+  const database = databasePath()
+  const relativeDatabase = database ? relative(STATE_ROOT, database) : undefined
   const backup = `${backupDir}/opencode.db`
   let copied = false
-  if (existsSync(database)) {
+  if (database) {
     const code = await run(["sqlite3", database, `.backup '${backup}'`])
     copied = code === 0 && existsSync(backup)
+    // A missing backup would archive state without its database, which restores
+    // to an OpenCode that has forgotten every session.
+    if (!copied) {
+      rmSync(backupDir, { recursive: true, force: true })
+      return 1
+    }
   }
   const args = [
     "czf",
@@ -383,11 +454,10 @@ async function archiveState(archive: string): Promise<number> {
     "cache",
     "--exclude",
     "log",
-    "--exclude",
-    `${relativeDatabase}*`,
-    ".",
   ]
-  if (copied) {
+  if (relativeDatabase) args.push("--exclude", `${relativeDatabase}*`)
+  args.push(".")
+  if (copied && relativeDatabase) {
     args.push("-C", backupDir, "--transform", `s|^opencode.db$|${relativeDatabase}|`, "opencode.db")
   }
   const code = await run(["tar", ...args])
@@ -479,9 +549,7 @@ if (import.meta.main) Bun.serve({
         // cannot make `git clone` refuse a non-empty directory.
         const tmp = "/tmp/workspace-clone"
         rmSync(tmp, { recursive: true, force: true })
-        const clone = spawn(["git", ...cloneArgs(workspaceRepo), tmp], {
-          uid: AGENT_UID,
-          gid: AGENT_GID,
+        const clone = spawn(asAgentCommand(["git", ...cloneArgs(workspaceRepo), tmp]), {
           stdout: "ignore",
           stderr: "pipe",
         })
@@ -523,6 +591,9 @@ if (import.meta.main) Bun.serve({
         rmSync(tmp, { force: true })
         return Response.json({ error: "archive rejected" }, { status: 400 })
       }
+      // A failed restore must not leave the marker behind, or the next start
+      // will believe the half-restored root is complete.
+      rmSync(MARKER, { force: true })
       // Stop the processes that hold the root before replacing it.
       if (opencode) {
         opencode.kill()
@@ -557,11 +628,15 @@ if (import.meta.main) Bun.serve({
       } else {
         rmSync(STATE_ROOT, { recursive: true, force: true })
         mkdirSync(STATE_ROOT, { recursive: true })
-        chown(STATE_ROOT, 0, AGENT_GID)
-        chmodSync(STATE_ROOT, 0o770)
+        // Extract as the agent, and let it own the root temporarily so tar can
+        // apply the archive's metadata to `.` without a permission error.
+        chown(STATE_ROOT, AGENT_UID, AGENT_GID)
         const code = await run(["tar", "xzf", tmp, "-C", STATE_ROOT])
         rmSync(tmp, { force: true })
-        if (code !== 0) return Response.json({ error: "restore failed" }, { status: 500 })
+        if (code !== 0) {
+          rmSync(MARKER, { force: true })
+          return Response.json({ error: "restore failed" }, { status: 500 })
+        }
         fixStatePermissions()
       }
       // A split restore is only complete once the state part is restored (or
@@ -684,8 +759,8 @@ if (import.meta.main) Bun.serve({
         return Response.json({ error: "archive rejected" }, { status: 400 })
       }
       mkdirSync(STATE_ROOT, { recursive: true })
-      chown(STATE_ROOT, 0, AGENT_GID)
-      chmodSync(STATE_ROOT, 0o770)
+      // Temporary agent ownership lets tar set metadata on `.`.
+      chown(STATE_ROOT, AGENT_UID, AGENT_GID)
       const code = await run(["tar", "xzf", tmp, "-C", STATE_ROOT])
       rmSync(tmp, { force: true })
       if (code !== 0) return Response.json({ error: "seed failed" }, { status: 500 })

@@ -280,7 +280,8 @@ Implemented in P0b:
   `STATE_ROOT/initialized`, outside the workspace.
 - `/start` returns `{ ok }` only (no password).
 - `/opencode/*` proxies to `127.0.0.1:4000` with basic auth; the DO uses it.
-- Spawns OpenCode and stow as `agent` (`uid`/`gid`); the control server is root.
+- Spawns OpenCode and stow through `setpriv --reuid/--regid` as `agent` (Bun
+  ignores `uid`/`gid` on Linux); the control server is root.
 - `/checkpoint?part=workspace|state&since=` returns one archive or `204`, with
   `x-aboiteau-checkpoint: split` on the workspace part.
 - `/restore?part=workspace|state` validates members, stops the relevant
@@ -296,8 +297,9 @@ Remaining:
 
 ### `Dockerfile` / `entrypoint.sh`
 
-- The image creates `agent`; `entrypoint.sh` exports the state XDG/HOME paths and
-  sets `WORKSPACE` owned by `agent`, state owned by `root:agent` mode `0770`.
+- The image creates `agent`; `entrypoint.sh` exports the state XDG/HOME paths,
+  keeps the state root `root:agent` `0770`, and gives its contents to `agent`
+  (OpenCode must own its database to chmod it).
 - The old `ENV HOME=/workspace/.state` and related XDG vars are gone.
 - Remaining: pin the base image by digest and verify the OpenCode artifact
   (stow-s3 is already checksum-verified).
@@ -342,18 +344,46 @@ Implemented in P0b:
 
 | Item | State |
 | --- | --- |
-| Per-start control token + constant-time auth | **Done** (static tests) |
-| Curated OpenCode environment | **Done** |
-| Root → `agent` split; OpenCode binds loopback | **Done** (unvalidated until R0-1) |
-| State moved out of `/workspace`; marker moved | **Done** (unvalidated until R0-1) |
-| `/opencode/*` proxy; DO holds no password | **Done** (static tests) |
-| Split workspace/state checkpoints + manifest | **Done** (vitest) |
-| Restore member validation | **Done** (unit tests) |
+| Per-start control token + constant-time auth | **Done** (static + container) |
+| Curated OpenCode environment | **Done** (container) |
+| Root → `agent` split; OpenCode binds loopback | **Done** (container, uid verified) |
+| State moved out of `/workspace`; marker moved | **Done** (container) |
+| `/opencode/*` proxy; DO holds no password | **Done** (static + container) |
+| Split workspace/state checkpoints + manifest | **Done** (vitest + container) |
+| Restore member validation | **Done** (unit + container) |
 | OpenCode secret-scrubbing spike | **Open** |
 
-Container behaviour still needs the first image build (R0-1): 401 without a
-token, no token in the agent environment, `.state` absent from `/workspace`, and
-a two-archive restore round-trip.
+**Runtime validation (2026-11-07, `linux/arm64`).** The image builds and runs.
+Verified in the container:
+
+- `GET :4001/health` is open; every other control route is `401` without the
+  token and `200` with it.
+- OpenCode and stow-s3 run as uid/gid 1001; the control server runs as root.
+- `CONTROL_TOKEN` is absent from OpenCode's environment, and the agent cannot
+  read `/proc/1/environ` (permission denied).
+- `/workspace/.state` is absent; state lives under `/var/lib/aboiteau/state`.
+- Direct OpenCode `:4000` returns `401`; `/opencode/api/info` through the
+  control server returns `200` and `401` without the token.
+- Workspace and state archives are separate; the state archive carries a
+  consistent `data/opencode/opencode.db` and no WAL/SHM files.
+- Both parts restore to their own roots, ownership is correct, and OpenCode
+  starts again.
+- An archive containing `../escape` is rejected with `400`.
+
+Three bugs only the runtime pass could find, all fixed:
+
+1. **Bun ignores `uid`/`gid` on Linux.** A child spawned with uid 1001 still ran
+   as root. The control server now uses
+   `setpriv --reuid/--regid/--init-groups`.
+2. **OpenCode v2 stores its DB at `$XDG_DATA_HOME/opencode/opencode.db`.** The
+   old `.backup` path never matched, so archives carried a live WAL. The path is
+   probed (v2 first, legacy second) and a failed backup now fails the checkpoint.
+3. **State files must belong to `agent`.** OpenCode chmods its own database;
+   restoring it as `root:agent` made `/start` fail with `EPERM`. The state root
+   stays `root:agent` `0770`, but its contents are `agent:agent`.
+
+Workers Builds (R0-1) is still the deployment blocker; this was a local image
+build and container run, not a published image.
 
 ## 6. Migration phases
 
