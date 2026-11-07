@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers"
 import { defaultSettings, validateSettings, type HarnessSettings, type OnboardingState } from "./settings"
 import { accountVault, workspaceID } from "./vault"
+import { evaluateAlerts } from "./alerts"
 import type { Env } from "./env"
 import type { VaultKeyValueStorage } from "@chester-hill-solutions/vault/core"
 
@@ -112,6 +113,79 @@ export class Settings extends DurableObject<Env> {
     if (url.pathname === "/leases" && request.method === "GET") {
       const [cap, active] = await Promise.all([this.current(), this.activeLeases()])
       return Response.json({ cap: cap.maxContainers, active })
+    }
+
+    // Alert evaluation: the cron passes today's counters and spend; the DO
+    // remembers the high-water mark so each new value is reported once.
+    if (url.pathname === "/alerts/check" && request.method === "POST") {
+      const body = (await request.json()) as {
+        metrics?: Record<string, number>
+        spendUSD?: number
+        budgetUSD?: number
+        leases?: { cap: number; active: number }
+      }
+      const date = new Date().toISOString().slice(0, 10)
+      const prefix = `alertMark:${date}:`
+      const marks: Record<string, number> = {}
+      const stored = await this.ctx.storage.list<number>({ prefix })
+      for (const [key, value] of stored) marks[key.slice(prefix.length)] = value
+
+      const alerts = evaluateAlerts({
+        metrics: body.metrics ?? {},
+        spendUSD: Number(body.spendUSD ?? 0) || 0,
+        budgetUSD: Number(body.budgetUSD ?? 0) || 0,
+        leases: body.leases ?? { cap: 0, active: 0 },
+        marks,
+      })
+      for (const alert of alerts) {
+        await this.ctx.storage.put(`alertMark:${date}:${alert.name}`, alert.value)
+        await this.ctx.storage.put(`alert:${date}:${alert.name}`, { ...alert, at: Date.now() })
+      }
+      return Response.json({ date, alerts })
+    }
+
+    if (url.pathname === "/alerts" && request.method === "GET") {
+      const date = url.searchParams.get("date") ?? new Date().toISOString().slice(0, 10)
+      const prefix = `alert:${date}:`
+      const stored = await this.ctx.storage.list<{ name: string; message: string; at: number }>({
+        prefix,
+      })
+      return Response.json({ date, alerts: [...stored.values()] })
+    }
+
+    if (url.pathname === "/alerts" && request.method === "DELETE") {
+      const date = url.searchParams.get("date") ?? new Date().toISOString().slice(0, 10)
+      const prefix = `alert:${date}:`
+      const stored = await this.ctx.storage.list({ prefix })
+      for (const key of stored.keys()) await this.ctx.storage.delete(key)
+      return Response.json({ ok: true })
+    }
+
+    // Conversation registry: DOs cannot be listed, so the Worker records each
+    // key it touches. This is the only way to answer "what exists?".
+    if (url.pathname === "/conversations" && request.method === "POST") {
+      const body = (await request.json()) as { key?: string }
+      if (!body.key) return Response.json({ error: "key is required" }, { status: 400 })
+      await this.ctx.storage.put(`conversation:${body.key}`, {
+        key: body.key,
+        lastSeenAt: Date.now(),
+      })
+      return Response.json({ ok: true })
+    }
+
+    if (url.pathname === "/conversations" && request.method === "GET") {
+      const stored = await this.ctx.storage.list<{ key: string; lastSeenAt: number }>({
+        prefix: "conversation:",
+      })
+      const conversations = [...stored.values()].sort((a, b) => b.lastSeenAt - a.lastSeenAt)
+      return Response.json({ conversations })
+    }
+
+    if (url.pathname === "/conversations/delete" && request.method === "POST") {
+      const body = (await request.json()) as { key?: string }
+      if (!body.key) return Response.json({ error: "key is required" }, { status: 400 })
+      await this.ctx.storage.delete(`conversation:${body.key}`)
+      return Response.json({ ok: true })
     }
 
     // Secrets are encrypted with the CHS vault. Values never leave the DO

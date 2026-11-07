@@ -3,6 +3,7 @@ import type { Env } from "./env"
 import type { MessageRequest, PermissionRequest, SlackEventRequest } from "./conversation"
 import { ACCOUNT_STATE_KEY } from "./conversation"
 import { GITHUB_LOGIN_KEY, GITHUB_TOKEN_KEY } from "./vault"
+import type { Alert } from "./alerts"
 import { MODEL_CATALOG, recommendModel } from "./models"
 
 export { Conversation } from "./conversation"
@@ -28,7 +29,7 @@ export default {
     }
 
     if (url.pathname.startsWith("/api/")) {
-      return handleApi(request, env, url)
+      return handleApi(request, env, url, ctx)
     }
 
     if (request.method !== "POST") return new Response("not found", { status: 404 })
@@ -95,10 +96,18 @@ export default {
 
     return new Response("not found", { status: 404 })
   },
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(checkAlerts(env))
+  },
 }
 
 /** HTTP/SSE adapter: any client can drive a conversation. */
-async function handleApi(request: Request, env: Env, url: URL): Promise<Response> {
+async function handleApi(
+  request: Request,
+  env: Env,
+  url: URL,
+  ctx: ExecutionContext,
+): Promise<Response> {
   if (!env.API_TOKEN) {
     return Response.json({ error: "API_TOKEN is not configured" }, { status: 503 })
   }
@@ -131,6 +140,14 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
     return settingsDo(env, "/leases")
   }
 
+  if (parts[1] === "alerts" && parts[2] === "check" && request.method === "POST") {
+    return checkAlerts(env)
+  }
+
+  if (parts[1] === "alerts" && request.method === "GET") {
+    return settingsDo(env, "/alerts")
+  }
+
   if (parts[1] === "models" && request.method === "GET") {
     return Response.json({ models: MODEL_CATALOG, recommended: recommendModel().ref })
   }
@@ -146,11 +163,16 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
 
   if (parts[1] === "onboarding") return handleOnboarding(request, env, url, parts)
 
+  if (parts[1] === "conversations" && parts.length === 2 && request.method === "GET") {
+    return settingsDo(env, "/conversations")
+  }
+
   if (parts[0] !== "api" || parts[1] !== "conversations" || !parts[2]) {
     return Response.json({ error: "not found" }, { status: 404 })
   }
   const key = decodeURIComponent(parts[2])
   if (!KEY_PATTERN.test(key)) return Response.json({ error: "invalid conversation key" }, { status: 400 })
+  ctx.waitUntil(settingsDo(env, "/conversations", { key }).catch(() => undefined))
 
   const conversation = env.CONVERSATION.getByName(key)
   const suffix = parts.slice(3)
@@ -194,7 +216,9 @@ async function handleApi(request: Request, env: Env, url: URL): Promise<Response
   }
 
   if (request.method === "DELETE" && suffix.length === 0) {
-    return conversation.fetch("https://conversation/delete", { method: "DELETE" })
+    const res = await conversation.fetch("https://conversation/delete", { method: "DELETE" })
+    if (res.ok) await settingsDo(env, "/conversations/delete", { key }).catch(() => undefined)
+    return res
   }
 
   if (request.method === "GET" && suffix.length === 0) {
@@ -389,6 +413,57 @@ async function handleGithubCallback(request: Request, env: Env, url: URL): Promi
     ...(login ? { githubLogin: login } : {}),
   })
   return back("connected")
+}
+
+// ---------------------------------------------------------------------- alerts
+
+/** Compare today's counters and spend against the last reported values. */
+async function checkAlerts(env: Env): Promise<Response> {
+  const [metricsRes, usageRes, leasesRes, settingsRes] = await Promise.all([
+    settingsDo(env, "/metrics"),
+    settingsDo(env, "/usage/today"),
+    settingsDo(env, "/leases"),
+    settingsDo(env, "/get"),
+  ])
+  const metricsBody = (await metricsRes.json().catch(() => ({}))) as {
+    metrics?: Record<string, number>
+  }
+  const usageBody = (await usageRes.json().catch(() => ({}))) as { costUSD?: number }
+  const leasesBody = (await leasesRes.json().catch(() => ({}))) as {
+    cap?: number
+    active?: unknown[]
+  }
+  const settingsBody = (await settingsRes.json().catch(() => ({}))) as { dailyBudgetUSD?: number }
+
+  const checked = await settingsDo(env, "/alerts/check", {
+    metrics: metricsBody.metrics ?? {},
+    spendUSD: usageBody.costUSD ?? 0,
+    budgetUSD: settingsBody.dailyBudgetUSD ?? 0,
+    leases: {
+      cap: leasesBody.cap ?? 0,
+      active: Array.isArray(leasesBody.active) ? leasesBody.active.length : 0,
+    },
+  })
+  const body = (await checked.json()) as { date: string; alerts: Alert[] }
+  for (const alert of body.alerts) await postAlert(env, alert)
+  return Response.json(body)
+}
+
+/** Post to Slack when a bot token and alert channel are configured. */
+async function postAlert(env: Env, alert: Alert): Promise<void> {
+  if (!env.SLACK_BOT_TOKEN || !env.ALERT_CHANNEL) return
+  try {
+    await fetch("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${env.SLACK_BOT_TOKEN}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ channel: env.ALERT_CHANNEL, text: `:warning: ${alert.message}` }),
+    })
+  } catch {
+    /* alerts are best effort */
+  }
 }
 
 // ---------------------------------------------------------------------- health

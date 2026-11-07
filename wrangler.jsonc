@@ -8,6 +8,7 @@
   "compatibility_date": "2026-11-05",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
+  "triggers": { "crons": ["*/15 * * * *"] },
   "vars": {
     "WORKSPACE_REPO": "https://github.com/chester-hill-solutions/opencode-slack",
     "OPENCODE_MODEL": "opencode/deepseek-v4.1-flash",

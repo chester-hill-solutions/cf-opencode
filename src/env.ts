@@ -17,6 +17,8 @@ export interface Env {
   /** GitHub OAuth App, used by the onboarding wizard to clone private repos. */
   GITHUB_CLIENT_ID?: string
   GITHUB_CLIENT_SECRET?: string
+  /** Slack channel for threshold alerts; posting also needs SLACK_BOT_TOKEN. */
+  ALERT_CHANNEL?: string
   /** 64 hex characters; encrypts provider and GitHub credentials at rest. */
   VAULT_MASTER_KEY?: string
   /** Tenant key for stored credentials. Defaults to "default" (single tenant). */

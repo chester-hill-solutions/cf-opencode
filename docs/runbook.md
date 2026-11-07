@@ -159,6 +159,42 @@ Containers stay warm for 10 minutes after a conversation goes quiet
 (`setInactivityTimeout`), so quick follow-up turns skip the cold start. Raise it
 for latency, lower it for idle cost.
 
+## Alerts
+
+A cron trigger runs every 15 minutes and compares today's counters and spend
+against the last values reported:
+
+| Alert | Trigger |
+|---|---|
+| `capacity.rejected` | container cap hit |
+| `turn.failed`, `turn.timedout` | failed or abandoned turns |
+| `checkpoint.failed`, `snapshot.failed` | durability failures |
+| `budget` | daily spend reaches 80% of `dailyBudgetUSD` |
+
+Each new value is reported once per UTC day (high-water marks in the Settings
+DO). Alerts are stored and exposed:
+
+```sh
+curl -H "authorization: Bearer $TOKEN" https://<worker>/api/alerts
+curl -X POST -H "authorization: Bearer $TOKEN" https://<worker>/api/alerts/check
+```
+
+When `SLACK_BOT_TOKEN` and `ALERT_CHANNEL` are set, new alerts are also posted
+to Slack. Without them they are stored only.
+
+## Conversations
+
+Durable Objects cannot be listed, so the Worker records every key it touches in
+the Settings DO:
+
+```sh
+curl -H "authorization: Bearer $TOKEN" https://<worker>/api/conversations
+# {"conversations":[{"key":"snap-recycle","lastSeenAt":1794020851333}]}
+```
+
+Keys are ordered by last activity. Deleting a conversation also removes its
+registry entry.
+
 ## Lifecycle phases
 
 | Phase | Meaning | What to check |
