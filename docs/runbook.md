@@ -282,7 +282,7 @@ bunx wrangler rollback --message "rollback"
 
 Worker rollback does not revert the container image. If a bad image is the cause, roll the image
 forward (a new build) or redeploy the previous Worker version with `--containers-rollout=none` and
-restore checkpoints from R2. Checkpoint keys are `workspaces/<id>.tar.gz` until R1-1 makes them stable.
+restore checkpoints from R2. Checkpoint keys are `workspaces/<id>/<timestamp>.tar.gz`; the newest five per conversation are kept.
 
 ## Data
 
