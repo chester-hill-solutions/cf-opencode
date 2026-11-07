@@ -22,6 +22,14 @@ keeps state; the onboarding `/api/onboarding/reset` also clears state.
 | Worker code | `bunx wrangler deploy --containers-rollout=none` | Live immediately; container image untouched |
 | Container image | `bun run deploy` | Builds, publishes and rolls out; needs Docker Desktop running |
 
+`bun run deploy` cross-builds `linux/amd64` under QEMU on Apple Silicon. The OpenCode version
+sanity check is non-fatal there (CI verifies it natively); if the registry push drops, re-run the
+deploy — wrangler skips an image that is already remote.
+
+Message creation is limited to 60 requests/minute per client by the `API_RATE_LIMIT` binding. A
+blocked request returns the CHS `RATE_LIMITED` body with `RateLimit-*` and `Retry-After` headers.
+The binding is approximate per Cloudflare location; treat it as burst protection, not billing.
+
 Secrets:
 
 ```sh
