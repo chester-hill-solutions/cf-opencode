@@ -216,6 +216,8 @@ registry entry.
 | `202 queued` repeatedly, then an SSE `error` | Container capacity or a broken image | Check `queue.failed`, container logs |
 | `error: workspace checkpoint failed` | R2/tar failure | Check R2 binding and disk; the turn is not durable |
 | SSE `error` with `Model unavailable: <ref>` | Provider has no credential for that model | Connect the provider in `/onboarding/`, or change the model |
+| SSE `error` with `Insufficient account funds` (402) | Provider account out of credit | Top up the provider account; turns keep failing until then |
+| A turn ends with no reply and no error | Should not happen: failed steps now carry their error | Check `lastTurnError` and `GET /api/conversations/:key/debug/messages` |
 | `VAULT_MASTER_KEY is not configured` | Missing secret | `wrangler secret put VAULT_MASTER_KEY` (64 hex chars) |
 | `GitHub OAuth is not configured` | OAuth App secrets missing | Set `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` |
 | `workspace clone failed … Could not resolve host` | Container egress disabled | Ensure `container.start({ enableInternet: true })` |
@@ -267,6 +269,12 @@ curl -X POST -H "authorization: Bearer $TOKEN" https://<worker>/api/conversation
 The poisoned handle still reports `snapshot: true` (a handle exists); after the
 next turn the log shows `snapshot.stale`, `snapshot.stale` increments, the handle
 is cleared, and `startMode` is `image`.
+
+For a turn that failed without an obvious cause, read the raw session context:
+
+```sh
+curl -H "authorization: Bearer $TOKEN" https://<worker>/api/conversations/<key>/debug/messages
+```
 - DO SQLite — conversation state, event log (last 200), pending permissions, checkpoint size and retry state.
 - Deleting a conversation's checkpoint is safe only when no turn is running.
 
