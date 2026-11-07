@@ -16,6 +16,8 @@ export interface Env {
   CONTAINER_URL?: string
   /** Bearer token for the HTTP/SSE adapter. */
   API_TOKEN?: string
+  /** Cloudflare rate-limit binding for message creation; optional in tests. */
+  API_RATE_LIMIT?: RateLimit
   /** GitHub OAuth App, used by the onboarding wizard to clone private repos. */
   GITHUB_CLIENT_ID?: string
   GITHUB_CLIENT_SECRET?: string

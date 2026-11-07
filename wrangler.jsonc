@@ -31,6 +31,13 @@
     ]
   },
   "r2_buckets": [{ "binding": "CHECKPOINTS", "bucket_name": "cf-opencode-checkpoints" }],
+  "ratelimits": [
+    {
+      "name": "API_RATE_LIMIT",
+      "namespace_id": "1001",
+      "simple": { "limit": 60, "period": 60 }
+    }
+  ],
   "exports": {
     "Conversation": { "type": "durable-object", "storage": "sqlite" },
     "Settings": { "type": "durable-object", "storage": "sqlite" }

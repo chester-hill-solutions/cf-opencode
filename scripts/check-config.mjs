@@ -61,6 +61,11 @@ compare(
   problems,
 )
 compare("r2_buckets bindings", names(prod.r2_buckets, "binding"), names(test.r2_buckets, "binding"), problems)
+const rateLimits = (config) =>
+  (config.ratelimits ?? [])
+    .map((entry) => `${entry.name}:${entry.namespace_id}:${entry.simple?.limit}/${entry.simple?.period}`)
+    .sort()
+compare("ratelimits", rateLimits(prod), rateLimits(test), problems)
 compare("exports", Object.keys(prod.exports ?? {}).sort(), Object.keys(test.exports ?? {}).sort(), problems)
 const exportShape = (config) =>
   Object.keys(config.exports ?? {})

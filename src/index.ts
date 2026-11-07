@@ -13,6 +13,7 @@ import { approvalVerdict, fetchChannelMembers } from "./slack-auth"
 import { conversationKey, parseConversationKey, resolveAgentForChannel } from "./tenancy"
 import { encryptionRequired, plaintextArchivesAllowed } from "./archive-policy"
 import { bearerAuthorized } from "./control-auth"
+import { enforceRateLimit } from "./rate-limit"
 import { logEvent } from "./log"
 
 export { Conversation } from "./conversation"
@@ -232,6 +233,13 @@ async function handleApi(
   }
 
   const parts = url.pathname.split("/").filter(Boolean) // api, ...
+
+  // Message creation is the cost-driving endpoint; keep it behind the
+  // per-client rate limit before any container work is scheduled.
+  if (request.method === "POST" && parts[1] === "conversations" && parts[3] === "messages") {
+    const limited = await enforceRateLimit(env.API_RATE_LIMIT, request, "messages")
+    if (limited) return limited
+  }
 
   if (parts[1] === "health" && request.method === "GET") {
     return healthCheck(env)
