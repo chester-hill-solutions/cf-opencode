@@ -122,13 +122,12 @@ non-root user. If both processes run as root, the agent can read
 
 **Residual / open question:** OpenCode's own process environment still contains
 `OPENCODE_PASSWORD`, and tools are its children, so a prompt-injected agent may
-read it and call OpenCode's loopback API. That matters if the OpenCode API can
-approve its own permission requests. Options: (a) find an OpenCode bootstrap that
-reads the secret from a file or fd and scrubs it before tools; (b) run OpenCode as
-a different user from tools; (c) disable API-based permission decisions and route
-all approvals through the harness. Until one is proven, document self-approval
-through the local API as a known residual and keep the egress proxy as the
-credential boundary.
+read it and call OpenCode's loopback API. The spike (§8.1) confirmed this:
+OpenCode has no file/fd password option, `--stdio` only scrubs `process.env` but
+not `/proc/<pid>/environ`, and tools cannot run as a different user. Do not rely
+on OpenCode's API as an approval boundary; the egress proxy remains the
+credential boundary, and high-risk actions should be denied rather than asked in
+multi-tenant deployments.
 
 ### 3.3 Storage and checkpoint layout
 
@@ -351,7 +350,7 @@ Implemented in P0b:
 | `/opencode/*` proxy; DO holds no password | **Done** (static + container) |
 | Split workspace/state checkpoints + manifest | **Done** (vitest + container) |
 | Restore member validation | **Done** (unit + container) |
-| OpenCode secret-scrubbing spike | **Open** |
+| OpenCode secret-scrubbing spike | **Done — residual confirmed and documented (§8.1)** |
 
 **Runtime validation (2026-11-07, `linux/arm64`).** The image builds and runs.
 Verified in the container:
@@ -424,10 +423,33 @@ during dual-run, then legacy calls are removed.
 
 ## 8. Open questions
 
-1. **OpenCode secret handling (spike).** Can OpenCode read its server password from a
-   file or fd and scrub it before spawning tools? If not, can tools run as a
-   different user? This determines whether self-approval through the local API is a
-   real residual risk. This is the first investigation in P0.
+1. **OpenCode secret handling (spike) — resolved: residual confirmed.** OpenCode
+   2.2.5 reads the server password only from `OPENCODE_PASSWORD` /
+   `OPENCODE_SERVER_PASSWORD` (or the `--service` config file). It has no
+   password-file or password-fd option; upstream issue
+   [anomalyco/opencode#52156](https://github.com/anomalyco/opencode/issues/52156)
+   tracks that feature and is still open.
+   - `opencode serve --stdio` deletes the password from `process.env` before it
+     spawns tools, so tools no longer see it with `env`. The initial environment
+     block remains readable at `/proc/<server-pid>/environ` for the life of the
+     process, and the agent runs as the same uid, so this is not a boundary. The
+     upstream issue documents the same limitation.
+   - `--service` reads the password from `service.json`, but tools run as the same
+     uid and can read that file too.
+   - Tools are children of the server and run as the same uid; there is no
+     supported way to run them as a different user.
+   - Confirmed in our image: the agent can read `OPENCODE_PASSWORD` from its own
+     process environment, authenticate to the loopback API (`GET /api/session` →
+     `200`), and reach `POST /api/session/{id}/permission/{id}/reply`
+     (`404` for bogus ids means the route is authenticated and routed, not
+     rejected).
+   - **Decision:** accept and document the residual for single-tenant
+     self-hosted. Do not rely on the OpenCode API as an approval boundary.
+     Multi-tenant work must keep the egress proxy as the credential boundary and
+     should either (a) adopt an upstream password-file/fd plus env scrub, (b)
+     run tools as a different uid, or (c) deny — not ask — high-risk actions so
+     there is nothing to self-approve. `--stdio` is not adopted now: it removes
+     the easy `env` leak but not `/proc`, and it adds a stdin lease.
 2. **Container egress mechanics.** Confirm the Container→WorkerEntrypoint path and
    whether `enableInternet: false` plus an HTTP proxy covers DNS, websockets and
    package managers.
