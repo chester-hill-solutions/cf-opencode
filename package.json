@@ -13,10 +13,11 @@
     "build:ui": "bun scripts/build-ui.ts",
     "dev:ui": "bun scripts/dev-ui.ts",
     "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.tests.json && tsc -p tsconfig.ui.json",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.tests.json && tsc -p tsconfig.worker-tests.json && tsc -p tsconfig.ui.json",
     "check:config": "bun scripts/check-config.mjs",
     "test": "bun test tests",
     "test:workers": "vitest run",
+    "smoke:container": "bash scripts/smoke-container.sh",
     "bench": "bun run bench/measure.ts",
     "bench:container": "bash bench/container.sh"
   },

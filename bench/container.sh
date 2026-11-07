@@ -14,11 +14,12 @@ IMAGE="${IMAGE:-cf-opencode:dev}"
 NAME="${NAME:-cf-opencode-bench}"
 CONTROL_PORT="${CONTROL_PORT:-4001}"
 STOW_PORT="${STOW_PORT:-9000}"
+CONTROL_TOKEN="${CONTROL_TOKEN:-bench-control-token}"
 CHECKPOINT="/tmp/cf-opencode-checkpoint.tar.gz"
 
 now() { python3 -c 'import time; print(int(time.time() * 1000))'; }
 
-REPO_ENV=()
+REPO_ENV=(--env "CONTROL_TOKEN=${CONTROL_TOKEN}")
 if [ -n "${WORKSPACE_REPO:-}" ]; then REPO_ENV+=(--env "WORKSPACE_REPO=${WORKSPACE_REPO}"); fi
 if [ -n "${WORKSPACE_BRANCH:-}" ]; then REPO_ENV+=(--env "WORKSPACE_BRANCH=${WORKSPACE_BRANCH}"); fi
 
@@ -45,12 +46,14 @@ esac
 
 trap stop EXIT
 
+AUTH=(-H "authorization: Bearer ${CONTROL_TOKEN}")
+
 start=$(now)
 until curl -fsS "http://127.0.0.1:${CONTROL_PORT}/health" >/dev/null 2>&1; do sleep 0.2; done
 echo "cold start (container → control /health): $(( $(now) - start )) ms"
 
 start=$(now)
-curl -fsS -X POST "http://127.0.0.1:${CONTROL_PORT}/start" >/dev/null
+curl -fsS "${AUTH[@]}" -X POST "http://127.0.0.1:${CONTROL_PORT}/start" >/dev/null
 echo "start (stow-s3 + opencode serve): $(( $(now) - start )) ms"
 
 # stow binds loopback inside the container; the host-mapped port cannot reach it.
@@ -58,21 +61,21 @@ if s3_health >/dev/null 2>&1; then echo "local S3: healthy (inside container)"; 
 
 HEADERS="/tmp/cf-opencode-checkpoint.headers"
 start=$(now)
-curl -fsS -D "$HEADERS" "http://127.0.0.1:${CONTROL_PORT}/checkpoint" -o "$CHECKPOINT"
+curl -fsS "${AUTH[@]}" -D "$HEADERS" "http://127.0.0.1:${CONTROL_PORT}/checkpoint" -o "$CHECKPOINT"
 echo "checkpoint: $(( $(now) - start )) ms, $(du -h "$CHECKPOINT" | cut -f1)"
 fingerprint=$(awk 'tolower($1)=="x-workspace-fingerprint:"{print $2}' "$HEADERS" | tr -d '\r')
 
-# Checkpointing pauses OpenCode. Restart it, then prove an unchanged workspace
-# takes the 204 path without pausing again.
+# Checkpointing archives the workspace without stopping OpenCode. Restart anyway
+# to measure a warm start, then prove an unchanged workspace takes the 204 path.
 start=$(now)
-curl -fsS -X POST "http://127.0.0.1:${CONTROL_PORT}/start" >/dev/null
+curl -fsS "${AUTH[@]}" -X POST "http://127.0.0.1:${CONTROL_PORT}/start" >/dev/null
 echo "restart after checkpoint: $(( $(now) - start )) ms"
 if [ -n "$fingerprint" ]; then
   start=$(now)
-  code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${CONTROL_PORT}/checkpoint?since=${fingerprint}")
+  code=$(curl -s -o /dev/null -w '%{http_code}' "${AUTH[@]}" "http://127.0.0.1:${CONTROL_PORT}/checkpoint?since=${fingerprint}")
   echo "checkpoint (unchanged): ${code} in $(( $(now) - start )) ms"
 fi
 
 start=$(now)
-curl -fsS -X POST --data-binary "@${CHECKPOINT}" "http://127.0.0.1:${CONTROL_PORT}/restore" >/dev/null
+curl -fsS "${AUTH[@]}" -X POST --data-binary "@${CHECKPOINT}" "http://127.0.0.1:${CONTROL_PORT}/restore" >/dev/null
 echo "restore: $(( $(now) - start )) ms"

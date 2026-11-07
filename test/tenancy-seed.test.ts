@@ -31,7 +31,7 @@ function fakeContainer(seed: { body: string }) {
         }
         if (url.pathname === "/configure" || url.pathname === "/start") return json({ ok: true })
         if (url.pathname === "/checkpoint") return new Response(null, { status: 204 })
-        if (url.pathname === "/restore") return json({ error: "unexpected restore" }, { status: 500 })
+        if (url.pathname === "/restore") return json({ error: "unexpected restore" }, 500)
         return json({ error: "not found" }, 404)
       }
 
