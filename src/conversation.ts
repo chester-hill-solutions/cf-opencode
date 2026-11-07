@@ -36,6 +36,7 @@ import type { HarnessSettings } from "./settings"
 import { staleAction } from "./lifecycle"
 import { budgetExceeded, nextBudgetReset } from "./budget"
 import { GITHUB_TOKEN_KEY, workspaceID } from "./vault"
+import { accountStateKey, LEGACY_ACCOUNT_STATE_KEY, parseConversationKey } from "./tenancy"
 import {
   decryptTransform,
   encryptBytes,
@@ -67,7 +68,7 @@ const INACTIVITY_TIMEOUT_MS = 10 * 60_000
 const ONBOARDING_KEY = "onboarding"
 
 /** R2 key holding the account's OpenCode state (config + provider credentials). */
-export const ACCOUNT_STATE_KEY = "account/state.tar.gz"
+export const ACCOUNT_STATE_KEY = LEGACY_ACCOUNT_STATE_KEY
 
 export interface MessageRequest {
   text: string
@@ -1446,8 +1447,11 @@ export class Conversation extends DurableObject<Env> {
         })
       } else {
         // A fresh conversation inherits the account's provider credentials, so
-        // onboarding only has to happen once.
-        const seed = await this.env.CHECKPOINTS.get(ACCOUNT_STATE_KEY)
+        // onboarding only has to happen once. A namespaced agent uses its own
+        // seed and never falls back to the legacy global one.
+        const seed = await this.env.CHECKPOINTS.get(
+          accountStateKey(parseConversationKey(this.key)),
+        )
         if (seed?.body) {
           const body =
             seed.customMetadata?.encrypted === "1"

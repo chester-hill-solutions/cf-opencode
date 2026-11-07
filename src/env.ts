@@ -10,6 +10,8 @@ export interface Env {
   OPENCODE_MODEL: string
   POLL_SECONDS: string
   CHECKPOINTS: R2Bucket
+  /** Optional D1 database holding tenants, agents and channel bindings. */
+  TENANCY?: import("./tenancy").TenancyDatabase
   /** Test seam: route container calls to an HTTP origin instead of ctx.container. */
   CONTAINER_URL?: string
   /** Bearer token for the HTTP/SSE adapter. */

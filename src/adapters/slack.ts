@@ -7,6 +7,8 @@
 
 export interface SlackEventEnvelope {
   type: "event_callback" | "url_verification"
+  /** Slack workspace id on event callbacks. */
+  team_id?: string
   challenge?: string
   event_id?: string
   event?: {
@@ -24,6 +26,7 @@ export interface SlackEventEnvelope {
 
 export interface SlackInteractionPayload {
   type: "block_actions"
+  team?: { id?: string }
   user?: { id?: string }
   channel?: { id?: string }
   message?: { ts?: string }

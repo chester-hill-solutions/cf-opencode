@@ -91,7 +91,7 @@ model and permissions.
 | R1-2 | Migrate to `scheduling_policy: "durable_object"` with the current image, behaviour unchanged | L | R1-1 |
 | R1-3 | Per-conversation container lifecycle: `start({image, instance, enableInternet})`, `inspect`, `monitor`, `setInactivityTimeout` | M | R1-2 |
 | R1-4 | Extract `ContainerRuntime` and `EventStream` from `conversation.ts` (audit 24) | M | R1-2 |
-| R1-5 | Tenant model + tenant-scoped specs: `tenants`, `sandbox_specs`, `conversations.tenant_id` | L | R1-2 |
+| R1-5 | Tenant model + tenant-scoped specs — **partial:** D1 schema, channel resolver, conversation namespaces and per-agent account-seed keys landed; per-agent Settings/API keys/strict mode open | L | R1-2 |
 | R1-6 | Per-tenant API keys (hashed, revocable) and auth middleware; retire the shared `API_TOKEN` for tenants | M | R1-5 |
 | R1-7 | Egress default-deny + `EgressProxy` WorkerEntrypoint: allowlist per spec, inject model/git credentials outside the sandbox | L | R1-3 |
 | R1-8 | Concurrency caps and quotas per tenant (containers, minutes, storage) | M | R1-5 |

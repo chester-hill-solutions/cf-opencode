@@ -196,6 +196,35 @@ agent and approve its permission requests.
   The same model is the foundation for managed multi-tenant hosting, where many
   tenants share a deployment.
 
+**Implemented in this slice:**
+
+- `migrations/0001_tenancy.sql` defines `tenants`, `agents` and
+  `channel_bindings`.
+- `src/tenancy.ts` resolves `(slack_team_id, channel_id) → agent`, formats
+  conversation keys as `tenant:<tenantID>:agent:<agentID>:<legacyKey>`, parses
+  them back, and derives the per-agent account-seed key
+  `tenants/<tenantID>/agents/<agentID>/account/state.tar.gz`.
+- Slack events resolve the channel binding before choosing the conversation DO;
+  interactivity rejects a namespaced button whose channel is bound to a
+  different agent.
+- `Env.TENANCY` is **optional**. Without it, or for an unbound channel, routing
+  stays on the legacy key. A namespaced conversation never falls back to the
+  legacy global account seed. Bind D1 and insert channel rows to activate:
+
+  ```jsonc
+  "d1_databases": [
+    { "binding": "TENANCY", "database_name": "cf-opencode-tenancy", "database_id": "<id>" }
+  ]
+  ```
+
+  ```bash
+  wrangler d1 migrations apply cf-opencode-tenancy --remote
+  ```
+
+- Still open: per-agent `Settings`, per-tenant/agent API keys, per-agent
+  onboarding into the namespaced account key, and strict mode that rejects
+  unbound channels instead of falling back.
+
 **Encryption:** workspace and state archives are encrypted with a tenant-scoped key
 before they reach R2. The key is derived from the deployment's vault master key and
 the tenant id, so a bucket leak does not expose credentials or source. Key rotation

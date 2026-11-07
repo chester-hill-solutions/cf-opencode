@@ -10,6 +10,7 @@ import { annotate, traceId } from "./telemetry"
 import { MODEL_CATALOG, recommendModel } from "./models"
 import { hasConnectedProvider, isOnboardingProxyPath } from "./onboarding"
 import { approvalVerdict, fetchChannelMembers } from "./slack-auth"
+import { conversationKey, parseConversationKey, resolveAgentForChannel } from "./tenancy"
 import { logEvent } from "./log"
 
 export { Conversation } from "./conversation"
@@ -84,7 +85,18 @@ export default {
 
       const isDm = event.channel_type === "im"
       const replyTs = isDm ? undefined : event.thread_ts ?? event.ts
-      const key = isDm ? `${event.channel}:dm` : `${event.channel}:${event.thread_ts ?? event.ts}`
+      const legacyKey = isDm ? `${event.channel}:dm` : `${event.channel}:${event.thread_ts ?? event.ts}`
+      // A channel binding selects the agent, which namespaces the conversation
+      // (and therefore its state, checkpoints and account seed). Unbound
+      // channels stay on the legacy single-tenant key during the migration.
+      const agent = await resolveAgentForChannel(env, payload.team_id, event.channel).catch(
+        (error) => {
+          logEvent("tenancy.resolve_failed", { error: String(error) })
+          return undefined
+        },
+      )
+      if (!agent && env.TENANCY) logEvent("tenancy.unbound", { channel: event.channel })
+      const key = agent ? conversationKey(agent, legacyKey) : legacyKey
 
       const dispatch: SlackEventRequest = {
         ...(payload.event_id ? { eventID: payload.event_id } : {}),
@@ -92,7 +104,7 @@ export default {
         event,
       }
       ctx.waitUntil(
-        env.CONVERSATION.getByName(key).fetch("https://conversation/slack", {
+        conversationStub(env, key).fetch("https://conversation/slack", {
           method: "POST",
           body: JSON.stringify(dispatch),
         }),
@@ -115,6 +127,32 @@ export default {
         return new Response("ok")
       }
       if (!parsed.key || !parsed.requestID) return new Response("ok")
+
+      // A namespaced approval must come from the channel bound to the same
+      // agent. This stops a button from one tenant's channel being replayed
+      // against another tenant's conversation.
+      const sourceAgent = parseConversationKey(parsed.key)
+      if (sourceAgent) {
+        const bound = await resolveAgentForChannel(
+          env,
+          payload?.team?.id,
+          payload?.channel?.id,
+        ).catch((error) => {
+          logEvent("tenancy.resolve_failed", { error: String(error) })
+          return undefined
+        })
+        if (
+          !bound ||
+          bound.tenantID !== sourceAgent.tenantID ||
+          bound.agentID !== sourceAgent.agentID
+        ) {
+          logEvent("permission.tenant_mismatch", { channel: payload?.channel?.id })
+          return Response.json({
+            response_type: "ephemeral",
+            text: "This approval belongs to another agent.",
+          })
+        }
+      }
 
       // A permission decision is only valid from a member of the channel the
       // request was posted in. Anyone in the channel may approve.
@@ -141,7 +179,7 @@ export default {
 
       const dispatch: PermissionRequest = { requestID: parsed.requestID, decision }
       ctx.waitUntil(
-        env.CONVERSATION.getByName(parsed.key).fetch("https://conversation/permission", {
+        conversationStub(env, parsed.key).fetch("https://conversation/permission", {
           method: "POST",
           body: JSON.stringify(dispatch),
         }),
