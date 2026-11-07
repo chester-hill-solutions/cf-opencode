@@ -65,4 +65,40 @@ describe("buildPermissionRules", () => {
     })
     expect(denies).toContainEqual({ action: "shell", resource: "*.state*", effect: "deny" })
   })
+
+  test("denies the live state root that holds provider credentials", () => {
+    const rules = buildPermissionRules({}, "/workspace", "/var/lib/aboiteau/state")
+    const denies = rules.filter((rule) => rule.effect === "deny")
+    for (const action of ["read", "edit"]) {
+      expect(denies).toContainEqual({
+        action,
+        resource: "/var/lib/aboiteau/state/**",
+        effect: "deny",
+      })
+    }
+    for (const pattern of [
+      "*/var/lib/aboiteau/state*",
+      "*$HOME*",
+      "*${HOME}*",
+      "*$XDG_CONFIG_HOME*",
+      "*${XDG_DATA_HOME}*",
+      "*~*",
+    ]) {
+      expect(denies).toContainEqual({ action: "shell", resource: pattern, effect: "deny" })
+    }
+  })
+
+  test("uses the configured state root instead of the legacy layout", () => {
+    const rules = buildPermissionRules({}, "/workspace", "/srv/harness-state/")
+    expect(rules).toContainEqual({
+      action: "read",
+      resource: "/srv/harness-state/**",
+      effect: "deny",
+    })
+    expect(rules).toContainEqual({
+      action: "shell",
+      resource: "*/srv/harness-state*",
+      effect: "deny",
+    })
+  })
 })

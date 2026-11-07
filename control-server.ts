@@ -45,7 +45,7 @@ import {
 import { relative } from "node:path"
 import { buildPermissionRules, type PermissionLists } from "./src/permissions"
 import { bearerAuthorized } from "./src/control-auth"
-import { assertSafeArchiveMembers } from "./src/tar"
+import { assertSafeArchiveMembers, linkStaysInside, safeRelativeLink } from "./src/tar"
 
 const WORKSPACE = process.env.WORKSPACE ?? "/workspace"
 /** Harness state: OpenCode config, credentials and database. Never the repo. */
@@ -243,7 +243,7 @@ function writeOpencodeConfig(model?: string, permissions?: PermissionLists) {
   const config = {
     $schema: "https://opencode.ai/config.json",
     ...(model ? { model } : {}),
-    permissions: buildPermissionRules(permissions),
+    permissions: buildPermissionRules(permissions, WORKSPACE, STATE_ROOT),
   }
   writeFileSync(`${dir}/opencode.json`, JSON.stringify(config, null, 2))
   fixStatePermissions()
@@ -312,6 +312,34 @@ export function stateFingerprint(root = STATE_ROOT): string {
 async function assertSafeArchive(path: string): Promise<void> {
   const text = await runCapture(["tar", "tzf", path])
   assertSafeArchiveMembers(text)
+  // Hard links carry their target outside the member name, so `tzf` cannot
+  // see it. Reject targets that are absolute or escape the extraction root.
+  const verbose = await runCapture(["tar", "tzvf", path])
+  for (const line of verbose.split("\n")) {
+    if (!line.startsWith("h")) continue
+    const marker = line.indexOf(" link to ")
+    const target = marker >= 0 ? line.slice(marker + " link to ".length).trim() : ""
+    if (!safeRelativeLink(target)) {
+      throw new Error(`archive hard link escapes the extraction root: ${target || "(missing target)"}`)
+    }
+  }
+}
+
+/**
+ * A workspace symlink that resolves outside the workspace can reach harness
+ * state (provider credentials) through a path that never names the state root,
+ * bypassing the permission rules. Relative links that stay inside are allowed.
+ */
+async function assertWorkspaceLinks(root = WORKSPACE): Promise<void> {
+  const listing = await runCapture(["find", root, "-type", "l", "-print0"])
+  for (const link of listing.split("\0").filter(Boolean)) {
+    const target = (await runCapture(["readlink", "-f", "--", link])).trim()
+    if (!linkStaysInside(root, target)) {
+      throw new Error(
+        `workspace symlink escapes the workspace: ${link} -> ${target || "(unresolved)"}`,
+      )
+    }
+  }
 }
 
 function chown(path: string, uid: number, gid: number): void {
@@ -565,6 +593,14 @@ if (import.meta.main) Bun.serve({
         rmSync(tmp, { recursive: true, force: true })
         if (copied !== 0) return Response.json({ error: "workspace copy failed" }, { status: 500 })
         fixWorkspacePermissions()
+        try {
+          await assertWorkspaceLinks()
+        } catch (error) {
+          return Response.json(
+            { error: error instanceof Error ? error.message : String(error) },
+            { status: 500 },
+          )
+        }
       }
       await startStow()
       await startOpencode()
@@ -625,6 +661,14 @@ if (import.meta.main) Bun.serve({
           fixStatePermissions()
         }
         fixWorkspacePermissions()
+        try {
+          await assertWorkspaceLinks()
+        } catch (error) {
+          return Response.json(
+            { error: error instanceof Error ? error.message : String(error) },
+            { status: 500 },
+          )
+        }
       } else {
         rmSync(STATE_ROOT, { recursive: true, force: true })
         mkdirSync(STATE_ROOT, { recursive: true })

@@ -11,6 +11,8 @@ import { MODEL_CATALOG, recommendModel } from "./models"
 import { hasConnectedProvider, isOnboardingProxyPath } from "./onboarding"
 import { approvalVerdict, fetchChannelMembers } from "./slack-auth"
 import { conversationKey, parseConversationKey, resolveAgentForChannel } from "./tenancy"
+import { encryptionRequired, plaintextArchivesAllowed } from "./archive-policy"
+import { bearerAuthorized } from "./control-auth"
 import { logEvent } from "./log"
 
 export { Conversation } from "./conversation"
@@ -97,6 +99,10 @@ export default {
       )
       if (!agent && env.TENANCY) logEvent("tenancy.unbound", { channel: event.channel })
       const key = agent ? conversationKey(agent, legacyKey) : legacyKey
+
+      // The registry is the only way to answer "what conversations exist?";
+      // record Slack traffic as well as HTTP traffic.
+      ctx.waitUntil(settingsDo(env, "/conversations", { key }).catch(() => undefined))
 
       const dispatch: SlackEventRequest = {
         ...(payload.event_id ? { eventID: payload.event_id } : {}),
@@ -221,7 +227,7 @@ async function handleApi(
     return Response.json({ error: "API_TOKEN is not configured" }, { status: 503 })
   }
   const authorization = request.headers.get("authorization") ?? ""
-  if (authorization !== `Bearer ${env.API_TOKEN}`) {
+  if (!bearerAuthorized(authorization, env.API_TOKEN)) {
     return Response.json({ error: "unauthorized" }, { status: 401 })
   }
 
@@ -495,28 +501,33 @@ async function handleOnboarding(
     }
 
     let snapshot = false
-    try {
-      const conversation = conversationStub(env, ONBOARDING_KEY)
-      const res = await conversation.fetch("https://conversation/onboarding/state-checkpoint")
-      if (res.ok) {
-        const bytes = await res.arrayBuffer()
-        if (bytes.byteLength > 0) {
-          // The account snapshot carries provider credentials; encrypt it with
-          // the same tenant key as workspace checkpoints when the vault is set.
-          const master = env.VAULT_MASTER_KEY
-          const key = master ? await deriveWorkspaceKey(master, workspaceID(env)) : undefined
-          const stored = key
-            ? await encryptBytes(new Uint8Array(bytes), key)
-            : new Uint8Array(bytes)
-          await env.CHECKPOINTS.put(ACCOUNT_STATE_KEY, stored, {
-            httpMetadata: { contentType: "application/gzip" },
-            ...(key ? { customMetadata: { encrypted: "1" } } : {}),
-          })
-          snapshot = true
+    // The account snapshot carries provider credentials. Without a vault key it
+    // is skipped rather than written to R2 in plaintext; the next conversation
+    // simply reconnects the provider.
+    if (encryptionRequired(env)) {
+      logEvent("onboarding.snapshot.skipped", { reason: "vault_key_missing" })
+    } else {
+      try {
+        const conversation = conversationStub(env, ONBOARDING_KEY)
+        const res = await conversation.fetch("https://conversation/onboarding/state-checkpoint")
+        if (res.ok) {
+          const bytes = await res.arrayBuffer()
+          if (bytes.byteLength > 0) {
+            const master = env.VAULT_MASTER_KEY
+            const key = master ? await deriveWorkspaceKey(master, workspaceID(env)) : undefined
+            const stored = key
+              ? await encryptBytes(new Uint8Array(bytes), key)
+              : new Uint8Array(bytes)
+            await env.CHECKPOINTS.put(ACCOUNT_STATE_KEY, stored, {
+              httpMetadata: { contentType: "application/gzip" },
+              ...(key ? { customMetadata: { encrypted: "1" } } : {}),
+            })
+            snapshot = true
+          }
         }
+      } catch {
+        // A missing state only means the next conversation reconnects.
       }
-    } catch {
-      // A missing state only means the next conversation reconnects.
     }
     const now = Date.now()
     await settingsDo(env, "/onboarding", {
@@ -647,8 +658,13 @@ async function healthCheck(env: Env): Promise<Response> {
   const checks: Record<string, { ok: boolean; detail?: string }> = {
     apiToken: { ok: Boolean(env.API_TOKEN) },
     vault: {
-      ok: Boolean(env.VAULT_MASTER_KEY),
-      ...(env.VAULT_MASTER_KEY ? {} : { detail: "VAULT_MASTER_KEY is not set" }),
+      ok: Boolean(env.VAULT_MASTER_KEY) || plaintextArchivesAllowed(env),
+      ...(env.VAULT_MASTER_KEY || plaintextArchivesAllowed(env)
+        ? {}
+        : {
+            detail:
+              "VAULT_MASTER_KEY is not set; checkpoints and account seeds are disabled (set ALLOW_PLAINTEXT_ARCHIVES=1 to override)",
+          }),
     },
     github: {
       ok: Boolean(env.GITHUB_CLIENT_ID && env.GITHUB_CLIENT_SECRET),
@@ -674,7 +690,7 @@ async function healthCheck(env: Env): Promise<Response> {
     checks.settings = { ok: false, detail: detail(error) }
   }
 
-  const ok = checks.apiToken.ok && checks.checkpoints.ok && checks.settings.ok
+  const ok = checks.apiToken.ok && checks.vault.ok && checks.checkpoints.ok && checks.settings.ok
   const trace = traceId()
   return Response.json({ ok, checks, ...(trace ? { traceId: trace } : {}) }, { status: ok ? 200 : 503 })
 }

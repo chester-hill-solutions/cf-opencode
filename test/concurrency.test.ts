@@ -91,6 +91,59 @@ describe("admission queue", () => {
     expect(result.prompts).toBe(1)
     expect(result.starts).toBe(0)
   })
+
+  it("keeps a queued message while container capacity is full", async () => {
+    const stub = env.CONVERSATION.getByName("C1:capacity-queue")
+    const result = await runInDurableObject(stub, async (instance) => {
+      const prompts = { count: 0 }
+      instance.transport = fakeContainer(prompts)
+
+      // The transport seam bypasses the real lease path, so inject the same
+      // error the Settings DO returns when the cap is full.
+      const original = (instance as unknown as { ensureReady(): Promise<unknown> }).ensureReady.bind(
+        instance,
+      )
+      let capacityFailures = 8
+      ;(
+        instance as unknown as { ensureReady(): Promise<unknown> }
+      ).ensureReady = async () => {
+        if (capacityFailures > 0) {
+          capacityFailures--
+          throw new Error("container capacity reached")
+        }
+        return original()
+      }
+
+      const response = await instance.fetch(
+        new Request("https://conversation/message", {
+          method: "POST",
+          body: JSON.stringify({ text: "hello" }),
+        }),
+      )
+      const status = response.status
+      await response.text()
+
+      // More alarms than the old bounded prompt-retry budget.
+      for (let attempt = 0; attempt < 6; attempt++) await instance.alarm()
+      const queuedAfterPressure = (await (
+        await instance.fetch(new Request("https://conversation/state"))
+      ).json()) as { queued?: unknown }
+
+      // Capacity frees: the same queued message runs, it was not dropped.
+      capacityFailures = 0
+      await instance.alarm()
+      const queuedAfterDrain = (await (
+        await instance.fetch(new Request("https://conversation/state"))
+      ).json()) as { queued?: unknown }
+
+      return { status, prompts: prompts.count, queuedAfterPressure, queuedAfterDrain }
+    })
+
+    expect(result.status).toBe(202)
+    expect(result.queuedAfterPressure.queued).toBeTruthy()
+    expect(result.prompts).toBe(1)
+    expect(result.queuedAfterDrain.queued).toBeUndefined()
+  })
 })
 
 describe("conversation concurrency", () => {

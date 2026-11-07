@@ -47,4 +47,24 @@ describe("OpenCode control proxy", () => {
       method: "POST",
     })
   })
+
+  test("forwards the caller's abort signal through the proxy", async () => {
+    const controller = new AbortController()
+    let forwarded: AbortSignal | undefined
+    const port: ContainerPort = {
+      async fetch(input, init) {
+        const request = input instanceof Request ? input : new Request(input as any, init)
+        forwarded = request.signal
+        return new Response("ok")
+      },
+    }
+
+    const response = opencodeViaControl(port).fetch(
+      new Request("http://container/api/session", { signal: controller.signal }),
+    )
+    controller.abort()
+    await response
+
+    expect(forwarded?.aborted).toBe(true)
+  })
 })

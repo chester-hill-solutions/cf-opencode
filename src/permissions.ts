@@ -64,11 +64,30 @@ export const DENY_COMMANDS = [
  * settings. An operator may add denials but cannot remove these: a settings
  * save must not be able to turn the safety policy off.
  */
-export function buildPermissionRules(lists: PermissionLists = {}, workspace = "/workspace"): PermissionRule[] {
+export function buildPermissionRules(
+  lists: PermissionLists = {},
+  workspace = "/workspace",
+  stateRoot = "/var/lib/aboiteau/state",
+): PermissionRule[] {
   const shellDenies = [...(lists.deny ?? [])]
   for (const command of DENY_COMMANDS) {
     if (!shellDenies.includes(command)) shellDenies.push(command)
   }
+  // The live state root holds OpenCode's config and provider credentials. It
+  // must be denied explicitly: the old `.state` patterns below only covered the
+  // legacy layout, so allowlisted readers (`cat *`, `rg *`, …) could read it.
+  const state = stateRoot.replace(/\/+$/, "") || "/var/lib/aboiteau/state"
+  const stateShellDenies = [
+    `*${state}*`,
+    "*$HOME*",
+    "*${HOME}*",
+    "*$XDG_CONFIG_HOME*",
+    "*${XDG_CONFIG_HOME}*",
+    "*$XDG_DATA_HOME*",
+    "*${XDG_DATA_HOME}*",
+    // `~` expands to the state root, so any tilde path is harness state.
+    "*~*",
+  ]
   return [
     { action: "read", resource: `${workspace}/**`, effect: "allow" },
     { action: "edit", resource: `${workspace}/**`, effect: "allow" },
@@ -80,6 +99,7 @@ export function buildPermissionRules(lists: PermissionLists = {}, workspace = "/
     { action: "edit", resource: "/**", effect: "ask" },
     ...shellDenies.map((resource) => ({ action: "shell", resource, effect: "deny" as const })),
     // Harness state holds the OpenCode config and provider credentials.
+    ...stateShellDenies.map((resource) => ({ action: "shell", resource, effect: "deny" as const })),
     { action: "shell", resource: "*169.254.169.254*", effect: "deny" },
     { action: "shell", resource: "*.state*", effect: "deny" },
     { action: "webfetch", resource: "*169.254.169.254*", effect: "deny" },
@@ -91,5 +111,7 @@ export function buildPermissionRules(lists: PermissionLists = {}, workspace = "/
     { action: "edit", resource: `${workspace}/.state/**`, effect: "deny" },
     { action: "read", resource: "/**/.state/**", effect: "deny" },
     { action: "edit", resource: "/**/.state/**", effect: "deny" },
+    { action: "read", resource: `${state}/**`, effect: "deny" },
+    { action: "edit", resource: `${state}/**`, effect: "deny" },
   ]
 }

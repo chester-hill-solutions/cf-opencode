@@ -13,13 +13,15 @@ export function opencodeViaControl(control: ContainerPort): ContainerPort {
     fetch(input, init) {
       const request = new Request(input as any, init)
       const url = new URL(request.url)
-      // Preserve any query string; only the path is namespaced.
+      // Preserve any query string; only the path is namespaced. Forward the
+      // request's signal so the timeout attached by `portFetch` survives the
+      // proxy boundary.
       url.pathname = `/opencode${url.pathname}`
       return control.fetch(url.toString(), {
         method: request.method,
         headers: request.headers,
         body: request.body,
-        signal: init?.signal,
+        signal: request.signal,
       })
     },
   }

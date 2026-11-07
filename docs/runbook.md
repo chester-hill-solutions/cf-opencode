@@ -37,6 +37,11 @@ bunx wrangler secret put SLACK_BOT_USER_ID      # optional
 The local API token is kept in the gitignored `.dev.vars` at the repo root (0600). Treat it as a shared
 admin credential until onboarding grows real users.
 
+`VAULT_MASTER_KEY` is required for persistence: without it, workspace checkpoints and account seeds are
+refused rather than written to R2 in plaintext, and `/api/health` returns 503. Set
+`ALLOW_PLAINTEXT_ARCHIVES=1` only for a throwaway deployment where provider credentials in R2 are
+acceptable.
+
 ## Health checks
 
 ```sh
@@ -45,6 +50,17 @@ curl -s https://<worker>/health                                       # "ok"
 curl -s -H "authorization: Bearer $TOKEN" https://<worker>/api/settings
 curl -s -H "authorization: Bearer $TOKEN" https://<worker>/api/conversations/<key>
 ```
+
+## Container smoke test
+
+```sh
+bun run smoke:container                       # Docker (default)
+RUNTIME=container bun run smoke:container     # Apple container
+```
+
+Builds the image and proves the control plane the Durable Object depends on: token enforcement,
+OpenCode configuration (including the credential denials), local S3, the OpenCode proxy, and
+workspace/state checkpoint and restore round-trips. It never calls a model provider, so it is safe in CI.
 
 ## First turn (once the image exists)
 

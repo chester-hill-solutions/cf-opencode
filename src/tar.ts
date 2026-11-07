@@ -23,3 +23,25 @@ export function assertSafeArchiveMembers(list: string): void {
     throw new Error("archive contains a member that escapes the extraction root")
   }
 }
+
+/**
+ * True when a link target is relative and cannot climb out of the extraction
+ * root. Hard-link targets are stored separately from member names, so the
+ * member-name check alone does not cover them.
+ */
+export function safeRelativeLink(target: string): boolean {
+  if (!target) return false
+  if (target.startsWith("/") || target.startsWith("\\")) return false
+  if (/^[a-zA-Z]:[\\/]/.test(target)) return false
+  return !target.split(/[\\/]/).includes("..")
+}
+
+/**
+ * True when a resolved link target stays inside the extraction root. Used for
+ * workspace symlinks: a link to harness state would let the agent read provider
+ * credentials through a path that never names the state root.
+ */
+export function linkStaysInside(root: string, target: string): boolean {
+  const base = root.replace(/\/+$/, "")
+  return target === base || target.startsWith(`${base}/`)
+}

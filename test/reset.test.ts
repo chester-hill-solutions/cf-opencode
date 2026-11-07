@@ -38,3 +38,19 @@ describe("conversation reset", () => {
     expect(result.other).toBe(true)
   })
 })
+
+describe("conversation recycle", () => {
+  it("refuses to recycle when the checkpoint fails", async () => {
+    const stub = env.CONVERSATION.getByName("C1:recycle-checkpoint")
+    const result = await runInDurableObject(stub, async (instance) => {
+      ;(instance as unknown as { checkpoint(): Promise<boolean> }).checkpoint = async () => false
+      const response = await instance.fetch(
+        new Request("https://conversation/recycle", { method: "POST" }),
+      )
+      return { status: response.status, body: (await response.json()) as Record<string, unknown> }
+    })
+
+    expect(result.status).toBe(503)
+    expect(result.body).toMatchObject({ ok: false })
+  })
+})

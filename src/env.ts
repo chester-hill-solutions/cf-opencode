@@ -4,8 +4,8 @@ export interface Env {
   SLACK_BOT_TOKEN?: string
   /** Bot user id, used to strip mentions and skip our own messages. */
   SLACK_BOT_USER_ID?: string
-  CONVERSATION: DurableObjectNamespace
-  SETTINGS: DurableObjectNamespace
+  CONVERSATION: DurableObjectNamespace<import("./conversation").Conversation>
+  SETTINGS: DurableObjectNamespace<import("./settings-do").Settings>
   WORKSPACE_REPO: string
   OPENCODE_MODEL: string
   POLL_SECONDS: string
@@ -23,6 +23,11 @@ export interface Env {
   ALERT_CHANNEL?: string
   /** 64 hex characters; encrypts provider and GitHub credentials at rest. */
   VAULT_MASTER_KEY?: string
+  /**
+   * Explicit opt-out of archive encryption. Without a vault key, checkpoints
+   * and account seeds fail closed unless this is exactly "1".
+   */
+  ALLOW_PLAINTEXT_ARCHIVES?: string
   /** Tenant key for stored credentials. Defaults to "default" (single tenant). */
   WORKSPACE_ID?: string
 }

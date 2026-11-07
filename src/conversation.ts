@@ -35,6 +35,7 @@ import { withSpan } from "./telemetry"
 import type { HarnessSettings } from "./settings"
 import { staleAction } from "./lifecycle"
 import { budgetExceeded, nextBudgetReset } from "./budget"
+import { CAPACITY_RETRY_MS, isCapacityRejection } from "./queue"
 import { GITHUB_TOKEN_KEY, workspaceID } from "./vault"
 import { accountStateKey, LEGACY_ACCOUNT_STATE_KEY, parseConversationKey } from "./tenancy"
 import {
@@ -44,6 +45,7 @@ import {
   encryptedLength,
 } from "./archive-crypto"
 import { deriveWorkspaceKey } from "@chester-hill-solutions/vault/core"
+import { plaintextArchivesAllowed } from "./archive-policy"
 
 /** The fields of a pending permission the harness forwards. */
 interface PermissionSummary {
@@ -348,8 +350,16 @@ export class Conversation extends DurableObject<Env> {
   private async onRecycle(): Promise<Response> {
     // Capture a snapshot before stopping so the next start is fast. The R2
     // archive is the portable source of truth, so make sure it is current
-    // before the image snapshot can be invalidated.
-    await this.checkpoint()
+    // before the image snapshot can be invalidated. A failed checkpoint must
+    // stop the recycle: an image change makes the snapshot stale, so the next
+    // start would restore an older archive and lose the latest turn.
+    const saved = await this.checkpoint()
+    if (!saved) {
+      return Response.json(
+        { ok: false, error: "checkpoint failed; not recycling" },
+        { status: 503 },
+      )
+    }
     await this.captureSnapshot()
     try {
       await this.ctx.container?.destroy()
@@ -765,6 +775,10 @@ export class Conversation extends DurableObject<Env> {
     }
     if (event.type === "permission") {
       await this.postPermission(state.slack, event)
+    }
+    // A failed turn, timeout or checkpoint must not leave the thread silent.
+    if (event.type === "error") {
+      await this.postChunked(state.slack.channel, `⚠️ ${event.message}`, state.slack.replyTs)
     }
   }
 
@@ -1561,13 +1575,28 @@ export class Conversation extends DurableObject<Env> {
       await this.withClient((client) => client.session.prompt({ sessionID, text: queued.text }))
     } catch (err) {
       this.admitting = false
+      // Capacity pressure is temporary: keep the message queued until a lease
+      // frees up instead of burning the prompt-retry budget and dropping it.
+      if (isCapacityRejection(err)) {
+        const retryAt = Date.now() + CAPACITY_RETRY_MS
+        await this.store.patch({
+          queued: { ...queued, lastError: "container capacity reached", nextAttemptAt: retryAt },
+        })
+        await this.store.advance("queued")
+        logEvent("queue.capacity", { attempts: queued.attempts })
+        await this.ctx.storage.setAlarm(retryAt)
+        return false
+      }
       const attempts = queued.attempts + 1
       if (attempts >= 5) {
         await this.store.patch({ queued: undefined, lastTurnError: errorMessage(err) })
         await this.store.advance("idle")
         void this.count("queue.failed")
         logEvent("queue.failed", { attempts })
-        await this.deliver({ type: "error", message: `queued message could not start: ${errorMessage(err)}` })
+        await this.deliver(
+          { type: "error", message: `queued message could not start: ${errorMessage(err)}` },
+          { slack: false },
+        )
         if (queued.slack) {
           await this.postChunked(
             queued.slack.channel,
@@ -1684,10 +1713,17 @@ export class Conversation extends DurableObject<Env> {
     return false
   }
 
-  /** Tenant-scoped archive key, or undefined when the vault is not configured. */
+  /** Tenant-scoped archive key, or undefined when plaintext storage is allowed. */
   private async checkpointCryptoKey(): Promise<CryptoKey | undefined> {
     const master = this.env.VAULT_MASTER_KEY
-    if (!master) return undefined
+    if (!master) {
+      // Provider credentials live in the state archive, so a missing key must
+      // not silently downgrade to plaintext R2 objects.
+      if (plaintextArchivesAllowed(this.env)) return undefined
+      throw new Error(
+        "VAULT_MASTER_KEY is required to encrypt checkpoints; set it or explicitly allow plaintext archives",
+      )
+    }
     return deriveWorkspaceKey(master, workspaceID(this.env))
   }
 
@@ -1781,6 +1817,8 @@ export class Conversation extends DurableObject<Env> {
       const workspaceKey = `${prefix}workspace-${stamp}.tar.gz`
       const stateKey = `${prefix}state-${stamp}.tar.gz`
       try {
+        // Fail fast on a missing key instead of retrying a configuration error.
+        await this.checkpointCryptoKey()
         await withRetries(
           async () => {
             const state = await this.store.get()
