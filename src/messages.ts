@@ -76,17 +76,32 @@ export function turnFailure(
   afterID?: string,
   runStartedAt?: number,
 ): TurnFailure | undefined {
-  const idle = turnMessages(messages, afterID)
-    .filter((message) => message.type === "idle" && message.error)
+  const turn = turnMessages(messages, afterID)
+
+  // A step that failed still produces a terminal assistant message with an
+  // empty body, so settlement succeeds with nothing to deliver. Surface the
+  // attached error instead of going quiet.
+  const assistant = turn
+    .filter((message) => message.type === "assistant" && message.error)
     .at(-1)
+  if (assistant?.error) {
+    const at = assistant.time?.created
+    if (!runStartedAt || typeof at !== "number" || at >= runStartedAt) {
+      return { message: errorText(assistant.error), at }
+    }
+  }
+
+  const idle = turn.filter((message) => message.type === "idle" && message.error).at(-1)
   if (!idle?.error) return undefined
   const at = idle.time?.created
   if (runStartedAt && typeof at === "number" && at < runStartedAt) return undefined
+  return { message: errorText(idle.error), at }
+}
+
+function errorText(error: NonNullable<MessageInfo["error"]>): string {
   const message =
-    typeof idle.error === "string"
-      ? idle.error
-      : (idle.error.message ?? idle.error.type ?? "run failed")
-  return { message: message || "run failed", at }
+    typeof error === "string" ? error : (error.message ?? error.type ?? "run failed")
+  return message || "run failed"
 }
 
 /** Stable identity for a failure, so a redelivered poll does not repeat it. */

@@ -211,6 +211,14 @@ async function handleApi(
     return conversation.fetch("https://conversation/debug")
   }
 
+  if (request.method === "GET" && suffix.join("/") === "debug/messages") {
+    return conversation.fetch("https://conversation/debug/messages")
+  }
+
+  if (request.method === "POST" && suffix.join("/") === "debug/snapshot/invalidate") {
+    return conversation.fetch("https://conversation/debug/snapshot/invalidate", { method: "POST" })
+  }
+
   if (request.method === "POST" && suffix.length === 1 && suffix[0] === "recycle") {
     return conversation.fetch("https://conversation/recycle", { method: "POST" })
   }

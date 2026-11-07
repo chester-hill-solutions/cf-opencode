@@ -133,6 +133,22 @@ export class Conversation extends DurableObject<Env> {
         events: Object.fromEntries(this.seenEvents),
       })
     }
+    if (url.pathname === "/debug/messages" && request.method === "GET") {
+      const state = await this.store.get()
+      if (!state.sessionID) return Response.json({ messages: [] })
+      const messages = await this.withClient((client) =>
+        client.session.context({ sessionID: state.sessionID as string }),
+      ).catch((error) => ({ error: errorMessage(error) }))
+      return Response.json({ messages })
+    }
+    if (url.pathname === "/debug/snapshot/invalidate" && request.method === "POST") {
+      // Ops/test seam: poison the stored handle so the next start must fall
+      // back to the image and the R2 archive.
+      const existing = await this.ctx.storage.get<ContainerSnapshot>("snapshot")
+      if (!existing) return Response.json({ ok: false, error: "no snapshot" }, { status: 404 })
+      await this.ctx.storage.put("snapshot", { id: "invalid-snapshot", size: 0 })
+      return Response.json({ ok: true })
+    }
     if (url.pathname === "/delete" && request.method === "DELETE") return this.onDelete()
     return new Response("not found", { status: 404 })
   }
@@ -404,8 +420,11 @@ export class Conversation extends DurableObject<Env> {
         this.startMode = "snapshot"
         this.applyInactivity(container)
         logEvent("snapshot.restored")
+        void this.count("snapshot.restored")
         return true
       } catch {
+        logEvent("snapshot.stale")
+        void this.count("snapshot.stale")
         await this.clearSnapshot()
       }
     }
@@ -814,7 +833,9 @@ export class Conversation extends DurableObject<Env> {
       const settled = isSettled(messages, state.turnBaseline)
       // A terminal `idle` error means the turn is over even though no assistant
       // message completed, so it must settle, checkpoint and go idle.
-      const failure = settled ? undefined : turnFailure(messages, state.turnBaseline, state.runStartedAt)
+      // Settlement never hides a failure: a step that errored still completes,
+      // but with an empty body, so report the error rather than going quiet.
+      const failure = turnFailure(messages, state.turnBaseline, state.runStartedAt)
 
       if (reply && reply !== state.lastReply) {
         // SSE streams every change; Slack gets one message per turn, at settle.
@@ -1041,6 +1062,7 @@ export class Conversation extends DurableObject<Env> {
     // becomes ready, drop it and start from the current image instead.
     if (usedSnapshot) {
       logEvent("snapshot.stale")
+      void this.count("snapshot.stale")
       await this.clearSnapshot()
       await container.destroy().catch(() => {})
       await this.startContainer()

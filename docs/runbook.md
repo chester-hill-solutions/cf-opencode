@@ -256,6 +256,17 @@ restore checkpoints from R2. Checkpoint keys are `workspaces/<id>.tar.gz` until 
 - R2 bucket `cf-opencode-checkpoints` — checkpoint versions per conversation at `workspaces/<id>/<timestamp>.tar.gz`, newest five kept. The archive is produced without stopping OpenCode: the live SQLite database is copied with `.backup` and substituted into the tar, so a checkpoint costs a copy and a compress, not a server restart.
 - Container snapshots — captured on an explicit `recycle` before the container stops, as a fast restore cache for the next start. A snapshot is the writable root (~28 MB) and is image-bound with a 30-day TTL and no delete API, so taking one per turn would accumulate storage and slow turns; per-turn durability stays with the R2 archive.
 - Container workspace — ephemeral; restored from R2 on cold start.
+
+Start path: try the stored snapshot, and on any failure log `snapshot.stale`, delete the handle, start from the image, then restore the newest R2 archive. Counters: `snapshot.restored`, `snapshot.stale`, `snapshot.failed`. To exercise the fallback without an image change, poison the handle and take a turn:
+
+```sh
+curl -X POST -H "authorization: Bearer $TOKEN" https://<worker>/api/conversations/<key>/debug/snapshot/invalidate
+./scripts/check-snapshot-fallback.sh    # turn -> recycle -> poison -> turn
+```
+
+The poisoned handle still reports `snapshot: true` (a handle exists); after the
+next turn the log shows `snapshot.stale`, `snapshot.stale` increments, the handle
+is cleared, and `startMode` is `image`.
 - DO SQLite — conversation state, event log (last 200), pending permissions, checkpoint size and retry state.
 - Deleting a conversation's checkpoint is safe only when no turn is running.
 

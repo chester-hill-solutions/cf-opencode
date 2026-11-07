@@ -156,6 +156,28 @@ describe("turnFailure", () => {
     expect(turnFailure(messages, old.id, 50)?.message).toBe("fresh")
   })
 
+  test("reports an error attached to a completed assistant step", () => {
+    // A failed step still completes, with an empty body, so settlement would
+    // otherwise look successful and the user would see nothing.
+    const failed: MessageInfo = {
+      id: "a-failed",
+      type: "assistant",
+      content: [],
+      finish: "error",
+      time: { created: 20, completed: 21 },
+      error: { type: "provider.error", message: "Model unavailable: opencode/deepseek-v4.1-flash" },
+    }
+    expect(isSettled([user("go"), failed])).toBe(true)
+    expect(turnFailure([user("go"), failed])).toEqual({
+      message: "Model unavailable: opencode/deepseek-v4.1-flash",
+      at: 20,
+    })
+  })
+
+  test("ignores a completed assistant step without an error", () => {
+    expect(turnFailure([user("go"), assistant(["done"], true, "stop")])).toBeUndefined()
+  })
+
   test("keys a failure by time and message so a repeat poll is deduped", () => {
     const first = turnFailure([idle({ message: "boom" }, 20)])
     const same = turnFailure([idle({ message: "boom" }, 20)])

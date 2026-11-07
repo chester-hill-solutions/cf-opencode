@@ -6,6 +6,10 @@
  * so agents and tools can use s3:// against the same bytes they edit on disk.
  * R2 ("cold"): checkpoints are tar.gz streams the DO stores in R2.
  *
+ * Snapshots (durable_object policy): the DO captures the writable root on
+ * recycle and restores it on the next start. Image-bound, so a deploy that
+ * changes the image makes the previous snapshot unusable.
+ *
  *   GET  /health      liveness
  *   GET  /status      { initialized, running, s3 }
  *   POST /start       start stow-s3 and opencode serve, wait until ready
