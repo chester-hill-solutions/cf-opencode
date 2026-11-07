@@ -283,6 +283,7 @@ A checkpoint that fails is retried from the alarm up to three times (`checkpoint
 ## Known limitations
 
 - Single container application on the `durable_object` scheduling policy. There is no per-application `max_instances`; account limits bound concurrency, so keep message throughput in mind.
+- Onboarding uses the same container application and therefore the same `maxContainers` cap. With every slot warm, `/onboarding/` returns `container capacity reached`; recycle or delete a conversation to free a slot.
 - Instance size is chosen at start (`standard-1`). `basic` has no exact equivalent on this policy.
 - Snapshots are a fast restore cache only: they are bound to the image they were taken from, have a 30-day TTL refreshed on restore, and are not portable across deploys. The R2 tar archive remains the source of truth.
 - `.stow` (the local S3 view) and `.state/cache` are excluded from checkpoints: files survive a restore, cached/provider state is rebuilt.
