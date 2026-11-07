@@ -28,6 +28,7 @@ import { parseModelRef, type Env } from "./env"
 import { withRetries } from "./retry"
 import { retryAfterSeconds } from "./backoff"
 import { logEvent } from "./log"
+import { withSpan } from "./telemetry"
 import type { HarnessSettings } from "./settings"
 import { staleAction } from "./lifecycle"
 import { budgetExceeded } from "./budget"
@@ -52,6 +53,8 @@ const CHECKPOINT_KEEP = 5
 const LEASE_TTL_MS = 10 * 60_000
 /** Keep a warm container between quick follow-up turns. */
 const INACTIVITY_TIMEOUT_MS = 10 * 60_000
+/** Admin key exempt from the container cap so onboarding is always reachable. */
+const ONBOARDING_KEY = "onboarding"
 
 /** R2 key holding the account's OpenCode state (config + provider credentials). */
 export const ACCOUNT_STATE_KEY = "account/state.tar.gz"
@@ -105,6 +108,8 @@ export class Conversation extends DurableObject<Env> {
   private leaseHeld = false
   /** The inactivity timeout was applied to the current container. */
   private inactivitySet = false
+  /** Conversation key, sent by the Worker; admin traffic skips the cap. */
+  private key?: string
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
@@ -112,6 +117,7 @@ export class Conversation extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    this.key = request.headers.get("x-conversation-key") ?? this.key
     const url = new URL(request.url)
     if (url.pathname === "/message") return this.onMessage((await request.json()) as MessageRequest)
     if (url.pathname === "/slack") return this.onSlackEvent((await request.json()) as SlackEventRequest)
@@ -361,19 +367,25 @@ export class Conversation extends DurableObject<Env> {
    * the R2 archive remains the portable source of truth.
    */
   protected async captureSnapshot(): Promise<void> {
-    try {
-      const snapshot = await this.ctx.container?.snapshotContainer({ name: "turn" })
-      if (!snapshot) return
-      await this.ctx.storage.put("snapshot", snapshot)
-      logEvent("snapshot.saved", { bytes: snapshot.size })
-      await this.count("snapshot.saved")
-    } catch {
-      logEvent("snapshot.failed")
-      void this.count("snapshot.failed")
-    }
+    return withSpan("container.snapshot", async (span) => {
+      try {
+        const snapshot = await this.ctx.container?.snapshotContainer({ name: "turn" })
+        if (!snapshot) return
+        await this.ctx.storage.put("snapshot", snapshot)
+        span.setAttribute("snapshot.bytes", snapshot.size)
+        logEvent("snapshot.saved", { bytes: snapshot.size })
+        await this.count("snapshot.saved")
+      } catch (error) {
+        span.recordException(error as Error)
+        logEvent("snapshot.failed")
+        void this.count("snapshot.failed")
+      }
+    })
   }
 
   private async acquireLease(): Promise<void> {
+    // Onboarding is admin work and must not be blocked by warm conversations.
+    if (this.key === ONBOARDING_KEY) return
     const response = await this.env.SETTINGS.getByName("global").fetch(
       "https://settings/leases/acquire",
       {
@@ -413,25 +425,41 @@ export class Conversation extends DurableObject<Env> {
     const container = this.ctx.container
     if (!container) throw new Error("no container bound")
     await this.acquireLease()
-    const snapshot = await this.snapshotHandle()
-    if (snapshot) {
+    try {
+      return await this.startBoundContainer(container)
+    } catch (error) {
+      // A failed start must not hold a slot for the lease's full lifetime.
+      await this.releaseLease()
+      throw error
+    }
+  }
+
+  /** Start a bound container from the snapshot when possible, else the image. */
+  private async startBoundContainer(container: NonNullable<typeof this.ctx.container>): Promise<boolean> {
+    return withSpan("container.start", async (span) => {
+      const snapshot = await this.snapshotHandle()
+      if (snapshot) {
       try {
         container.start({ ...this.startOptions(), image: undefined, containerSnapshot: snapshot } as ContainerStartupOptions)
         this.startMode = "snapshot"
         this.applyInactivity(container)
+        span.setAttribute("container.start_mode", "snapshot")
         logEvent("snapshot.restored")
         void this.count("snapshot.restored")
         return true
       } catch {
         logEvent("snapshot.stale")
         void this.count("snapshot.stale")
+        span.setAttribute("container.snapshot_stale", true)
         await this.clearSnapshot()
       }
-    }
-    container.start(this.startOptions())
-    this.startMode = "image"
-    this.applyInactivity(container)
-    return false
+      }
+      container.start(this.startOptions())
+      this.startMode = "image"
+      this.applyInactivity(container)
+      span.setAttribute("container.start_mode", "image")
+      return false
+    })
   }
 
   /** A phase where a new prompt must wait for the current turn. */
@@ -820,6 +848,8 @@ export class Conversation extends DurableObject<Env> {
       // a restart in the middle of a settle can finish it.
       const phase = state.phase ?? "idle"
       if (phase !== "running" && phase !== "settling") return true
+      // A long turn can outlive the lease; the poll keeps the slot reserved.
+      void this.acquireLease().catch(() => {})
 
       const sessionID = state.sessionID
       // Context and permissions are independent: fetch them in one round-trip window.
@@ -860,6 +890,26 @@ export class Conversation extends DurableObject<Env> {
    * Persists only after delivery so a failed post is retried next time.
    */
   private async finishTurn(
+    state: ConversationState,
+    reply: string,
+    failure?: TurnFailure,
+  ): Promise<void> {
+    return withSpan(
+      "conversation.settle",
+      async (span) => {
+        span.setAttributes({
+          "conversation.failed": Boolean(failure),
+          ...(state.runStartedAt ? { "conversation.turn_ms": Date.now() - state.runStartedAt } : {}),
+          "conversation.reply_chars": reply.length,
+        })
+        await this.settleTurn(state, reply, failure)
+      },
+      { "conversation.key": this.key ?? "unknown" },
+    )
+  }
+
+  /** End-of-turn bookkeeping; runs inside the settle span. */
+  private async settleTurn(
     state: ConversationState,
     reply: string,
     failure?: TurnFailure,
@@ -1329,64 +1379,69 @@ export class Conversation extends DurableObject<Env> {
   private async checkpoint(): Promise<boolean> {
     // The control server archives the workspace without stopping OpenCode, so
     // the cached port stays valid across a checkpoint.
-    const key = `${this.checkpointPrefix()}${Date.now()}.tar.gz`
-    try {
-      await withRetries(
-        async () => {
-          const state = await this.store.get()
-          const since = state.checkpointFingerprint ?? ""
-          const control = await this.port(CONTROL_PORT)
-          const response = await control.fetch(
-            `http://container/checkpoint?since=${encodeURIComponent(since)}`,
-            { signal: AbortSignal.timeout(120_000) },
-          )
-          if (response.status === 204) {
-            void this.count("checkpoint.skipped")
-            logEvent("checkpoint.skipped")
-            return
-          }
-          if (!response.ok || !response.body) throw new Error(`checkpoint returned ${response.status}`)
-          // From here on a failure is a failed upload, not a paused server.
-          const length = Number(response.headers.get("content-length"))
-          if (Number.isFinite(length) && length > 0) {
-            // R2 needs a stream of known length; the control server sends one.
-            const counted = countedStream(response.body)
-            const fixed = new FixedLengthStream(length)
-            const piping = counted.stream.pipeTo(fixed.writable).catch(() => {})
-            await this.env.CHECKPOINTS.put(key, fixed.readable)
-            await piping
-            void this.count("checkpoint.saved")
-            logEvent("checkpoint.saved", { bytes: counted.bytes() })
-            await this.store.patch({ checkpointSize: counted.bytes() })
-          } else {
-            // Older control servers streamed without a length.
-            const bytes = await response.arrayBuffer()
-            await this.env.CHECKPOINTS.put(key, bytes)
-            void this.count("checkpoint.saved")
-            logEvent("checkpoint.saved", { bytes: bytes.byteLength })
-            await this.store.patch({ checkpointSize: bytes.byteLength })
-          }
-          const fingerprint = response.headers.get("x-workspace-fingerprint")
-          if (fingerprint) await this.store.patch({ checkpointFingerprint: fingerprint })
-          await this.pruneCheckpoints()
-        },
-        { attempts: 3, delayMs: 1000 },
-      )
-      await this.store.patch({
-        checkpointPending: undefined,
-        checkpointAttempts: undefined,
-      })
-      return true
-    } catch (err) {
-      console.warn("checkpoint failed", err)
-      void this.count("checkpoint.failed")
-      logEvent("checkpoint.failed")
-      // Keep the failure visible and retry from the alarm instead of losing the
-      // turn's work silently.
-      await this.store.patch({ checkpointPending: true })
-      await this.ctx.storage.setAlarm(Date.now() + CHECKPOINT_RETRY_MS)
-      return false
-    }
+    return withSpan("conversation.checkpoint", async (span) => {
+      const key = `${this.checkpointPrefix()}${Date.now()}.tar.gz`
+      try {
+        await withRetries(
+          async () => {
+            const state = await this.store.get()
+            const since = state.checkpointFingerprint ?? ""
+            const control = await this.port(CONTROL_PORT)
+            const response = await control.fetch(
+              `http://container/checkpoint?since=${encodeURIComponent(since)}`,
+              { signal: AbortSignal.timeout(120_000) },
+            )
+            if (response.status === 204) {
+              void this.count("checkpoint.skipped")
+              logEvent("checkpoint.skipped")
+              return
+            }
+            if (!response.ok || !response.body) throw new Error(`checkpoint returned ${response.status}`)
+            // From here on a failure is a failed upload, not a paused server.
+            const length = Number(response.headers.get("content-length"))
+            if (Number.isFinite(length) && length > 0) {
+              // R2 needs a stream of known length; the control server sends one.
+              const counted = countedStream(response.body)
+              const fixed = new FixedLengthStream(length)
+              const piping = counted.stream.pipeTo(fixed.writable).catch(() => {})
+              await this.env.CHECKPOINTS.put(key, fixed.readable)
+              await piping
+              span.setAttribute("checkpoint.bytes", counted.bytes())
+              void this.count("checkpoint.saved")
+              logEvent("checkpoint.saved", { bytes: counted.bytes() })
+              await this.store.patch({ checkpointSize: counted.bytes() })
+            } else {
+              // Older control servers streamed without a length.
+              const bytes = await response.arrayBuffer()
+              await this.env.CHECKPOINTS.put(key, bytes)
+              span.setAttribute("checkpoint.bytes", bytes.byteLength)
+              void this.count("checkpoint.saved")
+              logEvent("checkpoint.saved", { bytes: bytes.byteLength })
+              await this.store.patch({ checkpointSize: bytes.byteLength })
+            }
+            const fingerprint = response.headers.get("x-workspace-fingerprint")
+            if (fingerprint) await this.store.patch({ checkpointFingerprint: fingerprint })
+            await this.pruneCheckpoints()
+          },
+          { attempts: 3, delayMs: 1000 },
+        )
+        await this.store.patch({
+          checkpointPending: undefined,
+          checkpointAttempts: undefined,
+        })
+        return true
+      } catch (err) {
+        span.recordException(err as Error)
+        console.warn("checkpoint failed", err)
+        void this.count("checkpoint.failed")
+        logEvent("checkpoint.failed")
+        // Keep the failure visible and retry from the alarm instead of losing the
+        // turn's work silently.
+        await this.store.patch({ checkpointPending: true })
+        await this.ctx.storage.setAlarm(Date.now() + CHECKPOINT_RETRY_MS)
+        return false
+      }
+    })
   }
 
   /** Drop the cached port so the next call re-checks and restarts OpenCode. */

@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers"
 import { defaultSettings, validateSettings, type HarnessSettings, type OnboardingState } from "./settings"
 import { accountVault, workspaceID } from "./vault"
 import { evaluateAlerts } from "./alerts"
+import { decideLease } from "./leases"
 import type { Env } from "./env"
 import type { VaultKeyValueStorage } from "@chester-hill-solutions/vault/core"
 
@@ -10,6 +11,9 @@ const OAUTH_STATE_TTL_MS = 10 * 60_000
 /** How long a conversation's container lease lasts without a heartbeat. */
 const LEASE_TTL_MS = 10 * 60_000
 const LEASE_PREFIX = "lease:"
+/** Days of per-day counters, alerts and usage ledger entries to keep. */
+const RETENTION_DAYS = 30
+const DAY_PREFIXES = ["metric:", "alert:", "alertMark:", "usage:"]
 
 /** Singleton Durable Object holding the harness-wide settings and secrets. */
 export class Settings extends DurableObject<Env> {
@@ -130,6 +134,7 @@ export class Settings extends DurableObject<Env> {
       const stored = await this.ctx.storage.list<number>({ prefix })
       for (const [key, value] of stored) marks[key.slice(prefix.length)] = value
 
+      const pruned = await this.prune()
       const alerts = evaluateAlerts({
         metrics: body.metrics ?? {},
         spendUSD: Number(body.spendUSD ?? 0) || 0,
@@ -141,7 +146,7 @@ export class Settings extends DurableObject<Env> {
         await this.ctx.storage.put(`alertMark:${date}:${alert.name}`, alert.value)
         await this.ctx.storage.put(`alert:${date}:${alert.name}`, { ...alert, at: Date.now() })
       }
-      return Response.json({ date, alerts })
+      return Response.json({ date, alerts, pruned })
     }
 
     if (url.pathname === "/alerts" && request.method === "GET") {
@@ -289,18 +294,59 @@ export class Settings extends DurableObject<Env> {
       6 * 60 * 60_000,
     )
     const active = await this.activeLeases()
+    const decision = decideLease({ leases: active, id, now: Date.now(), ttlMs: ttl, cap })
+    if (!decision.grant) {
+      return Response.json(
+        { ok: false, cap, active: decision.active, retryAt: decision.retryAt },
+        { status: 429 },
+      )
+    }
+    await this.ctx.storage.put(`${LEASE_PREFIX}${id}`, decision.expiresAt)
+    return Response.json({ ok: true, cap, active: decision.active })
+  }
+
+  /**
+   * Drop per-day counters, alerts and usage entries older than the retention
+   * window, and registry entries that have not been touched. Runs with the
+   * alert check (every 15 minutes), so storage stops growing forever.
+   */
+  private async prune(): Promise<number> {
     const now = Date.now()
-    const held = active.find((lease) => lease.id === id)
-    if (held) {
-      await this.ctx.storage.put(`${LEASE_PREFIX}${id}`, now + ttl)
-      return Response.json({ ok: true, cap, active: active.length })
+    const cutoffMs = now - RETENTION_DAYS * 86_400_000
+    const cutoffDate = new Date(cutoffMs).toISOString().slice(0, 10)
+    let removed = 0
+
+    for (const prefix of DAY_PREFIXES) {
+      const entries = await this.ctx.storage.list({ prefix })
+      for (const key of entries.keys()) {
+        const day = key.slice(prefix.length, prefix.length + 10)
+        if (/^\d{4}-\d{2}-\d{2}$/.test(day) && day < cutoffDate) {
+          await this.ctx.storage.delete(key)
+          removed++
+        }
+      }
     }
-    if (active.length >= cap) {
-      const retryAt = Math.min(...active.map((lease) => lease.expiresAt))
-      return Response.json({ ok: false, cap, retryAt }, { status: 429 })
+
+    const registry = await this.ctx.storage.list<{ lastSeenAt?: number }>({
+      prefix: "conversation:",
+    })
+    for (const [key, value] of registry) {
+      if ((value?.lastSeenAt ?? 0) < cutoffMs) {
+        await this.ctx.storage.delete(key)
+        removed++
+      }
     }
-    await this.ctx.storage.put(`${LEASE_PREFIX}${id}`, now + ttl)
-    return Response.json({ ok: true, cap, active: active.length + 1 })
+
+    // OAuth state values are short-lived and are deleted on use.
+    const oauth = await this.ctx.storage.list<number>({ prefix: "oauth:" })
+    for (const [key, expiresAt] of oauth) {
+      if (typeof expiresAt === "number" && expiresAt < now) {
+        await this.ctx.storage.delete(key)
+        removed++
+      }
+    }
+
+    return removed
   }
 
   private vaultOrError() {

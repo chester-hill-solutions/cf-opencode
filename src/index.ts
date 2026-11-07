@@ -4,6 +4,7 @@ import type { MessageRequest, PermissionRequest, SlackEventRequest } from "./con
 import { ACCOUNT_STATE_KEY } from "./conversation"
 import { GITHUB_LOGIN_KEY, GITHUB_TOKEN_KEY } from "./vault"
 import type { Alert } from "./alerts"
+import { annotate, traceId } from "./telemetry"
 import { MODEL_CATALOG, recommendModel } from "./models"
 
 export { Conversation } from "./conversation"
@@ -101,6 +102,22 @@ export default {
   },
 }
 
+/**
+ * Conversation DO handle that carries the key with every call. Durable Objects
+ * cannot look up their own name, and the DO needs it to exempt admin traffic
+ * from the container cap.
+ */
+function conversationStub(env: Env, key: string) {
+  const stub = env.CONVERSATION.getByName(key)
+  return {
+    fetch: (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers)
+      headers.set("x-conversation-key", key)
+      return stub.fetch(input, { ...init, headers })
+    },
+  }
+}
+
 /** HTTP/SSE adapter: any client can drive a conversation. */
 async function handleApi(
   request: Request,
@@ -148,6 +165,10 @@ async function handleApi(
     return settingsDo(env, "/alerts")
   }
 
+  if (parts[1] === "alerts" && request.method === "DELETE") {
+    return settingsDo(env, `/alerts${url.search}`, undefined, "DELETE")
+  }
+
   if (parts[1] === "models" && request.method === "GET") {
     return Response.json({ models: MODEL_CATALOG, recommended: recommendModel().ref })
   }
@@ -172,9 +193,10 @@ async function handleApi(
   }
   const key = decodeURIComponent(parts[2])
   if (!KEY_PATTERN.test(key)) return Response.json({ error: "invalid conversation key" }, { status: 400 })
+  annotate({ "conversation.key": key, "http.route": `/api/conversations/{key}/${suffixLabel(parts)}` })
   ctx.waitUntil(settingsDo(env, "/conversations", { key }).catch(() => undefined))
 
-  const conversation = env.CONVERSATION.getByName(key)
+  const conversation = conversationStub(env, key)
   const suffix = parts.slice(3)
 
   if (request.method === "POST" && suffix.length === 1 && suffix[0] === "messages") {
@@ -255,9 +277,14 @@ const GITHUB_USER_URL = "https://api.github.com/user"
 /** The conversation DO whose container performs provider onboarding. */
 const ONBOARDING_KEY = "onboarding"
 
-async function settingsDo(env: Env, path: string, body?: unknown): Promise<Response> {
+async function settingsDo(
+  env: Env,
+  path: string,
+  body?: unknown,
+  method?: string,
+): Promise<Response> {
   return env.SETTINGS.getByName("global").fetch(`https://settings${path}`, {
-    method: body === undefined ? "GET" : "POST",
+    method: method ?? (body === undefined ? "GET" : "POST"),
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   })
 }
@@ -303,7 +330,7 @@ async function handleOnboarding(
   if (section === "opencode") {
     const path = "/" + parts.slice(3).join("/")
     if (!path || path === "/") return Response.json({ error: "not found" }, { status: 404 })
-    const conversation = env.CONVERSATION.getByName(ONBOARDING_KEY)
+    const conversation = conversationStub(env, ONBOARDING_KEY)
     const body =
       request.method === "GET" || request.method === "HEAD" ? undefined : await request.text()
     const res = await conversation.fetch(`https://conversation/onboarding${path}`, {
@@ -314,7 +341,7 @@ async function handleOnboarding(
   }
 
   if (section === "reset" && request.method === "POST") {
-    const conversation = env.CONVERSATION.getByName(ONBOARDING_KEY)
+    const conversation = conversationStub(env, ONBOARDING_KEY)
     const res = await conversation.fetch("https://conversation/reset", { method: "POST" })
     return new Response(res.body, { status: res.status, headers: res.headers })
   }
@@ -349,7 +376,7 @@ async function handleOnboarding(
   if (section === "finish" && request.method === "POST") {
     let snapshot = false
     try {
-      const conversation = env.CONVERSATION.getByName(ONBOARDING_KEY)
+      const conversation = conversationStub(env, ONBOARDING_KEY)
       const res = await conversation.fetch("https://conversation/onboarding/state-checkpoint")
       if (res.ok) {
         const bytes = await res.arrayBuffer()
@@ -481,6 +508,13 @@ function detail(error: unknown): string {
 }
 
 /** Deep health: configuration and bindings, without starting a container. */
+/** Route shape for span attributes, e.g. `messages` or `debug/messages`. */
+function suffixLabel(parts: string[]): string {
+  const suffix = parts.slice(3)
+  if (suffix.length === 0) return "state"
+  return suffix.map((part, index) => (index === 0 ? part : "{value}")).join("/")
+}
+
 async function healthCheck(env: Env): Promise<Response> {
   const checks: Record<string, { ok: boolean; detail?: string }> = {
     apiToken: { ok: Boolean(env.API_TOKEN) },
@@ -513,5 +547,6 @@ async function healthCheck(env: Env): Promise<Response> {
   }
 
   const ok = checks.apiToken.ok && checks.checkpoints.ok && checks.settings.ok
-  return Response.json({ ok, checks }, { status: ok ? 200 : 503 })
+  const trace = traceId()
+  return Response.json({ ok, checks, ...(trace ? { traceId: trace } : {}) }, { status: ok ? 200 : 503 })
 }

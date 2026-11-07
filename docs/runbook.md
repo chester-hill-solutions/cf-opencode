@@ -152,8 +152,10 @@ cannot get one returns `202 queued` with `container capacity reached` and the
 queue retries with backoff. `GET /api/leases` shows the cap and active leases,
 and `capacity.rejected` counts refusals.
 
-Leases are refreshed on every request and released on recycle/reset/delete, or
-they expire after 10 minutes.
+Leases are refreshed on every request and on every turn poll, released on
+recycle/reset/delete and when a container fails to start, or they expire after
+10 minutes. Onboarding is exempt: it never takes a slot, so `/onboarding/` works
+even when every conversation is warm.
 
 Containers stay warm for 10 minutes after a conversation goes quiet
 (`setInactivityTimeout`), so quick follow-up turns skip the cold start. Raise it
@@ -194,6 +196,35 @@ curl -H "authorization: Bearer $TOKEN" https://<worker>/api/conversations
 
 Keys are ordered by last activity. Deleting a conversation also removes its
 registry entry.
+
+## Tracing and OpenTelemetry
+
+Workers tracing is enabled in `wrangler.jsonc` (`observability.traces`, 100%
+head sampling) so every invocation, binding call, fetch and Durable Object hop
+is traced with no SDK. Custom spans mark the harness's own work:
+
+| Span | Covers |
+|---|---|
+| `container.start` | container start, with `container.start_mode` (`snapshot`/`image`) |
+| `container.snapshot` | snapshot capture, with `snapshot.bytes` |
+| `conversation.checkpoint` | archive + R2 upload, with `checkpoint.bytes` |
+| `conversation.settle` | end-of-turn delivery, with failure and duration |
+
+`GET /api/health` returns the current `traceId`, so a response can be matched to
+its trace. Traces are visible in the dashboard (7-day retention).
+
+To export to an OTLP destination (Honeycomb, Grafana Cloud, Axiom, ...), create
+the destination in the Cloudflare dashboard, then add its name:
+
+```jsonc
+"observability": {
+  "traces": { "enabled": true, "destinations": ["my-destination"], "persist": false }
+}
+```
+
+`persist: false` keeps traces only in the external destination. Note that custom
+metrics are still the harness's own (`GET /api/metrics`); Workers custom metrics
+cannot be exported over OTLP.
 
 ## Lifecycle phases
 
@@ -276,6 +307,7 @@ For a turn that failed without an obvious cause, read the raw session context:
 curl -H "authorization: Bearer $TOKEN" https://<worker>/api/conversations/<key>/debug/messages
 ```
 - DO SQLite — conversation state, event log (last 200), pending permissions, checkpoint size and retry state.
+- Settings DO — per-day metrics, alert high-water marks and history, usage ledger entries, leases and the conversation registry. Per-day keys and registry entries older than 30 days are pruned by the alert check.
 - Deleting a conversation's checkpoint is safe only when no turn is running.
 
 A checkpoint that fails is retried from the alarm up to three times (`checkpoint.retry` / `checkpoint.recovered` / `checkpoint.abandoned`). `checkpointSize` on the conversation state reports the last successful archive size.
@@ -283,7 +315,6 @@ A checkpoint that fails is retried from the alarm up to three times (`checkpoint
 ## Known limitations
 
 - Single container application on the `durable_object` scheduling policy. There is no per-application `max_instances`; account limits bound concurrency, so keep message throughput in mind.
-- Onboarding uses the same container application and therefore the same `maxContainers` cap. With every slot warm, `/onboarding/` returns `container capacity reached`; recycle or delete a conversation to free a slot.
 - Instance size is chosen at start (`standard-1`). `basic` has no exact equivalent on this policy.
 - Snapshots are a fast restore cache only: they are bound to the image they were taken from, have a 30-day TTL refreshed on restore, and are not portable across deploys. The R2 tar archive remains the source of truth.
 - `.stow` (the local S3 view) and `.state/cache` are excluded from checkpoints: files survive a restore, cached/provider state is rebuilt.
