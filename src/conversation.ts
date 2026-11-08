@@ -46,6 +46,7 @@ import {
 } from "./archive-crypto"
 import { deriveWorkspaceKey } from "@chester-hill-solutions/vault/core"
 import { plaintextArchivesAllowed } from "./archive-policy"
+import { auxAfterEvent, emptyAux, emptyUsage, sumUsage, type UsageTotals } from "./usage"
 
 /** The fields of a pending permission the harness forwards. */
 interface PermissionSummary {
@@ -1108,13 +1109,15 @@ export class Conversation extends DurableObject<Env> {
 
   /**
    * Record spend reported by OpenCode. `session.usage.updated` carries the
-   * session's cumulative totals (replace); `session.usage.recorded` describes
-   * one metered step (add). Both feed today's conversation total and ledger.
+   * session's cumulative step totals (replace). `session.usage.recorded`
+   * describes one auxiliary call (title/compaction) and is added once, deduped
+   * by event id. The ledger entry is the sum of both.
    */
   private async recordUsage(raw: string, mode: "replace" | "add"): Promise<void> {
     try {
       const parsed = JSON.parse(raw) as {
-        data?: { cost?: number; tokens?: { input?: number; output?: number } }
+        id?: string
+        data?: { cost?: number; tokens?: { input?: number; output?: number }; source?: string }
         cost?: number
         tokens?: { input?: number; output?: number }
       }
@@ -1125,32 +1128,31 @@ export class Conversation extends DurableObject<Env> {
       if (cost === 0 && input === 0 && output === 0) return
       const date = new Date().toISOString().slice(0, 10)
       const state = await this.store.get()
-      const base =
-        state.usage?.date === date ? state.usage : { date, costUSD: 0, input: 0, output: 0 }
-      const usage =
-        mode === "replace"
-          ? { date, costUSD: cost, input, output }
-          : {
-              date,
-              costUSD: base.costUSD + cost,
-              input: base.input + input,
-              output: base.output + output,
-            }
-      await this.store.patch({ usage, usageError: undefined })
-      await this.env.SETTINGS.getByName("global").fetch("https://settings/usage", {
-        method: "POST",
-        body: JSON.stringify({ conversationID: this.ctx.id.toString(), ...usage }),
-      })
+      const aux = state.usageAux?.date === date ? state.usageAux : emptyAux(date)
+
+      if (mode === "replace") {
+        const step = { date, costUSD: cost, input, output }
+        await this.store.patch({ usage: step, usageError: undefined })
+        await this.reportUsage(sumUsage(step, aux))
+        return
+      }
+
+      const nextAux = auxAfterEvent(aux, parsed.id, cost, input, output)
+      if (!nextAux) return
+      const step = state.usage?.date === date ? state.usage : emptyUsage(date)
+      await this.store.patch({ usageAux: nextAux, usageError: undefined })
+      await this.reportUsage(sumUsage(step, nextAux))
     } catch (error) {
       await this.store.patch({ usageError: errorMessage(error) }).catch(() => {})
     }
   }
 
   /**
-   * Record today's spend for this conversation from the message context. This
-   * is the streaming-independent path: it runs at settle time and writes an
-   * absolute per-conversation entry, so a retry or a later poll overwrites
-   * instead of double counting.
+   * Record today's step spend for this conversation from the message context.
+   * This is the streaming-independent path: it runs at settle time and writes
+   * an absolute per-conversation entry, so a retry or a later poll overwrites
+   * instead of double counting. Auxiliary spend is added on top so a settle
+   * does not drop title/compaction costs.
    */
   private async recordContextUsage(messages: MessageInfo[]): Promise<void> {
     const date = new Date().toISOString().slice(0, 10)
@@ -1167,8 +1169,15 @@ export class Conversation extends DurableObject<Env> {
       output += Number(message.tokens?.output ?? 0) || 0
     }
     if (costUSD === 0 && input === 0 && output === 0) return
-    const usage = { date, costUSD, input, output }
-    await this.store.patch({ usage, usageError: undefined })
+    const state = await this.store.get()
+    const step = { date, costUSD, input, output }
+    const aux = state.usageAux?.date === date ? state.usageAux : emptyAux(date)
+    await this.store.patch({ usage: step, usageError: undefined })
+    await this.reportUsage(sumUsage(step, aux))
+  }
+
+  /** Write an absolute per-conversation/day ledger entry. */
+  private async reportUsage(usage: UsageTotals): Promise<void> {
     await this.env.SETTINGS.getByName("global").fetch("https://settings/usage", {
       method: "POST",
       body: JSON.stringify({ conversationID: this.ctx.id.toString(), ...usage }),

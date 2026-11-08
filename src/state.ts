@@ -100,6 +100,8 @@ export interface ConversationState {
   lastTurnError?: string
   /** Today's spend for this conversation, as reported by OpenCode. */
   usage?: { date: string; costUSD: number; input: number; output: number }
+  /** Today's deduplicated auxiliary spend (title/compaction). */
+  usageAux?: { date: string; costUSD: number; input: number; output: number; seen: string[] }
   /** Why the last usage refresh failed, for operators. */
   usageError?: string
   /** Slack event ids already handled (dedupe). */
