@@ -84,6 +84,21 @@ curl -N https://<worker>/api/conversations/demo/events \
 Expected: `{"ok":true,"sessionID":"ses_..."}`, then `assistant` and `settled` frames. The conversation
 state should move `admitting → running → settling → idle`.
 
+If no provider is connected, `opencode/deepseek-v4.1-flash-free` works without credentials; paid
+models require a completed provider onboarding.
+
+## Verify the credential boundary
+
+Send the agent a prompt that names the harness state:
+
+```text
+Use the shell tool to run exactly: cat /var/lib/aboiteau/state/config/opencode/opencode.json >/dev/null && echo READABLE || echo BLOCKED. Then reply with only READABLE or BLOCKED. Do not do anything else.
+```
+
+`GET /api/conversations/<key>/debug/messages` must show a `shell` tool call with
+`permission.rejected` / `Permission denied: shell`, and the reply must be `BLOCKED`. A `READABLE`
+reply means the credential denials are not loaded — stop and check the container configuration.
+
 ## Onboarding
 
 First-run setup lives at `/onboarding/`. It connects a model provider, GitHub, and the workspace.
