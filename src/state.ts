@@ -50,6 +50,15 @@ export interface BudgetReservation {
   dispatched: boolean
 }
 
+export interface OperatorReconciliationMarker {
+  receiptID: string
+  reservationID: string
+  kind: "observed_actual" | "acknowledged_unknown"
+  createdAt: number
+  usageDate: string | null
+  actualCostUSD: number | null
+}
+
 export interface CheckpointPart {
   key: string
   size: number
@@ -97,6 +106,8 @@ export interface ConversationState {
   queued?: QueuedMessage
   /** Owned Settings hold for the current turn, if one has been acquired. */
   budgetReservation?: BudgetReservation
+  /** Durable local pointer to the last acknowledged operator reconciliation receipt. */
+  operatorReconciliation?: OperatorReconciliationMarker
   /** Fingerprint of the workspace at the last successful checkpoint. */
   checkpointFingerprint?: string
   /** Fingerprint of the state root at the last successful checkpoint. */
@@ -335,6 +346,33 @@ export class ConversationStore {
         return { result: false }
       }
       return { next: { ...state, budgetReservation: undefined }, result: true }
+    })
+  }
+
+  /** Compare-and-clear a dispatched hold only after its central receipt is acknowledged. */
+  async clearOperatorReconciledReservation(input: {
+    sessionID: string
+    reservationID: string
+    date: string
+    marker: OperatorReconciliationMarker
+  }): Promise<boolean> {
+    return this.transact((state) => {
+      const reservation = state.budgetReservation
+      if (state.sessionID !== input.sessionID || state.queued ||
+        !reservation || reservation.dispatched !== true ||
+        reservation.reservationID !== input.reservationID || reservation.date !== input.date) {
+        return { result: false }
+      }
+      return {
+        next: {
+          ...state,
+          phase: "idle",
+          budgetReservation: undefined,
+          settlementError: undefined,
+          operatorReconciliation: input.marker,
+        },
+        result: true,
+      }
     })
   }
 

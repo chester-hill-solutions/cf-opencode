@@ -11,6 +11,18 @@ import { evaluateAlerts } from "./alerts"
 import { decideLease } from "./leases"
 import type { Env } from "./env"
 import type { VaultKeyValueStorage } from "@chester-hill-solutions/vault/core"
+import {
+  operatorCoverageKey,
+  hashOperatorQuiescence,
+  operatorOverlapWarningKey,
+  operatorOwnerKey,
+  operatorReceiptKey,
+  operatorReconciliationDigest,
+  parseOperatorReconciliationProposal,
+  type OperatorReconciliationProposal,
+  type OperatorReconciliationReceipt,
+  type OperatorReconciliationSource,
+} from "./operator-reconciliation"
 
 /** How long a GitHub OAuth state value stays usable. */
 const OAUTH_STATE_TTL_MS = 10 * 60_000
@@ -104,6 +116,31 @@ export class Settings extends DurableObject<Env> {
       return this.applyUsageCutover({ conversationID, cutoverID, expectedSnapshotID, sessionID, throughSeq })
     }
 
+    if (url.pathname === "/usage/reconciliation" && request.method === "GET") {
+      const conversationID = url.searchParams.get("conversationID")
+      const sessionID = url.searchParams.get("sessionID")
+      const reservationID = url.searchParams.get("reservationID")
+      if (!boundedID(conversationID) || !boundedID(sessionID) || !boundedID(reservationID)) {
+        return Response.json({ error: "conversationID, sessionID, and reservationID are required" }, { status: 400 })
+      }
+      return Response.json(await this.operatorReconciliationSnapshot(conversationID, sessionID, reservationID))
+    }
+
+    if (url.pathname === "/usage/reconciliation" && request.method === "POST") {
+      let body: unknown
+      try {
+        body = await request.json()
+      } catch {
+        return Response.json({ error: "valid JSON is required" }, { status: 400 })
+      }
+      const parsed = parseOperatorReconciliationProposal(body)
+      if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 })
+      if (await hashOperatorQuiescence(parsed.value.quiescence) !== parsed.value.quiescenceDigest) {
+        return Response.json({ error: "quiescenceDigest does not match the supplied proof" }, { status: 400 })
+      }
+      return this.applyOperatorReconciliation(parsed.value)
+    }
+
     // Internal recovery route: cancel only the captured reservation identity.
     if (url.pathname === "/usage/cancel" && request.method === "POST") {
       let body: unknown
@@ -140,7 +177,7 @@ export class Settings extends DurableObject<Env> {
         return Response.json({ error: "usage report must be a JSON object" }, { status: 400 })
       }
       const body = parsedBody as Record<string, unknown>
-      const { conversationID, sessionID, sourceID, date, costUSD, input, output } = body
+      const { conversationID, sessionID, sourceID, date, costUSD, input, output, assistantMessageID } = body
       if (!boundedID(conversationID) || !validUsageDate(date)) {
         return Response.json({ error: "conversationID and a retained UTC date are required" }, { status: 400 })
       }
@@ -176,6 +213,9 @@ export class Settings extends DurableObject<Env> {
       if (!boundedID(sessionID) || !boundedID(sourceID)) {
         return Response.json({ error: "sessionID and sourceID must be bounded nonempty strings" }, { status: 400 })
       }
+      if (assistantMessageID !== undefined && !boundedID(assistantMessageID)) {
+        return Response.json({ error: "assistantMessageID must be a bounded nonempty string" }, { status: 400 })
+      }
       if (![costUSD, input, output].every(validAmount)) {
         return Response.json({ error: "costUSD, input, and output must be finite nonnegative numbers" }, { status: 400 })
       }
@@ -196,12 +236,46 @@ export class Settings extends DurableObject<Env> {
             return { covered: true as const }
           }
         }
+        const effectiveAssistantMessageID = assistantMessageID ?? previous?.assistantMessageID
+        const coverage = effectiveAssistantMessageID === undefined
+          ? undefined
+          : await this.ctx.storage.get<OperatorCoverage>(
+            operatorCoverageKey(conversationID, sessionID, effectiveAssistantMessageID),
+          )
+        if (coverage) {
+          if (coverage.date !== date) return { conflict: "coverage-date" as const }
+          if (coverage.linkedSourceID && coverage.linkedSourceID !== sourceID) {
+            return { conflict: "coverage-source" as const }
+          }
+          if (previous && previous.assistantMessageID !== effectiveAssistantMessageID) {
+            return { conflict: "coverage-identity" as const }
+          }
+        }
+        let overlapWarning = false
+        if (effectiveAssistantMessageID === undefined) {
+          const coverageEntries = await this.ctx.storage.list<OperatorCoverage>({
+            prefix: "operator-reconciliation:coverage:",
+          })
+          overlapWarning = [...coverageEntries.values()].some((entry) =>
+            entry.conversationID === conversationID && entry.sessionID === sessionID,
+          )
+        }
         const current = await this.ctx.storage.get<UsageRow>(aggregateKey)
         if (!previous && current?.sourced !== true && hasPositiveUsage(current)) {
           return { conflict: "legacy" as const }
         }
 
-        const nextSource = highWater(previous, totals)
+        const sourceTotals: UsageAmounts = coverage
+          ? {
+            costUSD: Math.max(0, totals.costUSD - coverage.costUSD),
+            input: Math.max(0, totals.input - coverage.input),
+            output: Math.max(0, totals.output - coverage.output),
+          }
+          : totals
+        if (coverage && previous && previous.assistantMessageID === undefined) {
+          return { conflict: "coverage-identity" as const }
+        }
+        const nextSource = highWater(previous, sourceTotals)
         const delta = {
           costUSD: nextSource.costUSD - (previous?.costUSD ?? 0),
           input: nextSource.input - (previous?.input ?? 0),
@@ -219,9 +293,19 @@ export class Settings extends DurableObject<Env> {
         await this.ctx.storage.put(sourceKey, {
           date,
           ...nextSource,
+          sourceKind: "native",
+          ...(effectiveAssistantMessageID === undefined ? {} : { assistantMessageID: effectiveAssistantMessageID }),
+          ...(coverage ? { operatorReceiptID: coverage.receiptID } : {}),
           ...(receipt ? { cutoverID: receipt.cutoverID, seq: body.seq as number } : {}),
           updatedAt: Date.now(),
         })
+        if (coverage) {
+          await this.ctx.storage.put(operatorCoverageKey(conversationID, sessionID, effectiveAssistantMessageID as string), {
+            ...coverage,
+            linkedSourceID: sourceID,
+          })
+        }
+        if (overlapWarning) await this.ctx.storage.put(operatorOverlapWarningKey(conversationID, sessionID), true)
         await this.ctx.storage.put(aggregateKey, { ...nextAggregate, sourced: true, updatedAt: Date.now() })
         return { row: nextAggregate }
       })
@@ -231,6 +315,15 @@ export class Settings extends DurableObject<Env> {
         }
         if (result.conflict === "epoch") {
           return Response.json({ error: "usage report does not match the active cutover epoch" }, { status: 409 })
+        }
+        if (result.conflict === "coverage-date") {
+          return Response.json({ error: "native usage date conflicts with operator evidence" }, { status: 409 })
+        }
+        if (result.conflict === "coverage-source") {
+          return Response.json({ error: "assistant usage is already linked to a different native source" }, { status: 409 })
+        }
+        if (result.conflict === "coverage-identity") {
+          return Response.json({ error: "native usage identity conflicts with operator evidence" }, { status: 409 })
         }
         const error = result.conflict === "date"
           ? "sourceID was already recorded for a different date"
@@ -396,43 +489,44 @@ export class Settings extends DurableObject<Env> {
     }
 
     if (url.pathname === "/usage/today" && request.method === "GET") {
-      const date = new Date().toISOString().slice(0, 10)
+      const currentBasis = await this.currentBudgetBasis()
+      const date = currentBasis.date
       const entries = await this.ctx.storage.list<{
         costUSD?: number; reserved?: boolean; input?: number; output?: number; legacyOpening?: UsageAmounts
       }>({
         prefix: `usage:${date}:`,
       })
-      const newHolds = await this.ctx.storage.list<{ costUSD?: number }>({ prefix: "reservation:" })
-      const allUsage = await this.ctx.storage.list<{ costUSD?: number }>({ prefix: "usage:" })
-      let costUSD = 0
-      let reservedUSD = 0
+      const operatorReceipts = await this.ctx.storage.list<OperatorReconciliationReceipt>({
+        prefix: "operator-reconciliation:receipt:",
+      })
+      const operatorWarnings = await this.ctx.storage.list<boolean>({
+        prefix: "operator-reconciliation:overlap:",
+      })
       let input = 0
       let output = 0
       const conversations = new Set<string>()
       let historicalUsageUnreconciled = false
       for (const [key, entry] of entries) {
         if (legacyReservationOwner(key) !== undefined || entry.reserved === true) continue
-        costUSD += finiteAmount(entry.costUSD)
         input += finiteAmount(entry.input)
         output += finiteAmount(entry.output)
         if (entry.legacyOpening !== undefined) historicalUsageUnreconciled = true
         conversations.add(key.slice(`usage:${date}:`.length))
       }
-      for (const entry of newHolds.values()) reservedUSD += finiteAmount(entry.costUSD)
-      for (const [key, entry] of allUsage) {
-        if (legacyReservationOwner(key) !== undefined) {
-          reservedUSD += finiteAmount(entry.costUSD)
-        }
-      }
+      const unknownReconciliationCount = [...operatorReceipts.values()].filter(
+        (receipt) => receipt.kind === "acknowledged_unknown",
+      ).length
+      if (unknownReconciliationCount > 0 || operatorWarnings.size > 0) historicalUsageUnreconciled = true
       return Response.json({
         date,
-        costUSD,
-        reservedUSD,
-        admittedUSD: costUSD + reservedUSD,
+        costUSD: currentBasis.actualUSD,
+        reservedUSD: currentBasis.reservedUSD,
+        admittedUSD: currentBasis.admittedUSD,
         input,
         output,
         conversations: conversations.size,
         historicalUsageUnreconciled,
+        unknownReconciliationCount,
       })
     }
 
@@ -635,6 +729,45 @@ export class Settings extends DurableObject<Env> {
     return active
   }
 
+  /** Shared, read-only current UTC-day budget basis used by usage and review views. */
+  private async currentBudgetBasis(): Promise<CurrentBudgetBasis> {
+    const date = new Date().toISOString().slice(0, 10)
+    const [dayEntries, allUsage, reservations, settings] = await Promise.all([
+      this.ctx.storage.list<UsageRow>({ prefix: `usage:${date}:` }),
+      this.ctx.storage.list<UsageRow>({ prefix: "usage:" }),
+      this.ctx.storage.list<ReservationHold>({ prefix: "reservation:" }),
+      this.current(),
+    ])
+    const blockers: string[] = []
+    let actualUSD = 0
+    let reservedUSD = 0
+    for (const [key, entry] of dayEntries) {
+      if (legacyReservationOwner(key) !== undefined || entry.reserved === true) continue
+      if (entry.costUSD !== undefined && !validAmount(entry.costUSD)) blockers.push("malformed_current_day_usage")
+      actualUSD += finiteAmount(entry.costUSD)
+    }
+    for (const [key, entry] of allUsage) {
+      if (legacyReservationOwner(key) === undefined) continue
+      if (entry.costUSD !== undefined && !validAmount(entry.costUSD)) blockers.push("malformed_current_budget_hold")
+      reservedUSD += finiteAmount(entry.costUSD)
+    }
+    for (const entry of reservations.values()) {
+      if (entry.costUSD !== undefined && !validAmount(entry.costUSD)) blockers.push("malformed_current_budget_hold")
+      reservedUSD += finiteAmount(entry.costUSD)
+    }
+    const budgetUSD = settings.dailyBudgetUSD
+    const admittedUSD = actualUSD + reservedUSD
+    return {
+      date,
+      actualUSD,
+      reservedUSD,
+      budgetUSD,
+      admittedUSD,
+      remainingUSD: budgetUSD > 0 ? Math.max(0, budgetUSD - admittedUSD) : null,
+      blockers: [...new Set(blockers)].sort(),
+    }
+  }
+
   /**
    * Grant or refresh a container lease. Returns 429 with the earliest expiry
    * when the cap is full, so the caller can queue and retry.
@@ -656,6 +789,286 @@ export class Settings extends DurableObject<Env> {
     }
     await this.ctx.storage.put(`${LEASE_PREFIX}${id}`, decision.expiresAt)
     return Response.json({ ok: true, cap, active: decision.active })
+  }
+
+  /** Read-only central authority snapshot for one held reservation and session. */
+  private async operatorReconciliationSnapshot(
+    conversationID: string,
+    sessionID: string,
+    reservationID: string,
+  ): Promise<OperatorReconciliationSnapshot> {
+    const ledger = await this.usageCutoverSnapshot(conversationID, reservationID)
+    const hold = await this.ctx.storage.get<ReservationHold>(`reservation:${conversationID}`)
+    const ownerReceiptID = await this.ctx.storage.get<string>(operatorOwnerKey(conversationID, reservationID))
+    const receipt = ownerReceiptID
+      ? await this.ctx.storage.get<OperatorReconciliationReceipt>(operatorReceiptKey(ownerReceiptID))
+      : undefined
+
+    const sources: OperatorReconciliationSource[] = []
+    const sourceBlockers: string[] = []
+    const sourceEntries = await this.ctx.storage.list<UsageSource>({ prefix: "usage-source:" })
+    for (const [key, source] of sourceEntries) {
+      let identity: unknown
+      try {
+        identity = JSON.parse(key.slice("usage-source:".length))
+      } catch {
+        sourceBlockers.push("malformed_source_inventory")
+        continue
+      }
+      if (!Array.isArray(identity) || identity.length !== 3 ||
+        !identity.every((part) => typeof part === "string")) {
+        sourceBlockers.push("malformed_source_inventory")
+        continue
+      }
+      const [owner, sourceSessionID, sourceID] = identity as [string, string, string]
+      if (owner !== conversationID || sourceSessionID !== sessionID) continue
+      if (!boundedID(sourceID) || !validStoredDate(source?.date) ||
+        ![source?.costUSD, source?.input, source?.output].every(validAmount) ||
+        (source.assistantMessageID !== undefined && !boundedID(source.assistantMessageID)) ||
+        (source.sourceKind !== undefined && source.sourceKind !== "native" && source.sourceKind !== "operator_observed") ||
+        (source.operatorReceiptID !== undefined && !boundedID(source.operatorReceiptID))) {
+        sourceBlockers.push("malformed_source_inventory")
+        continue
+      }
+      sources.push({
+        sourceID,
+        date: source.date,
+        costUSD: source.costUSD,
+        input: source.input,
+        output: source.output,
+        ...(source.assistantMessageID ? { assistantMessageID: source.assistantMessageID } : {}),
+        ...(source.sourceKind ? { sourceKind: source.sourceKind } : {}),
+        ...(source.operatorReceiptID ? { operatorReceiptID: source.operatorReceiptID } : {}),
+      })
+    }
+    sources.sort((a, b) => a.date.localeCompare(b.date) || a.sourceID.localeCompare(b.sourceID))
+
+    const originDate = validStoredDate(hold?.date) ? hold.date : null
+    let dayActualUSD = 0
+    let dayReservedUSD = 0
+    const basisBlockers: string[] = []
+    if (originDate) {
+      const dayEntries = await this.ctx.storage.list<UsageRow>({ prefix: `usage:${originDate}:` })
+      for (const [key, row] of dayEntries) {
+        const legacyOwner = legacyReservationOwner(key)
+        if (legacyOwner !== undefined || row?.reserved === true) {
+          if (legacyOwner !== undefined) {
+            if (row?.costUSD !== undefined && !validAmount(row.costUSD)) basisBlockers.push("malformed_projected_day_hold")
+            dayReservedUSD += finiteAmount(row?.costUSD)
+          }
+          continue
+        }
+        if ([row?.costUSD, row?.input, row?.output].some((amount) => amount !== undefined && !validAmount(amount))) {
+          basisBlockers.push("malformed_projected_day_usage")
+        }
+        dayActualUSD += finiteAmount(row?.costUSD)
+      }
+      const holds = await this.ctx.storage.list<ReservationHold>({ prefix: "reservation:" })
+      for (const entry of holds.values()) {
+        if (entry.date === originDate) {
+          if (entry.costUSD !== undefined && !validAmount(entry.costUSD)) basisBlockers.push("malformed_projected_day_hold")
+          dayReservedUSD += finiteAmount(entry.costUSD)
+        }
+      }
+    }
+    const projectedDayBasis = {
+      basis: "historical_origin_date_attribution" as const,
+      date: originDate,
+      actualUSD: dayActualUSD,
+      reservedUSD: dayReservedUSD,
+      attributedUSD: dayActualUSD + dayReservedUSD,
+    }
+    const currentBudgetBasis = await this.currentBudgetBasis()
+    basisBlockers.push(...currentBudgetBasis.blockers)
+
+    const blockers = [...ledger.blockers.flatMap((blocker) => blocker.invalidFields.map((field) =>
+      `malformed_ledger:${blocker.date}:${field}`,
+    )), ...sourceBlockers, ...basisBlockers]
+    const observedActualBlockers: string[] = []
+    if (sources.some((source) => hasPositiveUsage(source))) observedActualBlockers.push("existing_positive_session_source")
+    for (const row of ledger.rows) {
+      if (row.sourced !== true && hasPositiveUsage(row)) {
+        observedActualBlockers.push(`uncorrelated_legacy_usage:${row.date}`)
+      }
+    }
+    if (!hold || hold.conversationID !== conversationID || hold.reservationID !== reservationID ||
+      !validStoredDate(hold.date) || !validAmount(hold.costUSD)) blockers.push("matching_reservation_missing_or_malformed")
+    if (originDate && !validUsageDate(originDate)) blockers.push("reservation_date_outside_retention")
+    if (ledger.holds.length !== 1 || ledger.holds[0]?.kind !== "reservation" ||
+      ledger.holds[0]?.reservationID !== reservationID) blockers.push("additional_or_legacy_holds_present")
+    if (ledger.receipt) blockers.push("existing_cutover_epoch")
+    if (receipt && (receipt.conversationID !== conversationID || receipt.sessionID !== sessionID ||
+      receipt.reservationID !== reservationID)) blockers.push("existing_receipt_owner_mismatch")
+
+    const canonical = JSON.stringify({
+      conversationID,
+      sessionID,
+      reservationID,
+      ledgerSnapshotID: ledger.snapshotID,
+      hold: hold ?? null,
+      sources,
+      sourceBlockers: [...new Set(sourceBlockers)].sort(),
+      basisBlockers: [...new Set(basisBlockers)].sort(),
+      projectedDayBasis,
+      currentBudgetBasis,
+      existingReceipt: receipt ?? null,
+      ownerReceiptID: ownerReceiptID ?? null,
+      blockers: [...new Set(blockers)].sort(),
+      observedActualBlockers,
+    })
+    const snapshotID = await sha256(canonical)
+    return {
+      conversationID,
+      sessionID,
+      reservationID,
+      originDate,
+      snapshotID,
+      hold: hold ?? null,
+      sessionSources: sources,
+      ledgerRows: ledger.rows,
+      projectedDayBasis,
+      currentBudgetBasis,
+      existingReceipt: receipt ?? null,
+      blockers: [...new Set(blockers)].sort(),
+      observedActualBlockers,
+    }
+  }
+
+  /** Atomically import one measured turn or acknowledge an unknown amount, then retire its exact hold. */
+  private async applyOperatorReconciliation(proposal: OperatorReconciliationProposal): Promise<Response> {
+    const requestDigest = await operatorReconciliationDigest(proposal)
+    const result = await this.ctx.storage.transaction(async () => {
+      const receiptKey = operatorReceiptKey(proposal.receiptID)
+      const existingReceipt = await this.ctx.storage.get<OperatorReconciliationReceipt>(receiptKey)
+      if (existingReceipt) {
+        if (existingReceipt.requestDigest === requestDigest &&
+          existingReceipt.conversationID === proposal.conversationID &&
+          existingReceipt.reservationID === proposal.reservationID) return { receipt: existingReceipt, replayed: true }
+        return { conflict: "receipt-id" as const }
+      }
+      const ownerKey = operatorOwnerKey(proposal.conversationID, proposal.reservationID)
+      const existingOwnerID = await this.ctx.storage.get<string>(ownerKey)
+      if (existingOwnerID) {
+        const ownerReceipt = await this.ctx.storage.get<OperatorReconciliationReceipt>(operatorReceiptKey(existingOwnerID))
+        if (ownerReceipt?.requestDigest === requestDigest && ownerReceipt.receiptID === proposal.receiptID) {
+          return { receipt: ownerReceipt, replayed: true }
+        }
+        return { conflict: "owner-receipt" as const }
+      }
+
+      const snapshot = await this.operatorReconciliationSnapshot(
+        proposal.conversationID,
+        proposal.sessionID,
+        proposal.reservationID,
+      )
+      if (snapshot.snapshotID !== proposal.expectedLedgerSnapshotID) return { conflict: "snapshot" as const }
+      if (snapshot.blockers.length > 0) return { conflict: "blocked" as const, blockers: snapshot.blockers }
+      if (snapshot.originDate !== proposal.originDate) return { conflict: "date" as const }
+      if (proposal.kind === "observed_actual") {
+        if (snapshot.observedActualBlockers.length > 0) {
+          return { conflict: "session-source" as const, blockers: snapshot.observedActualBlockers }
+        }
+        if (!proposal.usageDate || !validUsageDate(proposal.usageDate)) return { conflict: "usage-date" as const }
+      }
+
+      const holdKey = `reservation:${proposal.conversationID}`
+      const hold = await this.ctx.storage.get<ReservationHold>(holdKey)
+      if (!hold || hold.conversationID !== proposal.conversationID ||
+        hold.reservationID !== proposal.reservationID || hold.date !== proposal.originDate ||
+        !validAmount(hold.costUSD)) return { conflict: "hold-owner" as const }
+      const retirementKey = retiredReservationKey(proposal.conversationID, proposal.reservationID)
+      const priorRetirement = await this.ctx.storage.get<ReservationRetirement>(retirementKey)
+      if (priorRetirement) return { conflict: "retired" as const }
+
+      const receipt: OperatorReconciliationReceipt = {
+        ...proposal,
+        requestDigest,
+        createdAt: Date.now(),
+      }
+      if (proposal.kind === "observed_actual") {
+        const usageDate = proposal.usageDate as string
+        const aggregateKey = `usage:${usageDate}:${proposal.conversationID}`
+        const aggregate = await this.ctx.storage.get<UsageRow>(aggregateKey)
+        if (aggregate?.reserved === true) return { conflict: "legacy-source" as const }
+        const sourceID = `operator-reconciliation:${proposal.receiptID}`
+        const sourceKey = `usage-source:${JSON.stringify([proposal.conversationID, proposal.sessionID, sourceID])}`
+        if (await this.ctx.storage.get<UsageSource>(sourceKey)) return { conflict: "source-exists" as const }
+        const coverageKey = operatorCoverageKey(
+          proposal.conversationID,
+          proposal.sessionID,
+          proposal.assistantMessageID as string,
+        )
+        if (await this.ctx.storage.get<OperatorCoverage>(coverageKey)) return { conflict: "coverage-exists" as const }
+        const next = {
+          ...aggregate,
+          costUSD: (aggregate?.costUSD ?? 0) + (proposal.actualCostUSD as number),
+          input: (aggregate?.input ?? 0) + (proposal.input as number),
+          output: (aggregate?.output ?? 0) + (proposal.output as number),
+        }
+        if (![next.costUSD, next.input, next.output].every(Number.isFinite)) return { conflict: "overflow" as const }
+        const legacyOpening = aggregate?.sourced === true
+          ? aggregate.legacyOpening
+          : hasPositiveUsage(aggregate) ? {
+            costUSD: aggregate?.costUSD ?? 0,
+            input: aggregate?.input ?? 0,
+            output: aggregate?.output ?? 0,
+          } : aggregate?.legacyOpening
+        await this.ctx.storage.put(aggregateKey, {
+          ...next,
+          sourced: true,
+          ...(legacyOpening ? { legacyOpening } : {}),
+          updatedAt: Date.now(),
+        })
+        await this.ctx.storage.put(sourceKey, {
+          date: usageDate,
+          costUSD: proposal.actualCostUSD,
+          input: proposal.input,
+          output: proposal.output,
+          assistantMessageID: proposal.assistantMessageID as string,
+          sourceKind: "operator_observed",
+          operatorReceiptID: proposal.receiptID,
+          updatedAt: Date.now(),
+        })
+        await this.ctx.storage.put(coverageKey, {
+          receiptID: proposal.receiptID,
+          conversationID: proposal.conversationID,
+          sessionID: proposal.sessionID,
+          assistantMessageID: proposal.assistantMessageID as string,
+          date: usageDate,
+          costUSD: proposal.actualCostUSD as number,
+          input: proposal.input as number,
+          output: proposal.output as number,
+        } satisfies OperatorCoverage)
+      }
+
+      const retirement: ReservationRetirement = {
+        conversationID: proposal.conversationID,
+        reservationID: proposal.reservationID,
+        date: proposal.originDate,
+        reason: "released",
+        retiredAt: Date.now(),
+        released: true,
+        operatorReceiptID: proposal.receiptID,
+      }
+      await this.ctx.storage.delete(holdKey)
+      await this.ctx.storage.put(retirementKey, retirement)
+      await this.ctx.storage.put(receiptKey, receipt)
+      await this.ctx.storage.put(ownerKey, proposal.receiptID)
+      return { receipt, retirement, replayed: false }
+    })
+    if ("conflict" in result) {
+      const status = result.conflict === "overflow" ? 400 : 409
+      return Response.json({
+        error: `operator reconciliation conflict: ${result.conflict}`,
+        ...(result.conflict === "blocked" || result.conflict === "session-source" ? { blockers: result.blockers } : {}),
+      }, { status })
+    }
+    return Response.json({
+      ok: true,
+      replayed: result.replayed,
+      receipt: result.receipt,
+      ...(result.retirement ? { retirement: result.retirement } : {}),
+    })
   }
 
   /** Preview the exact retained ledger and hold references bound by cutover. */
@@ -999,7 +1412,56 @@ type UsageRow = UsageAmounts & {
   date?: string
   conversationID?: string
 }
-type UsageSource = UsageAmounts & { date: string; updatedAt?: number; cutoverID?: string; seq?: number }
+type UsageSource = UsageAmounts & {
+  date: string
+  updatedAt?: number
+  cutoverID?: string
+  seq?: number
+  assistantMessageID?: string
+  sourceKind?: "native" | "operator_observed"
+  operatorReceiptID?: string
+}
+type OperatorCoverage = {
+  receiptID: string
+  conversationID: string
+  sessionID: string
+  assistantMessageID: string
+  date: string
+  costUSD: number
+  input: number
+  output: number
+  linkedSourceID?: string
+}
+type OperatorReconciliationSnapshot = {
+  conversationID: string
+  sessionID: string
+  reservationID: string
+  originDate: string | null
+  snapshotID: string
+  hold: ReservationHold | null
+  sessionSources: OperatorReconciliationSource[]
+  ledgerRows: UsageCutoverRow[]
+  projectedDayBasis: {
+    basis: "historical_origin_date_attribution"
+    date: string | null
+    actualUSD: number
+    reservedUSD: number
+    attributedUSD: number
+  }
+  currentBudgetBasis: CurrentBudgetBasis
+  existingReceipt: OperatorReconciliationReceipt | null
+  blockers: string[]
+  observedActualBlockers: string[]
+}
+type CurrentBudgetBasis = {
+  date: string
+  actualUSD: number
+  reservedUSD: number
+  budgetUSD: number
+  admittedUSD: number
+  remainingUSD: number | null
+  blockers: string[]
+}
 type UsageOpeningBalance = UsageAmounts & { date: string }
 type UsageCutoverReceipt = {
   cutoverID: string
@@ -1053,6 +1515,7 @@ type ReservationRetirement = {
   reason: "released" | "cancelled_before_dispatch"
   retiredAt: number
   released: boolean
+  operatorReceiptID?: string
 }
 
 function validAmount(value: unknown): value is number {

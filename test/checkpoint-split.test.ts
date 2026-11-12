@@ -152,29 +152,39 @@ async function send(instance: any, text: string) {
 describe("split checkpoints", () => {
   it("prunes exact checkpoint basenames across pages while retaining active old parts", async () => {
     const stub = env.CONVERSATION.getByName("C1:split-prune-pages")
-    const keys = await runInDurableObject(stub, async (instance, state) => {
-      const prefix = `workspaces/${state.id.toString()}/`
-      const workspaces = Array.from({ length: 7 }, (_, i) => `${prefix}workspace-${100 + i}.tar.gz`)
-      const states = Array.from({ length: 7 }, (_, i) => `${prefix}state-${100 + i}.tar.gz`)
-      for (const key of [...workspaces, ...states]) await env.CHECKPOINTS.put(key, "part")
-      // Force a second R2 list page and ensure unfamiliar keys survive.
-      const unknown = `${prefix}backup-workspace-101.tar.gz`
-      await env.CHECKPOINTS.put(unknown, "unknown")
-      for (let i = 0; i < 1100; i += 25) {
-        await Promise.all(Array.from({ length: Math.min(25, 1100 - i) }, (_, offset) =>
-          env.CHECKPOINTS.put(`${prefix}foreign-${String(i + offset).padStart(4, "0")}`, "foreign"),
-        ))
-      }
-      await state.storage.put("state", {
-        checkpointManifest: {
-          workspace: { key: workspaces[0]!, size: 1, encrypted: false },
-          state: { key: states[0]!, size: 1, encrypted: false },
-          createdAt: 100,
-        },
-      })
-      await (instance as unknown as { pruneCheckpoints(): Promise<void> }).pruneCheckpoints()
-      return { prefix, workspaces, states, unknown }
+    const list = env.CHECKPOINTS.list.bind(env.CHECKPOINTS)
+    let prunePageCount = 0
+    const listSpy = vi.spyOn(env.CHECKPOINTS, "list").mockImplementation((options) => {
+      prunePageCount++
+      return list({ ...options, limit: Math.min(options?.limit ?? 1000, 5) })
     })
+    let keys: { prefix: string; workspaces: string[]; states: string[]; unknown: string }
+    try {
+      keys = await runInDurableObject(stub, async (instance, state) => {
+        const prefix = `workspaces/${state.id.toString()}/`
+        const workspaces = Array.from({ length: 7 }, (_, i) => `${prefix}workspace-${100 + i}.tar.gz`)
+        const states = Array.from({ length: 7 }, (_, i) => `${prefix}state-${100 + i}.tar.gz`)
+        for (const key of [...workspaces, ...states]) await env.CHECKPOINTS.put(key, "part")
+        // A small real R2 page size forces pagination without a thousand writes.
+        const unknown = `${prefix}backup-workspace-101.tar.gz`
+        await env.CHECKPOINTS.put(unknown, "unknown")
+        for (let i = 0; i < 11; i++) {
+          await env.CHECKPOINTS.put(`${prefix}foreign-${String(i).padStart(4, "0")}`, "foreign")
+        }
+        await state.storage.put("state", {
+          checkpointManifest: {
+            workspace: { key: workspaces[0]!, size: 1, encrypted: false },
+            state: { key: states[0]!, size: 1, encrypted: false },
+            createdAt: 100,
+          },
+        })
+        await (instance as unknown as { pruneCheckpoints(): Promise<void> }).pruneCheckpoints()
+        return { prefix, workspaces, states, unknown }
+      })
+    } finally {
+      listSpy.mockRestore()
+    }
+    expect(prunePageCount).toBeGreaterThan(1)
 
     const all = await runInDurableObject(stub, async (_instance, state) => {
       const prefix = `workspaces/${state.id.toString()}/`
@@ -194,7 +204,7 @@ describe("split checkpoints", () => {
       keys.states[0], ...keys.states.slice(2),
     ])
     expect(all).toContain(keys.unknown)
-    expect(all).toHaveLength(1100 + 1 + 12)
+    expect(all).toHaveLength(11 + 1 + 12)
   })
 
   it("retains the recorded legacy checkpoint alongside the newest five workspaces", async () => {

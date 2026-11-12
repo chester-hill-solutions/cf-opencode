@@ -39,8 +39,9 @@ oauth_config:
       - groups:read # same, private channels
       - im:history # DM messages
       - im:read # conversations.members in a DM
+      - files:read # download images users attach to accepted messages
       # Not needed by the Worker: reactions:write, files:write, users:read.
-      # The container-side plugin does uploads; the Worker only posts text.
+      # The container-side plugin handles uploads; the Worker only reads images.
 
 settings:
   event_subscriptions:

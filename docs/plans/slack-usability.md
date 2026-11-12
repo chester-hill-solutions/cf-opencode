@@ -37,20 +37,20 @@ setup with the operator and verify the deployed behavior.
 | S5 | Independent consequential review | Bounded reviewer after integration | No unresolved lifecycle/accounting or authorization finding |
 | S6 | Build, deploy, operator provider connection, live verification | Parent + operator | Commands respond; connected model replies; question/permission paths checked where reproducible |
 | S7 | Preserve connected credentials during settings restart | Reuse S1 Luna owner; bounded Terra review | Checkpoint both archive parts before destruction; preserve running/held work and concurrent onboarding; fail closed if saving fails |
-| S8 | Reconcile both retained usage holds | Parent + accounting contract review + operator | Define a specific operator-evidence contract for manual reconciliation; it is not implemented. Keep both holds and never infer zero spend from missing logs. Restore the two-container limit after reconciliation safely frees the held runtimes. |
+| S8 | Operator reconciliation and idle runtime migration — implemented, reviewed and locally verified | S8b/S8c/S8d source and focused regressions accepted; operator approvals and live actions remain pending | [Receipt, quiescence, migration and approval contract](operator-reconciliation.md). Both holds remain unchanged; keep the temporary third slot until safe. |
 | S9a | Native event persistence with actual `@opencode/server` package — implemented and locally verified | Existing command-dispatch owner, Luna / high | Preserve process initialization, CLI layers and accounting policy |
 | S9b | Persistent-event runtime and named image — ARM and AMD64 builds/smokes passed | Same owner, Luna / high | Preserve Global/AppProcess layers, database path, policy, environment and agent UID |
 | S9c | Isolated canary routing — deployed; canary 02 passed | Inventory owner, Luna / medium | Pin base and evented image digests; durable image binding selects only the explicit canary or enabled fresh conversations |
 | S9d | Focused security/accounting/rollout review — accepted by Terra | Existing Terra reviewer / high | Hold preservation, authorization, snapshot handling and retry boundaries reviewed |
 | S9e | Canary and fresh-conversation verification — deployed and passed | Parent + operator | HTTP and Slack text-only turns produced terminal evidence and exact ledger acknowledgement; preserve earlier unresolved holds |
-| S10 | Slack image attachments and model compatibility — planned, not implemented | Parent locks the contract; bounded Luna tasks below | [Scope, fallback behavior and acceptance](#s10--image-attachments-planned) |
+| S10 | Slack image attachments and model compatibility — implemented locally, not deployed | Luna source integration complete; `files:read` scope has not been granted or reinstalled, and production verification is pending | [Scope, fallback behavior and acceptance](#s10--image-attachments) |
 
 S1/S2 are independent; S3 owns all shared production files. S4 owners write only
 their assigned new test files. Keep reviews bounded to new behavior and its
 coupled runtime changes; escalate only an unresolved contract, then return routine
 work to Luna.
 
-## S10 — Image attachments (planned)
+## S10 — Image attachments
 
 Accept image uploads in DMs and engaged channel threads, including image-only
 posts and captions. The current text-only behavior remains deployed until this
@@ -71,8 +71,64 @@ produce an explicit response rather than silently sending only the caption.
 | Slice | Owner / model | Deliverable and check |
 |---|---|---|
 | S10a | Reuse inventory owner, `gpt-6-luna` / medium; parent accepts contract | Verify the pinned OpenCode SDK's image prompt shape, live model capability metadata and required Slack file permissions. Inspect `src/index.ts`, `src/conversation.ts`, `src/adapters/slack.ts`, `src/state.ts` and the installed SDK. Stop when the smallest supported attachment path and its limits are established; record the findings here. |
-| S10b | Reuse dispatch owner, `gpt-6-luna` / high, after S10a | Implement the agreed path in the existing Slack routing, prompt and queue handlers. Authenticate downloads, validate actual file type and byte limits, and retain attachment identity across queued retries. Preserve engagement filtering, idempotency and accounting. Test supported images, captions, image-only events and queued delivery. |
-| S10c | Reuse inventory owner, `gpt-6-luna` / medium, sequenced after S10b | Add the compatibility response, model suggestions and help text. Verify unsupported or unknown capability, absent credentials, download failures and invalid files produce a useful response without a provider call or usage hold. |
+| S10b | Reuse dispatch owner, `gpt-6-luna` / high, after S10a — implemented locally | Authenticated downloads, actual file validation, immediate-only admission, engagement filtering, idempotency and accounting regressions pass. |
+| S10c | Reuse inventory owner, `gpt-6-luna` / medium, after S10b — implemented locally | Capability refusal, connected model suggestions and help text are covered; no automatic model switch or prompt on refusal. |
+
+### S10a findings (source research, 2026-11-11)
+
+The pinned `@opencode/client` `SessionPromptInput.files` accepts entries with
+`uri: string`, optional `source: {type: "inline"} | {type: "uri"; uri: string}`,
+and optional `name`, `description`, and `mention`. The supported inline route is
+`files: [{ uri: "data:image/png;base64,...", name }]` (or JPEG equivalent),
+alongside the existing `text`. The 2.2.5 server decodes data URLs and its
+internal attachment record carries base64 `data`, `mime`, and `source`; server
+limit is 20 MiB, so the Slack feature's proposed 5 MiB limit remains stricter.
+No filesystem write or model-side URL fetch is needed.
+
+`client.model.list({ location: { directory: "/workspace" } })` returns
+`ModelInfo[]`; each record has `providerID`, `id`, optional `type`, `enabled`,
+`variants`, and `capabilities.input: string[]`. The installed 2.2.5 core checks
+image support by whether an input capability starts with `image`. Check the
+currently selected model (`session.get().model`, respecting the durable
+per-conversation override) before reservation and dispatch. For suggestions,
+filter the same live list to enabled chat models with image input capability;
+unknown metadata is an explicit refusal. Do not change the selection or call
+`session.prompt` on refusal.
+
+The original event envelope omitted `files` and ignored empty-text messages.
+S10 now extends the existing DM, `app_mention`, and engaged-thread acceptance
+gate for file-only messages; it does not subscribe to broad `file_shared` events
+or download channel history. Slack's
+official [`files:read` scope](https://api.slack.com/scopes/files%3Aread) allows
+retrieval and download; the official [file object reference](https://api.slack.com/methods/files.info)
+shows `url_private_download`. Fetch it with the bot bearer token, with strict
+HTTPS/Slack-host validation and redirect checks; add `files:read` to the app
+manifest and reinstall the app. `files:write` is not needed.
+
+One accepted Slack message is currently queued as text plus target metadata in
+`ConversationState.queued`; storing a 5 MiB image as a data URL in DO state is
+not an acceptable durable queue design. For this first slice, accept images
+only when immediate admission is available. If busy, at capacity, or startup
+fails, send a clear no-prompt/no-hold reply and ask the user to resubmit; do not
+queue the image or its caption. Ordinary text queue behavior remains unchanged.
+Durable image queue storage is deferred.
+
+`src/slack-images.ts` owns validation/download and data URL conversion;
+`conversation.ts` owns routing, capability preflight, immediate-admission check,
+and prompt dispatch. Helper and Worker tests pass locally. Busy, capacity, or
+startup failure refuses without queuing the image/caption or taking a usage
+hold; ordinary text queue behavior remains unchanged. The manifest now declares
+`files:read`, but the app has not been reinstalled and deployed behavior remains
+text-only.
+
+Focused checks should cover: valid PNG/JPEG, image-only/caption, MIME spoofing,
+oversize metadata and streamed bytes, unsafe URL/redirect, download failure,
+unsupported/unknown/nonvision model with no reservation or prompt, compatible
+model suggestion without switching, accepted-DM/engaged-thread filtering,
+dedupe, and busy/capacity/startup refusal with no prompt or reservation. These
+local checks do not close S10: live compatible-model interpretation and a live
+non-vision refusal are still required after the app scope is granted and the
+Worker is deployed.
 
 The parent reviews download authorization, redirect handling, credential exposure
 and duplicate-dispatch boundaries, then runs the affected and integrated checks.
@@ -106,6 +162,25 @@ The approved service key uses Console credit; its creation did not change the
 subscription. Testing outside the operator's DM requires an agreed destination.
 
 ## Current evidence
+
+- S8b central preview/apply, S8c Conversation preview/apply and S8d migration
+  controller are implemented, independently reviewed and locally verified.
+  The accepted S8c gate includes 5 control, 28 recovery, 3 reconciliation
+  contract and 34 Slack tests; S8d includes pure intent/restore-barrier and
+  migration lifecycle coverage. The final integrated gate passed 562 tests
+  (307 Bun, including 5 runtime tests, and 255 Worker), all five typechecks,
+  config, UI, diff and dry-run deployment checks. A prior pruning test timeout
+  was fixed by forcing five-object pages against real R2 with fewer fixture
+  objects; pagination and retention assertions remain, and the test timeout was
+  not increased. Two GET-only reconciliation previews are prepared in
+  `/tmp/cf-opencode-prepare-reconciliation.mjs` but remain unrun pending deploy
+  and exact operator approval. The script validates full reservation IDs and
+  contains no POST/apply operation.
+- S10 source routing, authenticated bounded file download, capability refusal,
+  app manifest `files:read` declaration and Worker regressions are implemented
+  locally and focused checks pass. No app reinstall, scope grant, production
+  deploy, or Slack image test has occurred; text-only behavior remains the
+  deployed behavior.
 
 - The approved `Aboiteau Slackbot Models Request90days` key was recovered by exact
   credential ID from the canonical encrypted seed, reconnected (`/connect/key`

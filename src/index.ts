@@ -94,7 +94,8 @@ export default {
 
       const event = payload.event
       if (!event?.channel || !event.ts) return new Response("ok")
-      if (event.bot_id || event.subtype || (env.SLACK_BOT_USER_ID && event.user === env.SLACK_BOT_USER_ID)) return new Response("ok")
+      const isFileShare = event.subtype === "file_share" && Boolean(event.files?.length)
+      if (event.bot_id || (event.subtype && !isFileShare) || (env.SLACK_BOT_USER_ID && event.user === env.SLACK_BOT_USER_ID)) return new Response("ok")
 
       const isDm = event.channel_type === "im"
       if (!isDm && event.type !== "app_mention" &&
@@ -380,6 +381,48 @@ async function handleApi(
       const response = await conversation.fetch("https://conversation/accounting/cutover", {
         method: "POST",
         body: JSON.stringify({ expectedPlanID }),
+      })
+      if (response.ok) recordConversation()
+      return new Response(response.body, { status: response.status, headers: response.headers })
+    }
+    return Response.json({ error: "method not allowed" }, { status: 405 })
+  }
+
+  if (suffix.length === 2 && suffix[0] === "accounting" && suffix[1] === "reconciliation") {
+    if (request.method === "GET") {
+      const kind = url.searchParams.get("kind")
+      if (kind !== "observed_actual" && kind !== "acknowledged_unknown") {
+        return Response.json({ error: "kind must be observed_actual or acknowledged_unknown" }, { status: 400 })
+      }
+      return conversation.fetch(`https://conversation/accounting/reconciliation?kind=${kind}`)
+    }
+    if (request.method === "POST") {
+      const parsed = await parseObjectJson(request)
+      if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 })
+      const response = await conversation.fetch("https://conversation/accounting/reconciliation", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(parsed.value),
+      })
+      if (response.ok) recordConversation()
+      return new Response(response.body, { status: response.status, headers: response.headers })
+    }
+    return Response.json({ error: "method not allowed" }, { status: 405 })
+  }
+
+  if (suffix.length === 2 && suffix[0] === "runtime" && suffix[1] === "upgrade") {
+    if (request.method === "GET") return conversation.fetch("https://conversation/runtime/upgrade")
+    if (request.method === "POST") {
+      const parsed = await parseObjectJson(request)
+      if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 })
+      if (Object.keys(parsed.value).length !== 1 || typeof parsed.value.expectedPlanID !== "string" ||
+        !/^[a-f0-9]{64}$/.test(parsed.value.expectedPlanID)) {
+        return Response.json({ error: "expectedPlanID must be a SHA-256 plan id" }, { status: 400 })
+      }
+      const response = await conversation.fetch("https://conversation/runtime/upgrade", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expectedPlanID: parsed.value.expectedPlanID }),
       })
       if (response.ok) recordConversation()
       return new Response(response.body, { status: response.status, headers: response.headers })

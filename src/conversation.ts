@@ -24,6 +24,7 @@ import {
   latestAssistantReply,
   turnMessages,
   turnFailure,
+  toMillis,
   type MessageInfo,
   type TurnFailure,
 } from "./messages"
@@ -51,10 +52,32 @@ import { plaintextArchivesAllowed } from "./archive-policy"
 import { durableUsageEvent } from "./usage"
 import { ACCOUNTING_POLICY_ID, AccountingPolicyError, assertAccountingPolicy } from "./accounting-policy"
 import { classifyRecovery, recoverySnapshotID, type RecoveryAuthority, type RecoveryHold, type RecoveryRetirement } from "./recovery"
+import { proveRuntimeQuiescence } from "./runtime-quiescence"
+import {
+  hashOperatorQuiescence,
+  operatorReconciliationDigest,
+  parseOperatorReconciliationProposal,
+  type OperatorReconciliationKind,
+  type OperatorReconciliationProposal,
+  type OperatorReconciliationReceipt,
+} from "./operator-reconciliation"
 import { handleSlackCommand } from "./slack-commands"
 import { hasConnectedProvider } from "./onboarding"
 import { parseSlackCommand } from "./slack-command-format"
 import { answerHint, describeForm, formButtons, parseFormAnswer, visibleFields, type Form, type FormAnswer } from "./slack-forms"
+import {
+  checkSlackImageModel,
+  downloadSlackImage,
+  formatSlackImageModelSuggestions,
+  type ImageModelCheck,
+  type SlackImageAttachment,
+} from "./slack-images"
+import {
+  parseRuntimeUpgradePending,
+  verifyRestoredRuntimeUpgrade,
+  type RuntimeUpgradeCompletion,
+  type RuntimeUpgradePending,
+} from "./runtime-upgrade"
 
 type UnknownRecord = Record<string, unknown>
 
@@ -76,11 +99,38 @@ interface UsageCutoverLedger {
   blockers: unknown[]
   receipt?: UsageCutoverReceipt
   snapshotID: string
-  retirement?: RecoveryRetirement
+  retirement?: RecoveryRetirement & { operatorReceiptID?: string }
 }
+
+type OperatorReconciliationDraft = Omit<OperatorReconciliationProposal, "operator" | "approvalReference" | "acceptUnknownRisk">
+type OperatorReconciliationPreviewResult =
+  | { ok: true; draft: OperatorReconciliationDraft; body: UnknownRecord }
+  | { ok: false; status: number; error: string; blockers?: string[] }
 
 function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function validDateString(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const date = new Date(`${value}T00:00:00.000Z`)
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value)
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))
+  return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("")
+}
+
+function sameOperatorReview(draft: OperatorReconciliationDraft, proposal: OperatorReconciliationProposal): boolean {
+  const fields: Array<keyof OperatorReconciliationDraft> = [
+    "receiptID", "conversationID", "sessionID", "reservationID", "originDate", "usageDate",
+    "expectedLedgerSnapshotID", "expectedLocalSnapshotID", "quiescence", "quiescenceDigest",
+    "kind", "actualCostUSD", "input", "output", "assistantMessageID", "evidenceReference", "evidenceSHA256",
+  ]
+  return JSON.stringify(fields.map((field) => [field, draft[field] ?? null])) ===
+    JSON.stringify(fields.map((field) => [field, proposal[field] ?? null]))
 }
 
 /** The fields of a pending permission the harness forwards. */
@@ -193,6 +243,7 @@ export class Conversation extends DurableObject<Env> {
   /** Persistent native event capability, attested for one exact runtime generation. */
   private eventPersistence?: boolean
   private eventPersistenceGeneration?: string
+  private runtimeUpgradeResuming = false
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
@@ -222,6 +273,38 @@ export class Conversation extends DurableObject<Env> {
         return Response.json({ error: "expectedPlanID must be a SHA-256 plan id" }, { status: 400 })
       }
       return this.applyAccountingCutover((parsed as { expectedPlanID: string }).expectedPlanID)
+    }
+    if (url.pathname === "/accounting/reconciliation" && request.method === "GET") {
+      const kind = url.searchParams.get("kind")
+      if (kind !== "observed_actual" && kind !== "acknowledged_unknown") {
+        return Response.json({ error: "kind must be observed_actual or acknowledged_unknown" }, { status: 400 })
+      }
+      return this.previewOperatorReconciliation(kind)
+    }
+    if (url.pathname === "/accounting/reconciliation" && request.method === "POST") {
+      let body: unknown
+      try {
+        body = await request.json()
+      } catch {
+        return Response.json({ error: "valid JSON is required" }, { status: 400 })
+      }
+      const parsed = parseOperatorReconciliationProposal(body)
+      if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 })
+      return this.applyOperatorReconciliation(parsed.value)
+    }
+    if (url.pathname === "/runtime/upgrade" && request.method === "GET") return this.previewRuntimeUpgrade()
+    if (url.pathname === "/runtime/upgrade" && request.method === "POST") {
+      let body: unknown
+      try {
+        body = await request.json()
+      } catch {
+        return Response.json({ error: "valid JSON is required" }, { status: 400 })
+      }
+      if (!isRecord(body) || Object.keys(body).length !== 1 ||
+        typeof body.expectedPlanID !== "string" || !/^[a-f0-9]{64}$/.test(body.expectedPlanID)) {
+        return Response.json({ error: "expectedPlanID must be a SHA-256 plan id" }, { status: 400 })
+      }
+      return this.applyRuntimeUpgrade(body.expectedPlanID)
     }
     if (url.pathname === "/recovery" && request.method === "GET") return this.inspectRecovery()
     if (url.pathname === "/recovery" && request.method === "POST") {
@@ -293,6 +376,7 @@ export class Conversation extends DurableObject<Env> {
     // before calling string methods on it.
     const text = typeof input.text === "string" ? input.text.trim() : ""
     if (!text) return Response.json({ ok: false, error: "empty message" }, { status: 400 })
+    if (await this.hasPendingRuntimeUpgrade()) return Response.json({ ok: false, error: "runtime upgrade is pending; no message was queued" }, { status: 409 })
 
     const idempotencyKey = typeof input.idempotencyKey === "string" ? input.idempotencyKey : undefined
     if (input.idempotencyKey !== undefined && idempotencyKey === undefined) {
@@ -592,6 +676,7 @@ export class Conversation extends DurableObject<Env> {
   /** Hard reset: drop the container and this conversation's stored state. */
   private async onReset(): Promise<Response> {
     return this.withAdmissionLock(async () => {
+      if (await this.hasPendingRuntimeUpgrade()) return Response.json({ error: "runtime upgrade is pending; resume it before reset" }, { status: 409 })
       const blocked = await this.blockLifecycleDuringActiveTurn()
       if (blocked) return blocked
       return this.withUsageLifecycle(async () => {
@@ -633,6 +718,7 @@ export class Conversation extends DurableObject<Env> {
    */
   private async onRecycle(): Promise<Response> {
     return this.withAdmissionLock(async () => {
+      if (await this.hasPendingRuntimeUpgrade()) return Response.json({ error: "runtime upgrade is pending; resume it before recycling" }, { status: 409 })
       const blocked = await this.blockLifecycleDuringActiveTurn()
       if (blocked) return blocked
 
@@ -666,6 +752,7 @@ export class Conversation extends DurableObject<Env> {
   /** Remove the workspace archives and this conversation's stored state. */
   private async onDelete(): Promise<Response> {
     return this.withAdmissionLock(async () => {
+      if (await this.hasPendingRuntimeUpgrade()) return Response.json({ error: "runtime upgrade is pending; resume it before deleting this conversation" }, { status: 409 })
       const blocked = await this.blockLifecycleDuringActiveTurn()
       if (blocked) return blocked
       return this.withUsageLifecycle(async () => {
@@ -1047,7 +1134,7 @@ export class Conversation extends DurableObject<Env> {
   private claimAdmission(): Promise<boolean> {
     return this.withAdmissionLock(async () => {
       const state = await this.store.get()
-      if (this.recoveryAction || state.queued || this.isBusy(state.phase)) return false
+      if (this.recoveryAction || await this.hasPendingRuntimeUpgrade() || state.queued || this.isBusy(state.phase)) return false
       await this.store.advance("admitting")
       this.admitting = true
       return true
@@ -1078,18 +1165,61 @@ export class Conversation extends DurableObject<Env> {
       usageText: async () => {
         const response = await this.env.SETTINGS.getByName("global").fetch("https://settings/usage/today")
         if (!response.ok) throw new Error("Usage is temporarily unavailable")
-        const usage = await response.json() as { date: string; costUSD: number; reservedUSD: number; input: number; output: number }
+        const usage = await response.json() as {
+          date: string; costUSD: number; reservedUSD: number; input: number; output: number
+          historicalUsageUnreconciled?: boolean; unknownReconciliationCount?: number
+        }
         const settings = await this.settings()
-        return `*Workspace usage — ${usage.date} (UTC)*\nReported spend: $${usage.costUSD.toFixed(4)}\nReserved: $${usage.reservedUSD.toFixed(4)}\nTokens: ${usage.input} in / ${usage.output} out\nDaily budget: ${settings.dailyBudgetUSD > 0 ? `$${settings.dailyBudgetUSD.toFixed(2)}` : "unlimited"}\nProvider quota and billing may differ from reported usage.`
+        const historyNote = usage.historicalUsageUnreconciled
+          ? `\n⚠ Historical usage remains unreconciled${usage.unknownReconciliationCount ? ` (${usage.unknownReconciliationCount} unknown amount${usage.unknownReconciliationCount === 1 ? "" : "s"} acknowledged)` : ""}.`
+          : ""
+        return `*Workspace usage — ${usage.date} (UTC)*\nReported spend: $${usage.costUSD.toFixed(4)}\nReserved: $${usage.reservedUSD.toFixed(4)}\nTokens: ${usage.input} in / ${usage.output} out\nDaily budget: ${settings.dailyBudgetUSD > 0 ? `$${settings.dailyBudgetUSD.toFixed(2)}` : "unlimited"}\nProvider quota and billing may differ from reported usage.${historyNote}`
       },
       reply: (message) => this.postChunked(target.channel, message, target.replyTs),
       setupUrl: input.appUrl ? `${new URL(input.appUrl).origin}/onboarding/` : "the web app's /onboarding/ page",
     })
   }
 
+  private async checkSlackImageModel(sessionID: string): Promise<ImageModelCheck> {
+    const models = (await this.withClient(
+      (client) => client.model.list({ location: { directory: "/workspace" } }),
+      false,
+    )).data
+
+    let selected: { providerID: string; id: string } | undefined
+    try {
+      const session = await this.withClient((client) => client.session.get({ sessionID }), false)
+      const model = (session as { model?: { providerID?: unknown; id?: unknown } }).model
+      if (typeof model?.providerID === "string" && typeof model.id === "string") {
+        selected = { providerID: model.providerID, id: model.id }
+      }
+    } catch {
+      // Missing session metadata is unknown; do not guess from a stale override.
+    }
+    return checkSlackImageModel(selected, models)
+  }
+
+  private slackImageCompatibilityMessage(check: ImageModelCheck, catalogueUnavailable = false): string {
+    if (catalogueUnavailable) {
+      return "⚠️ I couldn't check image support right now, so nothing was sent or reserved. Please resend the image when the bot is ready."
+    }
+    if (check.status === "compatible") return ""
+    if (check.status === "unknown") {
+      const candidates = formatSlackImageModelSuggestions(check.suggestions)
+      return candidates
+        ? `⚠️ I couldn't confirm that the selected model can read images, so nothing was sent or reserved. Compatible connected models: ${mrkdwnEscape(candidates)}. Choose one with !model provider/model, then resend the image.`
+        : "⚠️ I couldn't confirm that the selected model can read images, so nothing was sent or reserved. Use `!model` to check available models or `!setup` to connect a provider, then resend the image."
+    }
+    const candidates = formatSlackImageModelSuggestions(check.suggestions)
+    return candidates
+      ? `⚠️ The selected model can't read images, so nothing was sent or reserved. Compatible connected models: ${mrkdwnEscape(candidates)}. Switch with !model provider/model, then resend the image.`
+      : "⚠️ No connected model reports image input support, so nothing was sent or reserved. Use `!setup` to connect a compatible provider, then resend the image."
+  }
+
   /** Model/session changes share the admission lock, so a prompt cannot race them. */
   private async requireSlackIdle(): Promise<ConversationState> {
     const state = await this.store.get()
+    if (await this.hasPendingRuntimeUpgrade()) throw new Error("A runtime upgrade is pending. Resume it before changing the model or session.")
     if (this.admitting || this.pumping || this.recoveryAction || this.isBusy(state.phase) || state.queued || state.budgetReservation) {
       throw new Error("This conversation has unfinished work. Use `!stop`, then wait for settlement; `!status` shows any retained usage hold.")
     }
@@ -1166,6 +1296,7 @@ export class Conversation extends DurableObject<Env> {
 
   private async replyToForm(sessionID: string, formID: string, answer?: FormAnswer): Promise<void> {
     await this.withAdmissionLock(async () => {
+      if (await this.hasPendingRuntimeUpgrade()) throw new Error("A runtime upgrade is pending. Resume it before answering or cancelling a form.")
       if ((await this.store.get()).sessionID !== sessionID) throw new Error("This question belongs to an older session.")
       const form = await this.withClient((client) => client.session.form.get({ sessionID, formID }), false)
       if (form.sessionID !== sessionID || form.state.status !== "pending") throw new Error("This question is no longer waiting for an answer.")
@@ -1177,6 +1308,7 @@ export class Conversation extends DurableObject<Env> {
 
   private async onSlackForm(input: SlackFormRequest): Promise<Response> {
     try {
+      if (await this.hasPendingRuntimeUpgrade()) return Response.json({ error: "runtime upgrade is pending" }, { status: 409 })
       if (!input || typeof input.sessionID !== "string" || typeof input.formID !== "string") return Response.json({ error: "invalid question" }, { status: 400 })
       const state = await this.store.get()
       if (state.sessionID !== input.sessionID || !state.slack || state.slack.channel !== input.channel) return Response.json({ error: "stale question or wrong channel" }, { status: 409 })
@@ -1199,10 +1331,19 @@ export class Conversation extends DurableObject<Env> {
   private async onSlackEvent(input: SlackEventRequest): Promise<Response> {
     const event = input.event
     if (!event.channel || !event.ts) return Response.json({ ok: true })
-    if (event.bot_id || event.subtype) return Response.json({ ok: true })
-    if (!event.text) return Response.json({ ok: true })
-    const text = this.stripMention(event.text)
+    const files = event.files ?? []
+    const hasImage = files.length > 0
+    const isFileShare = event.subtype === "file_share" && hasImage
+    if (event.bot_id || (event.subtype && !isFileShare)) return Response.json({ ok: true })
+    if (!event.text && !hasImage) return Response.json({ ok: true })
+    const strippedText = this.stripMention(event.text ?? "")
+    const text = strippedText || (hasImage ? "Describe the attached image." : "")
     if (!text) return Response.json({ ok: true })
+    if (await this.hasPendingRuntimeUpgrade()) {
+      const target = { channel: event.channel, ...(input.replyTs ? { replyTs: input.replyTs } : {}) }
+      await this.postChunked(target.channel, "Runtime upgrade is pending. No message was queued; an operator must resume the upgrade first.", target.replyTs).catch(() => {})
+      return Response.json({ error: "runtime upgrade pending" }, { status: 409 })
+    }
     const isDm = event.channel_type === "im"
     const state = await this.store.get()
     // Channel message subscriptions exist only to carry replies in engaged
@@ -1228,11 +1369,21 @@ export class Conversation extends DurableObject<Env> {
     let prompt = text
     let sessionID = ""
     let baseline: string | undefined
+    let imageAttachment: SlackImageAttachment | undefined
     let accepted = false
     try {
       prompt = await this.buildPrompt(event.channel, event.ts, event.thread_ts, text)
     } catch (err) {
       logEvent("admission.failed", { transport: "slack", stage: "context" })
+      if (hasImage) {
+        await this.postChunked(
+          target.channel,
+          "⚠️ I couldn't prepare that image message. Nothing was sent or reserved; please resend the image.",
+          target.replyTs,
+        ).catch(() => {})
+        if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
+        return Response.json({ ok: true })
+      }
       const queued = await this.enqueue(prompt, target)
       accepted = queued
       if (!queued) {
@@ -1247,6 +1398,15 @@ export class Conversation extends DurableObject<Env> {
     }
 
     if (!(await this.claimAdmission())) {
+      if (hasImage) {
+        await this.postChunked(
+          target.channel,
+          "⏳ I'm busy with another turn, so I didn't send or queue this image. Please resend it when I'm ready.",
+          target.replyTs,
+        ).catch(() => {})
+        if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
+        return Response.json({ ok: true, queued: false })
+      }
       const queued = await this.enqueue(prompt, target)
       accepted = queued
       if (!queued) {
@@ -1260,12 +1420,68 @@ export class Conversation extends DurableObject<Env> {
       return Response.json({ ok: true, queued })
     }
 
+    if (hasImage) {
+      try {
+        // Establish or switch the session first. ensureSession reapplies the
+        // current override/default after a restore, so preflight must inspect
+        // the model this prompt will actually use.
+        sessionID = await this.ensureSession(text, "slack", target)
+      } catch {
+        this.admitting = false
+        await this.store.advance("idle")
+        await this.postChunked(
+          target.channel,
+          "⚠️ I couldn't start the session, so I didn't send or queue this image. No usage hold was created; please resend it later.",
+          target.replyTs,
+        ).catch(() => {})
+        if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
+        return Response.json({ ok: true, queued: false })
+      }
+
+      let check: ImageModelCheck
+      let catalogueUnavailable = false
+      try {
+        check = await this.checkSlackImageModel(sessionID)
+      } catch {
+        catalogueUnavailable = true
+        check = checkSlackImageModel(undefined, undefined)
+      }
+      if (check.status !== "compatible") {
+        this.admitting = false
+        await this.store.advance("idle")
+        await this.postChunked(target.channel, this.slackImageCompatibilityMessage(check, catalogueUnavailable), target.replyTs).catch(() => {})
+        if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
+        return Response.json({ ok: true, image: "model-incompatible" })
+      }
+      try {
+        imageAttachment = await downloadSlackImage(files, this.env.SLACK_BOT_TOKEN ?? "")
+      } catch (error) {
+        this.admitting = false
+        await this.store.advance("idle")
+        const message = error instanceof Error ? error.message : "That image could not be validated."
+        await this.postChunked(target.channel, `⚠️ ${message} Nothing was sent or reserved; please resend the image.`, target.replyTs).catch(() => {})
+        if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
+        return Response.json({ ok: true, image: "invalid" })
+      }
+    }
+
     try {
-      sessionID = await this.ensureSession(text, "slack", target)
+      if (!sessionID) sessionID = await this.ensureSession(text, "slack", target)
       baseline = await this.turnBaseline(sessionID)
     } catch (err) {
       this.admitting = false
       logEvent("admission.failed", { transport: "slack", stage: "readiness" })
+      if (hasImage) {
+        imageAttachment = undefined
+        await this.store.advance("idle")
+        await this.postChunked(
+          target.channel,
+          "⚠️ I couldn't start the session, so I didn't send or queue this image. No usage hold was created; please resend it later.",
+          target.replyTs,
+        ).catch(() => {})
+        if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
+        return Response.json({ ok: true, queued: false })
+      }
       const queued = await this.enqueue(prompt, target)
       accepted = queued
       if (!queued) {
@@ -1282,6 +1498,7 @@ export class Conversation extends DurableObject<Env> {
 
     const reservation = await this.acquireBudgetReservation()
     if (reservation.kind === "denied") {
+      imageAttachment = undefined
       this.admitting = false
       await this.store.advance("idle")
       await this.postChunked(
@@ -1293,6 +1510,7 @@ export class Conversation extends DurableObject<Env> {
       return Response.json({ ok: true })
     }
     if (reservation.kind === "conflict" || reservation.kind === "unavailable") {
+      imageAttachment = undefined
       this.admitting = false
       await this.store.advance("idle")
       await this.postChunked(
@@ -1304,6 +1522,7 @@ export class Conversation extends DurableObject<Env> {
       return Response.json({ ok: true })
     }
     if (reservation.kind === "already-dispatched") {
+      imageAttachment = undefined
       await this.resumeDispatchedTurn()
       await this.postChunked(
         target.channel,
@@ -1314,6 +1533,7 @@ export class Conversation extends DurableObject<Env> {
       return Response.json({ ok: true })
     }
     if (!(await this.markBudgetReservationDispatched(reservation.reservation, baseline))) {
+      imageAttachment = undefined
       this.admitting = false
       await this.store.advance("idle")
       await this.postChunked(
@@ -1325,8 +1545,13 @@ export class Conversation extends DurableObject<Env> {
       return Response.json({ ok: true })
     }
     try {
-      await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
+      await this.withClient((client) => client.session.prompt({
+        sessionID,
+        text: prompt,
+        ...(imageAttachment ? { files: [imageAttachment] } : {}),
+      }))
     } catch (err) {
+      imageAttachment = undefined
       await this.recordAcceptedTurn(baseline)
       if (input.eventID) await this.store.markTombstone(input.eventID).catch(() => {})
       await this.deliver({
@@ -1336,6 +1561,7 @@ export class Conversation extends DurableObject<Env> {
       return Response.json({ ok: true })
     }
     accepted = true
+    imageAttachment = undefined
 
     // The prompt is accepted; bookkeeping and stream failures must not re-send it.
     await this.recordAcceptedTurn(baseline)
@@ -1349,13 +1575,16 @@ export class Conversation extends DurableObject<Env> {
   }
 
   private async onPermission(input: PermissionRequest): Promise<Response> {
-    const sessionID = (await this.store.peekPermission(input.requestID)) ?? input.sessionID
-    if (!sessionID) return Response.json({ ok: false, error: "unknown request" }, { status: 404 })
-    await this.withClient((client) =>
-      client.permission.reply({ sessionID, requestID: input.requestID, decision: input.decision }),
-    )
-    await this.store.clearPermission(input.requestID)
-    return Response.json({ ok: true })
+    return this.withAdmissionLock(async () => {
+      if (await this.hasPendingRuntimeUpgrade()) return Response.json({ error: "runtime upgrade is pending" }, { status: 409 })
+      const sessionID = (await this.store.peekPermission(input.requestID)) ?? input.sessionID
+      if (!sessionID) return Response.json({ ok: false, error: "unknown request" }, { status: 404 })
+      await this.withClient((client) =>
+        client.permission.reply({ sessionID, requestID: input.requestID, decision: input.decision }),
+      )
+      await this.store.clearPermission(input.requestID)
+      return Response.json({ ok: true })
+    })
   }
 
   /** Diagnostics: the raw OpenCode message context for this conversation. */
@@ -1481,6 +1710,7 @@ export class Conversation extends DurableObject<Env> {
   // ------------------------------------------------------------------- prompt
 
   private async ensureSession(text: string, transport: Transport, slack?: SlackTarget): Promise<string> {
+    if (await this.hasPendingRuntimeUpgrade()) throw new Error("runtime upgrade is pending; an operator must resume it before a session can change")
     await this.ensureReady()
     if (this.eventPersistence !== true || !this.opencodeGeneration ||
       this.eventPersistenceGeneration !== this.opencodeGeneration) {
@@ -1928,7 +2158,7 @@ export class Conversation extends DurableObject<Env> {
         ...(invalidFields.length ? { invalidFields } : {}),
       }
     })
-    let retirement: RecoveryRetirement | undefined
+    let retirement: (RecoveryRetirement & { operatorReceiptID?: string }) | undefined
     if (value.retirement !== undefined) {
       const raw = value.retirement
       if (!isRecord(raw) || typeof raw.conversationID !== "string" ||
@@ -1946,6 +2176,7 @@ export class Conversation extends DurableObject<Env> {
         reason: raw.reason,
         retiredAt: raw.retiredAt,
         ...(typeof raw.released === "boolean" ? { released: raw.released } : {}),
+        ...(typeof raw.operatorReceiptID === "string" ? { operatorReceiptID: raw.operatorReceiptID } : {}),
       }
     }
     let receipt: UsageCutoverReceipt | undefined
@@ -2022,6 +2253,8 @@ export class Conversation extends DurableObject<Env> {
         usageError: state.usageError ?? null,
         settlementError: state.settlementError ?? null,
         lastTurnError: state.lastTurnError ?? null,
+        operatorReconciliation: state.operatorReconciliation ?? null,
+        historicalUsageUnreconciled: state.operatorReconciliation?.kind === "acknowledged_unknown",
       },
       live,
       authority: ledger ? {
@@ -2146,6 +2379,416 @@ export class Conversation extends DurableObject<Env> {
       }
       return action === "cancel_before_dispatch" ? this.enqueueUsageReplay(act) : act()
     })
+  }
+
+  private async previewOperatorReconciliation(kind: OperatorReconciliationKind): Promise<Response> {
+    return this.withAdmissionLock(async () => {
+      if (this.admitting || this.pumping || this.recoveryAction) {
+        return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
+      }
+      this.recoveryAction = true
+      try {
+        return await this.enqueueUsageReplay(async () => {
+          const result = await this.buildOperatorReconciliationDraft(kind)
+          if (!result.ok) return Response.json({ error: result.error, ...(result.blockers ? { blockers: result.blockers } : {}) }, { status: result.status })
+          return Response.json(result.body)
+        })
+      } catch {
+        return Response.json({ error: "reconciliation preview could not be verified", retryable: true }, { status: 503 })
+      } finally {
+        this.recoveryAction = false
+      }
+    })
+  }
+
+  private async buildOperatorReconciliationDraft(kind: OperatorReconciliationKind): Promise<OperatorReconciliationPreviewResult> {
+    const conversationID = this.ctx.id.toString()
+    const state = await this.store.get()
+    if (this.admitting || this.pumping || this.recoveryAction !== true || state.queued) {
+      return { ok: false, status: 409, error: "conversation has live or queued work" }
+    }
+    const reservation = state.budgetReservation
+    const sessionID = state.sessionID
+    if (!reservation || reservation.dispatched !== true || !validDateString(reservation.date) || !sessionID) {
+      return { ok: false, status: 409, error: "a dispatched dated reservation and current session are required" }
+    }
+
+    let authorityLedger: UsageCutoverLedger
+    let central: UnknownRecord
+    try {
+      authorityLedger = await this.usageCutoverLedger(reservation.reservationID)
+      central = await this.operatorReconciliationSnapshot(conversationID, sessionID, reservation.reservationID)
+    } catch {
+      return { ok: false, status: 503, error: "reconciliation authority is unavailable" }
+    }
+    const matchingHolds = authorityLedger.holds.filter((hold) =>
+      hold.kind === "reservation" && hold.conversationID === conversationID &&
+      hold.reservationID === reservation.reservationID && hold.date === reservation.date,
+    )
+    if (authorityLedger.conversationID !== conversationID || authorityLedger.blockers.length ||
+      authorityLedger.legacyRows.length || authorityLedger.receipt || authorityLedger.holds.length !== 1 ||
+      matchingHolds.length !== 1 || authorityLedger.retirement) {
+      return { ok: false, status: 409, error: "central hold ownership or accounting history is ambiguous", blockers: ["central_authority_blocked"] }
+    }
+    if (central.conversationID !== conversationID || central.sessionID !== sessionID ||
+      central.reservationID !== reservation.reservationID || central.originDate !== reservation.date ||
+      typeof central.snapshotID !== "string" || !/^[a-f0-9]{64}$/.test(central.snapshotID) ||
+      !Array.isArray(central.blockers) || central.blockers.length !== 0 ||
+      !isRecord(central.hold) || central.hold.conversationID !== conversationID ||
+      central.hold.reservationID !== reservation.reservationID || central.hold.date !== reservation.date ||
+      typeof central.hold.costUSD !== "number" || !Number.isFinite(central.hold.costUSD) || central.hold.costUSD < 0 ||
+      !isRecord(central.projectedDayBasis) || !Array.isArray(central.observedActualBlockers)) {
+      return { ok: false, status: 409, error: "central reconciliation snapshot is blocked", blockers: ["central_snapshot_invalid"] }
+    }
+    const projectedBasis = central.projectedDayBasis
+    if (projectedBasis.basis !== "historical_origin_date_attribution" || projectedBasis.date !== reservation.date ||
+      ![projectedBasis.actualUSD, projectedBasis.reservedUSD, projectedBasis.attributedUSD]
+        .every((amount) => typeof amount === "number" && Number.isFinite(amount) && amount >= 0) ||
+      !isRecord(central.currentBudgetBasis) ||
+      !central.observedActualBlockers.every((blocker) => typeof blocker === "string")) {
+      return { ok: false, status: 409, error: "central projected accounting basis is malformed", blockers: ["central_basis_invalid"] }
+    }
+    const budgetBasis = central.currentBudgetBasis
+    if (!validDateString(budgetBasis.date) ||
+      ![budgetBasis.actualUSD, budgetBasis.reservedUSD, budgetBasis.budgetUSD, budgetBasis.admittedUSD]
+        .every((amount) => typeof amount === "number" && Number.isFinite(amount) && amount >= 0) ||
+      !(budgetBasis.remainingUSD === null || typeof budgetBasis.remainingUSD === "number" &&
+        Number.isFinite(budgetBasis.remainingUSD) && budgetBasis.remainingUSD >= 0) ||
+      !Array.isArray(budgetBasis.blockers) || budgetBasis.blockers.length) {
+      return { ok: false, status: 409, error: "current budget basis is malformed", blockers: ["current_budget_basis_invalid"] }
+    }
+    if (kind === "observed_actual" && central.observedActualBlockers.length) {
+      return { ok: false, status: 409, error: "existing usage has ambiguous session ownership", blockers: central.observedActualBlockers as string[] }
+    }
+    if (central.existingReceipt) {
+      return { ok: false, status: 409, error: "this reservation already has a reconciliation receipt" }
+    }
+
+    const authority: RecoveryAuthority = {
+      conversationID,
+      snapshotID: authorityLedger.snapshotID,
+      holds: authorityLedger.holds,
+      legacyRows: authorityLedger.legacyRows,
+      ...(authorityLedger.retirement ? { retirement: authorityLedger.retirement } : {}),
+    }
+    const classification = classifyRecovery({ conversationID, state, authority, live: { admitting: false, pumping: false } })
+    if (classification.kind !== "dispatched" || classification.blockers.length) {
+      return { ok: false, status: 409, error: "local reservation ownership is not safe to reconcile", blockers: classification.blockers }
+    }
+
+    let evidence: Awaited<ReturnType<typeof proveRuntimeQuiescence>>
+    try {
+      evidence = await this.withClient((client) => proveRuntimeQuiescence({
+        client,
+        sessionID,
+        getRuntimeGeneration: async (signal) => {
+          const control = await this.port(CONTROL_PORT)
+          const response = await control.fetch("http://container/start", { method: "POST", signal })
+          if (!response.ok) throw new Error("runtime proof unavailable")
+          const proof = await response.json() as UnknownRecord
+          if (proof.ok !== true || proof.accountingPolicy !== ACCOUNTING_POLICY_ID ||
+            typeof proof.opencodeGeneration !== "string" || !proof.opencodeGeneration) {
+            throw new Error("runtime generation proof invalid")
+          }
+          this.opencodeGeneration = proof.opencodeGeneration
+          return proof.opencodeGeneration
+        },
+      }), false)
+    } catch {
+      return { ok: false, status: 409, error: "native session quiescence could not be proved", blockers: ["quiescence_unverified"] }
+    }
+
+    const reviewState = await this.store.get()
+    const reviewLedger = await this.usageCutoverLedger(reservation.reservationID).catch(() => undefined)
+    const reviewCentral = await this.operatorReconciliationSnapshot(conversationID, sessionID, reservation.reservationID).catch(() => undefined)
+    if (!reviewLedger || !reviewCentral || reviewState.sessionID !== sessionID || reviewState.queued ||
+      reviewState.budgetReservation?.reservationID !== reservation.reservationID ||
+      reviewState.budgetReservation?.date !== reservation.date || reviewState.budgetReservation?.dispatched !== true ||
+      reviewCentral.snapshotID !== central.snapshotID || reviewLedger.snapshotID !== authorityLedger.snapshotID) {
+      return { ok: false, status: 409, error: "reconciliation evidence changed while quiescence was checked", blockers: ["snapshot_changed"] }
+    }
+    const reviewAuthority: RecoveryAuthority = {
+      conversationID,
+      snapshotID: reviewLedger.snapshotID,
+      holds: reviewLedger.holds,
+      legacyRows: reviewLedger.legacyRows,
+      ...(reviewLedger.retirement ? { retirement: reviewLedger.retirement } : {}),
+    }
+    const reviewClassification = classifyRecovery({
+      conversationID, state: reviewState, authority: reviewAuthority,
+      live: { admitting: false, pumping: false },
+    })
+    if (reviewClassification.kind !== "dispatched" || reviewClassification.blockers.length) {
+      return { ok: false, status: 409, error: "local reservation ownership changed during quiescence", blockers: reviewClassification.blockers }
+    }
+
+    let usageDate: string | null = null
+    let actualCostUSD: number | null = null
+    let input: number | null = null
+    let output: number | null = null
+    let assistantMessageID: string | undefined
+    let evidenceReference = `opencode://session/${encodeURIComponent(sessionID)}/quiescent-context`
+    if (kind === "observed_actual") {
+      const messages = evidence.context as MessageInfo[]
+      const baseline = reviewState.turnBaseline
+      const runStartedAt = reviewState.runStartedAt
+      if (!Array.isArray(messages) ||
+        (baseline !== undefined && (typeof baseline !== "string" || !baseline || !messages.some((message) => message.id === baseline))) ||
+        typeof runStartedAt !== "number" || !Number.isFinite(runStartedAt) || runStartedAt <= 0 ||
+        !isSettled(messages, baseline)) {
+        return { ok: false, status: 409, error: "a settled current-turn assistant with exact usage is unavailable", blockers: ["settled_assistant_usage_missing"] }
+      }
+      const currentTurn = baseline ? turnMessages(messages, baseline) : messages
+      const users = currentTurn.filter((message) => message.type === "user")
+      const assistants = currentTurn.filter((message) => message.type === "assistant")
+      // This first reconciliation slice only imports a single assistant step.
+      // Tool-call continuations and auxiliary assistant entries can each carry
+      // billable usage, so summing or selecting only the final step is unsafe.
+      const terminal = assistants.length === 1 ? assistants[0] : undefined
+      const userCreated = users[0]?.time?.created
+      const assistantCreated = terminal?.time?.created
+      const completed = terminal?.time?.completed
+      const tokens = terminal?.tokens
+      const incomplete: string[] = []
+      if (currentTurn.some((message) => !["user", "assistant", "idle", "model-switched"].includes(message.type ?? ""))) {
+        incomplete.push("current_turn_contains_unpriced_or_auxiliary_entries")
+      }
+      if (users.length !== 1) incomplete.push("current_turn_user_boundary_ambiguous")
+      if (assistants.length !== 1) incomplete.push("current_turn_assistant_steps_ambiguous")
+      if (typeof userCreated !== "number" || !Number.isFinite(userCreated) || userCreated <= 0 ||
+        toMillis(userCreated) < runStartedAt) incomplete.push("current_turn_user_time_unverified")
+      if (typeof assistantCreated !== "number" || !Number.isFinite(assistantCreated) || assistantCreated <= 0 ||
+        toMillis(assistantCreated) < runStartedAt ||
+        typeof userCreated === "number" && toMillis(assistantCreated) < toMillis(userCreated)) {
+        incomplete.push("assistant_creation_time_unverified")
+      }
+      if (!terminal?.id) incomplete.push("assistant_id_missing")
+      if (typeof completed !== "number" || !Number.isFinite(completed) || completed <= 0 ||
+        toMillis(completed) < runStartedAt ||
+        typeof assistantCreated === "number" && toMillis(completed) < toMillis(assistantCreated)) incomplete.push("completed_time_missing_or_unordered")
+      if (typeof terminal?.cost !== "number" || !Number.isFinite(terminal.cost) || terminal.cost < 0) incomplete.push("assistant_cost_missing")
+      if (typeof tokens?.input !== "number" || !Number.isFinite(tokens.input) || tokens.input < 0) incomplete.push("input_tokens_missing")
+      if (typeof tokens?.output !== "number" || !Number.isFinite(tokens.output) || tokens.output < 0) incomplete.push("output_tokens_missing")
+      if (incomplete.length) return { ok: false, status: 409, error: "terminal assistant usage fields are incomplete", blockers: incomplete }
+      usageDate = new Date(toMillis(completed as number)).toISOString().slice(0, 10)
+      if (usageDate !== reservation.date) {
+        return { ok: false, status: 409, error: "cross-midnight observed usage requires a separate reviewed projection", blockers: ["usage_date_differs_from_reservation_date"] }
+      }
+      actualCostUSD = terminal!.cost as number
+      input = tokens!.input as number
+      output = tokens!.output as number
+      assistantMessageID = terminal!.id
+      const source = baseline ? "settled-current-turn" : "first-turn-context-and-timing"
+      evidenceReference = `opencode://session/${encodeURIComponent(sessionID)}/assistant/${encodeURIComponent(assistantMessageID as string)}?source=${source}`
+    }
+
+    const localSnapshot = await recoverySnapshotID({
+      conversationID,
+      state: reviewState,
+      authority: reviewAuthority,
+      live: { admitting: false, pumping: false },
+    })
+    const draftBase = {
+      conversationID,
+      sessionID,
+      reservationID: reservation.reservationID,
+      originDate: reservation.date,
+      usageDate,
+      expectedLedgerSnapshotID: central.snapshotID as string,
+      expectedLocalSnapshotID: localSnapshot,
+      quiescence: evidence.proof,
+      quiescenceDigest: evidence.digest,
+      kind,
+      actualCostUSD,
+      input,
+      output,
+      ...(assistantMessageID ? { assistantMessageID } : {}),
+      evidenceReference,
+      evidenceSHA256: evidence.proof.contextDigest,
+    } satisfies Omit<OperatorReconciliationDraft, "receiptID">
+    const receiptID = `operator-${(await sha256Hex(JSON.stringify(draftBase))).slice(0, 40)}`
+    const draft: OperatorReconciliationDraft = { receiptID, ...draftBase }
+
+    const basis = central.projectedDayBasis as Record<string, unknown>
+    const holdUSD = central.hold.costUSD as number
+    const actualUSD = kind === "observed_actual" ? actualCostUSD as number : 0
+    const historicalAfter = Math.max(0, (basis.attributedUSD as number) - holdUSD + actualUSD)
+    const currentBefore = budgetBasis as Record<string, unknown>
+    const currentActualAfter = (currentBefore.actualUSD as number) +
+      (kind === "observed_actual" && usageDate === currentBefore.date ? actualUSD : 0)
+    const currentReservedAfter = Math.max(0, (currentBefore.reservedUSD as number) - holdUSD)
+    const currentAdmittedAfter = currentActualAfter + currentReservedAfter
+    const currentBudgetUSD = currentBefore.budgetUSD as number
+    const currentRemainingAfter = currentBudgetUSD > 0 ? Math.max(0, currentBudgetUSD - currentAdmittedAfter) : null
+    const amount = kind === "observed_actual"
+      ? `Measured actual: $${actualUSD.toFixed(7)}; ${input} input / ${output} output tokens.`
+      : `Actual amount: unknown (null, not $0). Releasing the $${holdUSD.toFixed(4)} reservation does not establish that no historical charge occurred.`
+    const body: UnknownRecord = {
+      ok: true,
+      canApply: true,
+      kind,
+      proposal: draft,
+      evidence: kind === "observed_actual"
+        ? {
+            source: reviewState.turnBaseline ? "settled_current_turn_assistant" : "first_turn_context_and_timing",
+            assistantMessageID,
+            usageDate,
+            ...(reviewState.turnBaseline ? {} : {
+              attributionLimit: "Uses the sole timestamped user/assistant turn after runStartedAt; no prompt ID proves exclusivity, so this requires operator review of an isolated run with no other writer.",
+            }),
+          }
+        : { source: "quiescent_session_context", usageDate: null },
+      accounting: {
+        originDate: reservation.date,
+        usageDate,
+        reservationUSD: holdUSD,
+        historicalOriginDateAttribution: {
+          date: basis.date,
+          beforeUSD: basis.attributedUSD,
+          afterUSD: historicalAfter,
+        },
+        currentBudget: {
+          date: currentBefore.date,
+          reportedSpendBeforeUSD: currentBefore.actualUSD,
+          reportedSpendAfterUSD: currentActualAfter,
+          reservedBeforeUSD: currentBefore.reservedUSD,
+          reservedAfterUSD: currentReservedAfter,
+          admittedBeforeUSD: currentBefore.admittedUSD,
+          admittedAfterUSD: currentAdmittedAfter,
+          budgetUSD: currentBudgetUSD,
+          remainingBeforeUSD: currentBefore.remainingUSD,
+          remainingAfterUSD: currentRemainingAfter,
+        },
+        uncertainty: kind === "acknowledged_unknown"
+          ? "Reported spend and available headroom exclude any possible historical charge represented by this unknown amount."
+          : "Measured from the settled assistant usage fields; provider billing may differ.",
+        summary: amount,
+      },
+      localSnapshotID: localSnapshot,
+      centralSnapshotID: central.snapshotID,
+    }
+    return { ok: true, draft, body }
+  }
+
+  private async operatorReconciliationSnapshot(
+    conversationID: string,
+    sessionID: string,
+    reservationID: string,
+  ): Promise<UnknownRecord> {
+    const query = new URLSearchParams({ conversationID, sessionID, reservationID })
+    const response = await this.env.SETTINGS.getByName("global").fetch(`https://settings/usage/reconciliation?${query}`)
+    if (!response.ok) throw new Error("operator reconciliation snapshot unavailable")
+    const value: unknown = await response.json()
+    if (!isRecord(value)) throw new Error("operator reconciliation snapshot malformed")
+    return value
+  }
+
+  private async applyOperatorReconciliation(proposal: OperatorReconciliationProposal): Promise<Response> {
+    if (proposal.conversationID !== this.ctx.id.toString()) {
+      return Response.json({ error: "conversation owner does not match this route" }, { status: 409 })
+    }
+    if (await hashOperatorQuiescence(proposal.quiescence) !== proposal.quiescenceDigest) {
+      return Response.json({ error: "quiescence proof digest does not match" }, { status: 400 })
+    }
+
+    return this.withAdmissionLock(async () => {
+      if (this.admitting || this.pumping || this.recoveryAction) {
+        return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
+      }
+      this.recoveryAction = true
+      try {
+        return await this.enqueueUsageReplay(async () => {
+          const digest = await operatorReconciliationDigest(proposal)
+          const central = await this.operatorReconciliationSnapshot(
+            proposal.conversationID, proposal.sessionID, proposal.reservationID,
+          ).catch(() => undefined)
+          if (!central) return Response.json({ error: "reconciliation authority is unavailable" }, { status: 503 })
+          const existingReceipt = isRecord(central.existingReceipt) ? central.existingReceipt as unknown as OperatorReconciliationReceipt : undefined
+          const completeRetirement = async (): Promise<RecoveryRetirement & { operatorReceiptID?: string } | undefined> => {
+            const ledger = await this.usageCutoverLedger(proposal.reservationID).catch(() => undefined)
+            const retirement = ledger?.retirement
+            return retirement?.conversationID === proposal.conversationID &&
+              retirement.reservationID === proposal.reservationID && retirement.date === proposal.originDate &&
+              retirement.reason === "released" && retirement.released === true &&
+              retirement.operatorReceiptID === proposal.receiptID
+              ? retirement
+              : undefined
+          }
+          if (existingReceipt) {
+            if (existingReceipt.requestDigest !== digest || existingReceipt.receiptID !== proposal.receiptID ||
+              existingReceipt.conversationID !== proposal.conversationID || existingReceipt.sessionID !== proposal.sessionID ||
+              existingReceipt.reservationID !== proposal.reservationID) {
+              return Response.json({ error: "a conflicting reconciliation receipt already exists" }, { status: 409 })
+            }
+            const retirement = await completeRetirement()
+            if (!retirement) return Response.json({ error: "central receipt retirement is not confirmed" }, { status: 503 })
+            return this.clearAcknowledgedOperatorReservation(proposal, existingReceipt, retirement, true)
+          }
+
+          const preview = await this.buildOperatorReconciliationDraft(proposal.kind)
+          if (!preview.ok) return Response.json({ error: preview.error, ...(preview.blockers ? { blockers: preview.blockers } : {}) }, { status: preview.status })
+          if (!sameOperatorReview(preview.draft, proposal)) {
+            return Response.json({ error: "proposal no longer matches the reviewed preview" }, { status: 409 })
+          }
+          const response = await this.env.SETTINGS.getByName("global").fetch("https://settings/usage/reconciliation", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(proposal),
+          })
+          const result: unknown = await response.json().catch(() => undefined)
+          if (!response.ok) return Response.json(isRecord(result) ? result : { error: "central reconciliation rejected" }, { status: response.status })
+          if (!isRecord(result) || result.ok !== true || !isRecord(result.receipt) || !isRecord(result.retirement)) {
+            return Response.json({ error: "central reconciliation acknowledgement is unreadable" }, { status: 502 })
+          }
+          const receipt = result.receipt as unknown as OperatorReconciliationReceipt
+          const retirement = result.retirement as unknown as RecoveryRetirement & { operatorReceiptID?: string }
+          if (receipt.requestDigest !== digest || receipt.receiptID !== proposal.receiptID ||
+            receipt.conversationID !== proposal.conversationID || receipt.sessionID !== proposal.sessionID ||
+            receipt.reservationID !== proposal.reservationID || retirement.conversationID !== proposal.conversationID ||
+            retirement.reservationID !== proposal.reservationID || retirement.date !== proposal.originDate ||
+            retirement.reason !== "released" || retirement.released !== true || retirement.operatorReceiptID !== proposal.receiptID ||
+            typeof receipt.createdAt !== "number" || !Number.isFinite(receipt.createdAt) || receipt.createdAt <= 0) {
+            return Response.json({ error: "central reconciliation receipt did not match the reviewed owner" }, { status: 502 })
+          }
+          return this.clearAcknowledgedOperatorReservation(proposal, receipt, retirement, Boolean(result.replayed))
+        })
+      } catch {
+        return Response.json({ error: "operator reconciliation could not be completed", retryable: true }, { status: 503 })
+      } finally {
+        this.recoveryAction = false
+      }
+    })
+  }
+
+  private async clearAcknowledgedOperatorReservation(
+    proposal: OperatorReconciliationProposal,
+    receipt: OperatorReconciliationReceipt,
+    retirement: RecoveryRetirement & { operatorReceiptID?: string },
+    replayed: boolean,
+  ): Promise<Response> {
+    const state = await this.store.get()
+    const marker = {
+      receiptID: receipt.receiptID,
+      reservationID: receipt.reservationID,
+      kind: receipt.kind,
+      createdAt: receipt.createdAt,
+      usageDate: receipt.usageDate,
+      actualCostUSD: receipt.actualCostUSD,
+    } as const
+    if (!state.budgetReservation) {
+      if (state.operatorReconciliation?.receiptID === receipt.receiptID && state.sessionID === proposal.sessionID) {
+        return Response.json({ ok: true, replayed: true, localCleared: false, receipt: marker, retirement })
+      }
+      return Response.json({ error: "central receipt exists, but the local reservation owner has changed" }, { status: 409 })
+    }
+    const cleared = await this.store.clearOperatorReconciledReservation({
+      sessionID: proposal.sessionID,
+      reservationID: proposal.reservationID,
+      date: proposal.originDate,
+      marker,
+    })
+    if (!cleared) return Response.json({ error: "central receipt exists, but the local owner or work changed" }, { status: 409 })
+    return Response.json({ ok: true, replayed, localCleared: true, receipt: marker, retirement })
   }
 
   /** Read-only preview over local lifecycle, provider runtime, durable log, and Settings ledger. */
@@ -2721,6 +3364,7 @@ export class Conversation extends DurableObject<Env> {
   /** Alarm fallback: poll while a stream is not covering the run. */
   async alarm(): Promise<void> {
     try {
+      if (await this.hasPendingRuntimeUpgrade()) return
       if (this.recoveryAction) {
         await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
         return
@@ -2974,10 +3618,285 @@ export class Conversation extends DurableObject<Env> {
     return this.readying
   }
 
+  private async readRuntimeUpgradePending(): Promise<RuntimeUpgradePending | undefined> {
+    const raw = await this.ctx.storage.get<unknown>("runtimeUpgradePending")
+    if (raw === undefined) return undefined
+    const pending = parseRuntimeUpgradePending(raw)
+    if (pending.conversationID !== this.ctx.id.toString()) {
+      throw new Error("runtime upgrade intent belongs to another conversation")
+    }
+    return pending
+  }
+
+  private async hasPendingRuntimeUpgrade(): Promise<boolean> {
+    return (await this.ctx.storage.get<unknown>("runtimeUpgradePending")) !== undefined
+  }
+
+  private async previewRuntimeUpgrade(): Promise<Response> {
+    return this.withAdmissionLock(async () => {
+      if (this.admitting || this.pumping || this.recoveryAction) {
+        return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
+      }
+      this.recoveryAction = true
+      try {
+        return await this.enqueueUsageReplay(async () => {
+          const pending = await this.readRuntimeUpgradePending()
+          if (pending) {
+            const state = await this.store.get()
+            const ledger = await this.usageCutoverLedger().catch(() => undefined)
+            if (!ledger || ledger.conversationID !== this.ctx.id.toString() || ledger.holds.length || ledger.blockers.length ||
+              state.sessionID !== pending.sessionID || state.queued || state.budgetReservation || state.checkpointPending ||
+              (state.phase ?? "idle") !== "idle") {
+              return Response.json({ pending: true, canApply: false, error: "runtime upgrade resume is blocked by changed work or usage state" }, { status: 409 })
+            }
+            return Response.json({ pending: true, canApply: true, planID: pending.planID, sessionID: pending.sessionID, targetImage: pending.targetImage })
+          }
+          const draft = await this.buildRuntimeUpgradePlan()
+          if (!draft.ok) return Response.json({ canApply: false, blockers: draft.blockers, error: draft.error }, { status: draft.status })
+          return Response.json(draft.body)
+        })
+      } catch {
+        return Response.json({ error: "runtime upgrade preview could not be verified", retryable: true }, { status: 503 })
+      } finally {
+        this.recoveryAction = false
+      }
+    })
+  }
+
+  private async buildRuntimeUpgradePlan(): Promise<
+    | { ok: true; body: UnknownRecord; pending: RuntimeUpgradePending }
+    | { ok: false; status: number; error: string; blockers: string[] }
+  > {
+    const state = await this.store.get()
+    const sessionID = state.sessionID
+    const blockers: string[] = []
+    if (!sessionID) blockers.push("original_session_required")
+    if ((state.phase ?? "idle") !== "idle") blockers.push("conversation_not_idle")
+    if (state.queued) blockers.push("queued_work")
+    if (state.budgetReservation) blockers.push("local_usage_hold")
+    if (state.checkpointPending) blockers.push("checkpoint_pending")
+    if (this.admitting || this.pumping || !this.recoveryAction) blockers.push("live_local_operation")
+    const target = this.ctx.container?.images?.evented
+    const targetImage = typeof target === "string" ? target : ""
+    if (!/^[a-zA-Z0-9._:/-]+@sha256:[a-f0-9]{64}$/.test(targetImage)) blockers.push("pinned_evented_image_unavailable")
+    if ((await this.ctx.storage.get<unknown>("containerImageVariant")) === "evented") blockers.push("runtime_already_evented")
+    let ledger: UsageCutoverLedger | undefined
+    try {
+      ledger = await this.usageCutoverLedger()
+      if (ledger.conversationID !== this.ctx.id.toString() || ledger.blockers.length || ledger.holds.length) {
+        blockers.push("central_usage_hold_or_ledger_blocker")
+      }
+    } catch {
+      blockers.push("central_usage_authority_unavailable")
+    }
+    if (blockers.length) return { ok: false, status: blockers.includes("central_usage_authority_unavailable") ? 503 : 409, error: "runtime upgrade is blocked", blockers }
+    try {
+      await this.ensureReady()
+      const port = this.opencodePort
+      const generation = this.opencodeGeneration
+      if (!port || !generation) throw new Error("runtime generation unavailable")
+      const client = makeClient(portFetch(port))
+      assertAccountingPolicy(await client.config.get())
+      const quiescent = await this.proveRuntimeUpgradeSession(client, sessionID!)
+      if (quiescent.proof.sessionID !== sessionID || quiescent.proof.runtimeGeneration !== generation) {
+        throw new Error("runtime changed during quiescence proof")
+      }
+      const localSnapshot = await this.runtimeUpgradeLocalSnapshot()
+      const localSnapshotID = await this.sha256(JSON.stringify(localSnapshot))
+      const sourceGeneration = generation
+      const planCore = {
+        conversationID: this.ctx.id.toString(), sessionID, contextDigest: quiescent.proof.contextDigest,
+        sourceGeneration, targetImage, localSnapshotID, centralSnapshotID: ledger!.snapshotID,
+      }
+      const planID = await this.sha256(JSON.stringify(planCore))
+      const manifest: CheckpointManifest = {
+        workspace: { key: "preview/workspace.tar.gz", size: 1, encrypted: true },
+        state: { key: "preview/state.tar.gz", size: 1, encrypted: true },
+        createdAt: 1,
+      }
+      const intent: RuntimeUpgradePending = {
+        planID, conversationID: this.ctx.id.toString(), sessionID: sessionID!,
+        contextDigest: quiescent.proof.contextDigest, sourceGeneration, targetImage,
+        checkpointManifest: manifest, startedAt: Math.max(1, Date.now()),
+      }
+      return {
+        ok: true,
+        pending: intent,
+        body: {
+          canApply: true, planID, conversationID: this.ctx.id.toString(), sessionID,
+          sourceGeneration, targetImage, contextDigest: quiescent.proof.contextDigest,
+          localSnapshotID, centralSnapshotID: ledger!.snapshotID,
+          checkpointParts: ["workspace", "state"],
+          note: "Applying checkpoints and verifies the saved session before switching this conversation to the evented runtime.",
+        },
+      }
+    } catch {
+      return { ok: false, status: 503, error: "runtime upgrade quiescence could not be verified", blockers: ["runtime_or_session_unavailable"] }
+    }
+  }
+
+  private async runtimeUpgradeLocalSnapshot(): Promise<UnknownRecord> {
+    const state = await this.store.get()
+    return {
+      sessionID: state.sessionID ?? null,
+      phase: state.phase ?? "idle",
+      queued: state.queued ?? null,
+      budgetReservation: state.budgetReservation ?? null,
+      checkpointPending: state.checkpointPending ?? null,
+      checkpointManifest: state.checkpointManifest ?? null,
+      checkpointKey: state.checkpointKey ?? null,
+      settingsVersion: state.settingsVersion ?? null,
+      operatorReconciliation: state.operatorReconciliation ?? null,
+      containerImageVariant: await this.ctx.storage.get<unknown>("containerImageVariant") ?? null,
+    }
+  }
+
+  private async sha256(value: string): Promise<string> {
+    const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))
+    return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("")
+  }
+
+  private async proveRuntimeUpgradeSession(
+    client: ReturnType<typeof makeClient>,
+    sessionID: string,
+  ): Promise<Awaited<ReturnType<typeof proveRuntimeQuiescence>>> {
+    return proveRuntimeQuiescence({
+      client,
+      sessionID,
+      getRuntimeGeneration: async (signal) => {
+        const control = await this.port(CONTROL_PORT)
+        const response = await control.fetch("http://container/start", { method: "POST", signal })
+        if (!response.ok) throw new Error("runtime proof unavailable")
+        const proof = await response.json() as UnknownRecord
+        if (proof.ok !== true || proof.accountingPolicy !== ACCOUNTING_POLICY_ID ||
+          typeof proof.opencodeGeneration !== "string" || !proof.opencodeGeneration) {
+          throw new Error("runtime generation proof invalid")
+        }
+        this.opencodeGeneration = proof.opencodeGeneration
+        this.eventPersistence = proof.eventPersistence === true
+        this.eventPersistenceGeneration = proof.opencodeGeneration
+        return proof.opencodeGeneration
+      },
+    })
+  }
+
+  private async validateRuntimeUpgradeArchive(manifest: CheckpointManifest): Promise<void> {
+    if (!manifest.state || manifest.workspace.size <= 0 || manifest.state.size <= 0 ||
+      manifest.workspace.key === manifest.state.key) throw new Error("split checkpoint is incomplete")
+    const keyPrefix = this.checkpointPrefix()
+    for (const part of [manifest.workspace, manifest.state]) {
+      if (!part.key.startsWith(keyPrefix) || !Number.isSafeInteger(part.size) || part.size <= 0) {
+        throw new Error("split checkpoint metadata is invalid")
+      }
+      const object = await this.env.CHECKPOINTS.get(part.key)
+      if (!object || object.size !== part.size ||
+        object.customMetadata?.encrypted !== (part.encrypted ? "1" : "0")) {
+        throw new Error("split checkpoint object does not match its manifest")
+      }
+      if (!part.encrypted && !plaintextArchivesAllowed(this.env)) {
+        throw new Error("plaintext checkpoint archives are disabled")
+      }
+      const clear = await this.decryptCheckpointBody(object.body, part.encrypted)
+      const bytes = await new Response(clear).arrayBuffer()
+      if (bytes.byteLength <= 0) throw new Error("split checkpoint archive is empty")
+    }
+  }
+
+  private async applyRuntimeUpgrade(expectedPlanID: string): Promise<Response> {
+    return this.withAdmissionLock(async () => {
+      if (this.admitting || this.pumping || this.recoveryAction) {
+        return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
+      }
+      this.recoveryAction = true
+      try {
+        return await this.enqueueUsageReplay(async () => {
+          const completed = await this.ctx.storage.get<RuntimeUpgradeCompletion>("runtimeUpgradeCompletion")
+          if (completed?.planID === expectedPlanID && completed.conversationID === this.ctx.id.toString()) {
+            return Response.json({ ok: true, completed: true, replayed: true, receipt: completed })
+          }
+          let pending = await this.readRuntimeUpgradePending()
+          if (!pending) {
+            const plan = await this.buildRuntimeUpgradePlan()
+            if (!plan.ok) return Response.json({ error: plan.error, blockers: plan.blockers }, { status: plan.status })
+            if (plan.pending.planID !== expectedPlanID) return Response.json({ error: "runtime upgrade plan changed; review a fresh preview" }, { status: 409 })
+            if (!await this.checkpoint()) return Response.json({ error: "checkpoint failed; current runtime was kept" }, { status: 503 })
+            const latestState = await this.store.get()
+            const manifest = latestState.checkpointManifest
+            if (!manifest) return Response.json({ error: "a published split checkpoint is required; current runtime was kept" }, { status: 503 })
+            await this.validateRuntimeUpgradeArchive(manifest)
+            if (!this.opencodePort) return Response.json({ error: "runtime port changed after checkpoint; current runtime was kept" }, { status: 409 })
+            const afterCheckpoint = await this.proveRuntimeUpgradeSession(
+              makeClient(portFetch(this.opencodePort)), plan.pending.sessionID,
+            )
+            if (afterCheckpoint.proof.contextDigest !== plan.pending.contextDigest ||
+              afterCheckpoint.proof.runtimeGeneration !== plan.pending.sourceGeneration) {
+              return Response.json({ error: "session changed after checkpoint; current runtime was kept" }, { status: 409 })
+            }
+            pending = parseRuntimeUpgradePending({ ...plan.pending, checkpointManifest: manifest })
+            await this.ctx.storage.transaction(async (txn) => {
+              await txn.put("runtimeUpgradePending", pending!)
+              await txn.put("containerImageVariant", "evented")
+            })
+          } else if (pending.planID !== expectedPlanID) {
+            return Response.json({ error: "another runtime upgrade is pending" }, { status: 409 })
+          }
+          const current = await this.store.get()
+          const ledger = await this.usageCutoverLedger().catch(() => undefined)
+          if (!ledger || ledger.conversationID !== this.ctx.id.toString() || ledger.holds.length || ledger.blockers.length ||
+            current.sessionID !== pending.sessionID || current.queued || current.budgetReservation || current.checkpointPending ||
+            (current.phase ?? "idle") !== "idle" || this.admitting || this.pumping) {
+            return Response.json({ error: "runtime upgrade resume is blocked by changed work or usage state" }, { status: 409 })
+          }
+          await this.validateRuntimeUpgradeArchive(pending.checkpointManifest)
+          const container = this.ctx.container
+          if (!container) return Response.json({ error: "container binding unavailable; upgrade remains pending" }, { status: 503 })
+          if (container.images?.evented !== pending.targetImage) {
+            return Response.json({ error: "configured evented image changed; upgrade remains pending" }, { status: 409 })
+          }
+          if (container.running) {
+            await container.destroy()
+            await this.releaseLease()
+          }
+          this.ready = false
+          this.opencodePort = undefined
+          this.opencodeGeneration = undefined
+          this.eventPersistence = undefined
+          this.eventPersistenceGeneration = undefined
+          this.inactivitySet = false
+          this.runtimeUpgradeResuming = true
+          try {
+            await this.ensureReady()
+          } finally {
+            this.runtimeUpgradeResuming = false
+          }
+          const receipt = await this.ctx.storage.get<RuntimeUpgradeCompletion>("runtimeUpgradeCompletion")
+          if (!receipt || receipt.planID !== expectedPlanID) {
+            return Response.json({ error: "restored runtime proof is incomplete; upgrade remains pending" }, { status: 503 })
+          }
+          return Response.json({ ok: true, completed: true, receipt })
+        })
+      } catch (error) {
+        return Response.json({ error: errorMessage(error), pending: true, retryable: true }, { status: 503 })
+      } finally {
+        this.recoveryAction = false
+      }
+    })
+  }
+
   private async doEnsureReady(): Promise<ContainerPort> {
+    const upgradePending = await this.readRuntimeUpgradePending()
+    if (upgradePending && !this.runtimeUpgradeResuming) {
+      throw new Error("runtime upgrade is pending; an operator must resume verification before this conversation can run")
+    }
+    if (upgradePending && upgradePending.conversationID !== this.ctx.id.toString()) {
+      throw new Error("runtime upgrade intent belongs to another conversation")
+    }
     if (this.leaseHeld) void this.acquireLease().catch(() => {})
     if (this.ctx.container?.running) this.applyInactivity(this.ctx.container)
     await this.loadContainerImageVariant(this.ctx.container)
+    if (upgradePending && this.ctx.container?.images?.evented !== upgradePending.targetImage) {
+      throw new Error("configured evented image does not match the pending upgrade")
+    }
     const settings = await this.settings()
     const state = await this.store.get()
     const container = this.ctx.container
@@ -3008,7 +3927,7 @@ export class Conversation extends DurableObject<Env> {
       // destroying it; the new settings apply after this turn settles.
       deferSettingsRestart = true
     }
-    if (container && versionChanged && container.running && !deferSettingsRestart) {
+    if (!upgradePending && container && versionChanged && container.running && !deferSettingsRestart) {
       // A settings-driven restart must carry forward the provider credentials
       // and OpenCode database that live in the current container. Its prior
       // checkpoint may predate an account connection, so never destroy before
@@ -3027,7 +3946,7 @@ export class Conversation extends DurableObject<Env> {
     }
 
     // Fast path: this instance already verified the container for this spec.
-    if (this.ready && this.opencodePort && this.opencodeGeneration &&
+    if (!upgradePending && this.ready && this.opencodePort && this.opencodeGeneration &&
       (!container || container.running) && !versionChanged && (!providerSyncNeeded || busy)) {
       return this.opencodePort
     }
@@ -3039,7 +3958,9 @@ export class Conversation extends DurableObject<Env> {
     ).json()) as { initialized?: boolean }
 
     if (!status.initialized) {
-      const checkpoint = await this.latestCheckpoint()
+      const checkpoint = upgradePending
+        ? await this.runtimeUpgradeCheckpoint(upgradePending)
+        : await this.latestCheckpoint()
       if (checkpoint) {
         const workspace = await this.decryptCheckpointBody(
           checkpoint.workspace.body,
@@ -3082,7 +4003,7 @@ export class Conversation extends DurableObject<Env> {
           checkpointFingerprint: undefined,
           checkpointStateFingerprint: undefined,
         })
-      } else {
+      } else if (!upgradePending) {
         // A fresh conversation inherits the account's provider credentials, so
         // onboarding only has to happen once. A namespaced agent uses its own
         // seed and never falls back to the legacy global one.
@@ -3106,7 +4027,7 @@ export class Conversation extends DurableObject<Env> {
 
     // Configure after restore: /restore replaces /workspace, including the config.
     // A warm container on the same spec already has its config.
-    if (!status.initialized || (versionChanged && !deferSettingsRestart)) {
+    if (!upgradePending && (!status.initialized || (versionChanged && !deferSettingsRestart))) {
       const githubToken = await this.secret(GITHUB_TOKEN_KEY)
       await control.fetch("http://container/configure", {
         method: "POST",
@@ -3142,6 +4063,32 @@ export class Conversation extends DurableObject<Env> {
     const port = await this.port(OPENCODE_PORT)
     const opencode = makeClient(portFetch(port))
     assertAccountingPolicy(await opencode.config.get())
+    if (upgradePending) {
+      const targetImage = this.ctx.container?.images?.evented
+      if (!targetImage || targetImage !== upgradePending.targetImage || this.containerImageVariant !== "evented") {
+        throw new Error("restored runtime image does not match the pending upgrade")
+      }
+      const restoredQuiescence = await this.proveRuntimeUpgradeSession(opencode, upgradePending.sessionID)
+      if (restoredQuiescence.proof.runtimeGeneration !== proof.opencodeGeneration ||
+        restoredQuiescence.proof.contextDigest !== upgradePending.contextDigest) {
+        throw new Error("restored runtime quiescence does not match the saved upgrade intent")
+      }
+      const completion = await verifyRestoredRuntimeUpgrade({
+        pending: upgradePending,
+        client: opencode.session,
+        actualTargetImage: targetImage,
+        eventPersistence: proof.eventPersistence === true,
+        currentGeneration: proof.opencodeGeneration,
+      })
+      await this.ctx.storage.transaction(async (txn) => {
+        const current = parseRuntimeUpgradePending(await txn.get("runtimeUpgradePending"))
+        if (current.planID !== upgradePending.planID || current.conversationID !== this.ctx.id.toString()) {
+          throw new Error("runtime upgrade intent changed during restore verification")
+        }
+        await txn.put("runtimeUpgradeCompletion", completion)
+        await txn.delete("runtimeUpgradePending")
+      })
+    }
     if (providerSyncEligible && providerSyncAt && runtimeChanged && busy) this.providerSyncAt = undefined
     if (providerSyncEligible && providerSyncAt && !busy && (providerSyncNeeded || runtimeChanged)) {
       await this.syncOnboardingCredentials(opencode)
@@ -3149,7 +4096,7 @@ export class Conversation extends DurableObject<Env> {
     }
     await this.store.increment("containerStarts")
 
-    if (state.settingsVersion !== settings.version && !deferSettingsRestart) {
+    if (!upgradePending && state.settingsVersion !== settings.version && !deferSettingsRestart) {
       await this.store.patch({ settingsVersion: settings.version })
     }
 
@@ -3158,6 +4105,18 @@ export class Conversation extends DurableObject<Env> {
     this.opencodePort = port
     this.ready = true
     return port
+  }
+
+  private async runtimeUpgradeCheckpoint(pending: RuntimeUpgradePending): Promise<{
+    workspace: R2ObjectBody
+    state: R2ObjectBody
+    split: true
+  }> {
+    await this.validateRuntimeUpgradeArchive(pending.checkpointManifest)
+    const workspace = await this.env.CHECKPOINTS.get(pending.checkpointManifest.workspace.key)
+    const state = await this.env.CHECKPOINTS.get(pending.checkpointManifest.state!.key)
+    if (!workspace || !state) throw new Error("pending runtime upgrade checkpoint parts are unavailable")
+    return { workspace, state, split: true }
   }
 
   /** Copy missing active legacy-account credentials; existing conversation values always win. */
@@ -3195,7 +4154,7 @@ export class Conversation extends DurableObject<Env> {
 
   /** Hold one admission when the container cannot start; drain it from the alarm. */
   private async enqueue(text: string, slack?: SlackTarget): Promise<boolean> {
-    if (this.recoveryAction) return false
+    if (this.recoveryAction || await this.hasPendingRuntimeUpgrade()) return false
     const nextAttemptAt = Date.now() + 5000
     const claimed = await this.store.enqueue({
       text,

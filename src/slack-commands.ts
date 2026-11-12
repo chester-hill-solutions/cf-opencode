@@ -63,6 +63,7 @@ const HELP = [
   "• `!leave` — detach this thread; in DMs, use `!new` for a fresh session",
   "• `!usage` — show usage information",
   "• `!setup` / `!connect` — open account setup",
+  "• Images — one PNG or JPEG up to 5 MiB; the selected model must support images. If the bot is busy, resend when it is ready.",
 ].join("\n")
 
 function errorMessage(error: unknown): string {

@@ -21,6 +21,14 @@ export interface SlackEventEnvelope {
     user?: string
     bot_id?: string
     subtype?: string
+    files?: Array<{
+      id?: string
+      name?: string
+      mimetype?: string
+      size?: number
+      url_private?: string
+      url_private_download?: string
+    }>
   }
 }
 
