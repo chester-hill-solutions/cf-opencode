@@ -271,9 +271,9 @@ parallel. Models below are available in this session, not product model choices.
 
 | ID | Owner / model | Scope and dependencies | Done when |
 |---|---|---|---|
-| LC-0 | Inventory owner, `gpt-6-luna` / medium | Minimal real Worker fixture, dependency pin/lock, SDK public-API adapter; first | Fetch/alarm forwarding, named alarm-only startup, SQL+KV+job+alarm rollback, same-ID overlapping dispatch, bounded handoff/backstop, terminal error, sealed recovery and same-object reset proven; bundle/typecheck pass. |
-| LC-1a | Same inventory owner, `gpt-6-luna` / high if needed | Typed wake adapter and existing alarm responsibilities; LC-0 | Cut over all 23 writers together to distinct turn, admission, checkpoint and recovery intents, invoking their existing domain methods. SDK alone owns the physical alarm; no mixed old/new alarm owners. HTTP, Slack and queued dispatch marker/job regressions pass. |
-| LC-1b | Same owner, `gpt-6-luna` / medium | Lease renewal and SSE heartbeat jobs; LC-1a | Remove competing timer ownership; overlapping deadlines survive, disconnect cancels heartbeat, eviction reconstructs only missing work, attempts/nextAttemptAt preserved, exhausted/sealed jobs retain visible recovery state. |
+| LC-0 | Inventory owner, `gpt-6-luna` / medium | Minimal real Worker fixture, dependency pin/lock, SDK public-API adapter; first | Fetch/alarm forwarding, named alarm-only startup, SQL+KV+job+alarm rollback, same-ID outcome supersession, terminal error, simulated sealed-hook policy, same-object reset and real eviction proven; bundle/typecheck pass. Actual OOM handling remains an evidence limit. |
+| LC-1a | Dispatch owner, `gpt-6-luna` / high | Typed wake adapter and existing alarm responsibilities; LC-0 | Cut over all 23 writers together to distinct turn, admission, checkpoint and recovery intents. SDK alone owns the alarm. Prove overlapping side-effect exclusion and bounded handoff/backstop on this real adapter, plus HTTP/Slack/queued marker transactions; no second toy engine in LC-0. |
+| LC-1b | Inventory owner, `gpt-6-luna` / medium | Lease renewal and SSE heartbeat jobs; LC-1a | Remove competing timer ownership; overlapping deadlines survive, disconnect cancels heartbeat, eviction reconstructs only missing work, attempts/nextAttemptAt preserved, exhausted/sealed jobs retain visible recovery state. |
 | LC-2a | Dispatch owner, `gpt-6-luna` / high | Runtime + checkpoint modules/tests; LC-1 | Mechanical extraction preserves runtime image/policy/auth and encrypted archive contracts, protected seams and all existing recovery tests. |
 | LC-2b | Same dispatch owner, `gpt-6-luna` / high | Turns, usage/reconciliation and recovery; LC-2a | HTTP/Slack share the same admission service; no dispatcher or accounting store duplication; locks/tails remain with owners. |
 | LC-2c | Same owner, `gpt-6-luna` / medium | Control plane + event-stream modules; LC-2b | Coordinator delegates cohesive operations; routes, permission denies, credential custody and replay/backpressure unchanged. |
@@ -356,3 +356,19 @@ prove these contracts; the review is not runtime qualification.
 - LC-0 started on `codex/conversation-lifecycle`: pinned `agents@0.33.0`, with a
   test-only Lifecycle host and SQLite transaction/failure proofs under development.
   Production routes and alarm ownership have not changed at this checkpoint.
+- LC-0's first three real SQLite Worker tests passed: named startup/forwarding,
+  rollback of KV marker plus SDK SQL row plus physical alarm, and committed
+  marker/job wake. Evidence: `/tmp/cf-opencode-lc0-atomic-vitest.log`. This clears
+  the direct-SDK transaction gate; remaining failure/handoff/reset cases are
+  still being completed. LC-1a implementation has started against this gate.
+- LC-0's focused suite reached eight passing tests for queue semantics, terminal
+  failure and reset reuse. A sealed-memory hook is explicitly simulated, not a
+  real platform OOM. Domain handoff/backstop and side-effect exclusion proofs
+  move to LC-1a's real adapter rather than duplicate that implementation in a
+  toy fixture; LC-1a remains blocked on those tests.
+- LC-0 completed with nine real SQLite Worker tests, including actual eviction,
+  and a passing typecheck before LC-1 edits began. The config drift guard now
+  permits only the exact test wrapper/probe while checking all production
+  bindings as before; four negative/positive boundary tests pass. A later
+  overlapping typecheck saw incomplete LC-1 methods, so integrated checks must
+  run after that owner hands off rather than treating its partial file as final.

@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "cf-opencode-test",
-  "main": "src/index.ts",
+  "main": "./test/fixtures/worker.ts",
   "assets": { "directory": "./public" },
   "build": { "command": "bun run build:ui", "watch_dir": ["web", "packages/ui"] },
   "compatibility_date": "2026-08-22",
@@ -16,7 +16,8 @@
   "durable_objects": {
     "bindings": [
       { "class_name": "Conversation", "name": "CONVERSATION" },
-      { "class_name": "Settings", "name": "SETTINGS" }
+      { "class_name": "Settings", "name": "SETTINGS" },
+      { "class_name": "LifecycleProbe", "name": "LIFECYCLE_PROBE" }
     ]
   },
   "r2_buckets": [{ "binding": "CHECKPOINTS", "bucket_name": "cf-opencode-test" }],
@@ -29,6 +30,7 @@
   ],
   "exports": {
     "Conversation": { "type": "durable-object", "storage": "sqlite" },
-    "Settings": { "type": "durable-object", "storage": "sqlite" }
+    "Settings": { "type": "durable-object", "storage": "sqlite" },
+    "LifecycleProbe": { "type": "durable-object", "storage": "sqlite" }
   }
 }
