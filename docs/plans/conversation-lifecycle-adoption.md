@@ -34,7 +34,7 @@ Execution snapshot (the detailed assignments and release gates remain below):
 | LC-0 | SDK pin/SQLite compatibility and earlier native smoke verified. |
 | LC-1a | Full alarm cutover committed; local integrated gate passed. Native startup fixture now waits for SDK schema/publication and physical rearm; corrected CI pending. |
 | LC-1b | EventStream/heartbeat complete. Durable lease renewal/release recovery in implementation. |
-| LC-2 | Checkpoints, private runtime cache/ports, usage replay extracted. Control-plane module prepared; coordinator wiring in progress. High-level readiness, image policy, turns and recovery still open. |
+| LC-2 | Checkpoints, private runtime cache/ports, usage replay and control plane extracted. High-level readiness, image policy, turns and recovery still open. |
 | LC-3 | Runtime-use gate, no-inference measurement tool and isolated qualification fixture prepared. Close/reopen policy and actual measurements pending. |
 | LC-4 | Allowlisted envelope and tests complete; transition wiring pending. |
 | LC-5 | Existing replay/dedupe retained; optional further work not started. |
@@ -490,3 +490,8 @@ prove these contracts; the review is not runtime qualification.
   operator work. Coordinator integration removed 341 implementation lines;
   82 focused Worker tests and full typecheck passed. Budget admission and its
   dispatch-marker/job transaction remain at their existing owner boundary.
+- Control-plane token custody and permission/form operations now have one
+  module. Concurrent token creation is singleflight and transactional; real
+  SQLite tests prove stable identity across concurrent calls and reloads.
+  Existing public request types remain re-exported. Sixty-one focused Worker
+  tests, 70 Bun tests and full typecheck passed; policy/auth sources are unchanged.

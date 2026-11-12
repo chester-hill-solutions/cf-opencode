@@ -11,7 +11,7 @@ const EVENTED_IMAGE = "registry.cloudflare.com/test/conversation-evented@sha256:
 type Internal = {
   env: { EVENTED_FRESH_CONVERSATIONS?: string; SLACK_BOT_TOKEN?: string }
   key?: string
-  controlTokenValue?: string
+  controlPlane: { token(): Promise<string> }
   startOptions(): ContainerStartupOptions
   snapshotHandle(): Promise<unknown>
   startContainer(): Promise<boolean>
@@ -173,7 +173,8 @@ describe("isolated evented container image selection", () => {
       })
       const internal = instance as unknown as Internal
       internal.key = "slack-held-conversation"
-      internal.controlTokenValue = "control-token-test"
+      await runtime.storage.put("controlToken", "control-token-test")
+      await internal.controlPlane.token()
       const context = (instance as unknown as { ctx: { container: unknown } }).ctx
       const usedSnapshot = await internal.startBoundContainer(context.container)
       return {
@@ -192,11 +193,12 @@ describe("isolated evented container image selection", () => {
 
   it("selects the evented image only for the exact configured canary key", async () => {
     const stub = env.CONVERSATION.getByName("image-selection-evented")
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDurableObject(stub, async (instance, runtime) => {
       installContainer(instance, { base: BASE_IMAGE, evented: EVENTED_IMAGE })
       const internal = instance as unknown as Internal
       internal.key = env.EVENTED_CANARY_KEY
-      internal.controlTokenValue = "control-token-test"
+      await runtime.storage.put("controlToken", "control-token-test")
+      await internal.controlPlane.token()
       return internal.startOptions()
     })
 

@@ -34,6 +34,9 @@ import { ConversationEventStream } from "./conversation/event-stream"
 import { ConversationCheckpoints } from "./conversation/checkpoints"
 import { ConversationRuntime } from "./conversation/runtime"
 import { ConversationUsage, type UsageCutoverLedger } from "./conversation/usage"
+import { ConversationControlPlane } from "./conversation/control-plane"
+import type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
+export type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
 import { createSseParser } from "./sse"
 import { parseModelRef, type Env } from "./env"
 import { retryAfterSeconds } from "./backoff"
@@ -60,7 +63,7 @@ import {
 import { handleSlackCommand } from "./slack-commands"
 import { hasConnectedProvider } from "./onboarding"
 import { parseSlackCommand } from "./slack-command-format"
-import { answerHint, describeForm, formButtons, parseFormAnswer, visibleFields, type Form, type FormAnswer } from "./slack-forms"
+import { answerHint, describeForm, formButtons, type Form } from "./slack-forms"
 import {
   checkSlackImageModel,
   downloadSlackImage,
@@ -164,21 +167,6 @@ export interface SlackEventRequest {
   event: NonNullable<SlackEventEnvelope["event"]>
 }
 
-export interface SlackFormRequest {
-  sessionID: string
-  formID: string
-  channel: string
-  cancel?: boolean
-  field?: string
-  value?: string | number | boolean
-}
-
-export interface PermissionRequest {
-  requestID: string
-  decision: "once" | "always" | "reject"
-  sessionID?: string
-}
-
 export type BudgetReservationResult =
   | { kind: "granted"; reservation: BudgetReservation }
   | { kind: "denied"; message: string; spentUSD: number; reservedUSD: number; budgetUSD: number }
@@ -198,13 +186,12 @@ export class Conversation extends DurableObject<Env> {
   private readonly eventStream: ConversationEventStream
   private readonly checkpoints: ConversationCheckpoints
   private readonly usage: ConversationUsage
+  private readonly controlPlane: ConversationControlPlane
   private jobEpoch = 0
   private readonly activeLifecycleJobs = new Set<ConversationJobKind>()
   private streaming = false
   private pumping = false
   private consecutiveFailures = 0
-  /** Bearer token the container control server requires. */
-  private controlTokenValue?: string
   /** Event names seen on the warm stream, for diagnostics. */
   private seenEvents = new Map<string, number>()
   /** Last state of the warm stream: opened, an error, or idle. */
@@ -249,7 +236,7 @@ export class Conversation extends DurableObject<Env> {
         snapshotHandle: () => this.snapshotHandle(),
         clearSnapshot: () => this.clearSnapshot(),
       },
-      authorization: { controlToken: () => this.controlToken() },
+      authorization: { controlToken: () => this.controlPlane.token() },
       observations: {
         snapshotStale: () => {
           logEvent("snapshot.stale")
@@ -272,6 +259,14 @@ export class Conversation extends DurableObject<Env> {
       onMemoryLimit: (context) => this.onLifecycleMemoryLimit(context),
     })
     this.lifecycle.use(this.jobs)
+    this.controlPlane = new ConversationControlPlane({
+      storage: ctx.storage,
+      store: this.store,
+      withClient: (fn, recoverOnRejection) => this.withClient(fn, recoverOnRejection),
+      withAdmissionLock: (task) => this.withAdmissionLock(task),
+      hasPendingRuntimeUpgrade: () => this.hasPendingRuntimeUpgrade(),
+      scheduleObservation: (at, payload) => this.scheduleConversationJob("turn:observe", at, payload),
+    })
     this.checkpoints = new ConversationCheckpoints({
       conversationID: ctx.id.toString(),
       workspaceID: workspaceID(env),
@@ -457,8 +452,8 @@ export class Conversation extends DurableObject<Env> {
     const url = new URL(request.url)
     if (url.pathname === "/message") return this.onMessage((await request.json()) as MessageRequest)
     if (url.pathname === "/slack") return this.onSlackEvent((await request.json()) as SlackEventRequest)
-    if (url.pathname === "/permission") return this.onPermission((await request.json()) as PermissionRequest)
-    if (url.pathname === "/form" && request.method === "POST") return this.onSlackForm((await request.json()) as SlackFormRequest)
+    if (url.pathname === "/permission") return this.controlPlane.onPermission((await request.json()) as PermissionRequest)
+    if (url.pathname === "/form" && request.method === "POST") return this.controlPlane.onSlackForm((await request.json()) as SlackFormRequest)
     if (url.pathname === "/events") return this.onEvents(request)
     if (url.pathname === "/context") return this.onContext()
     if (url.pathname === "/accounting/cutover" && request.method === "GET") return this.previewAccountingCutover()
@@ -906,7 +901,7 @@ export class Conversation extends DurableObject<Env> {
         // restore over the freshly cleared conversation.
         await this.checkpoints.deleteAll()
         await this.resetConversationJobs()
-        this.controlTokenValue = undefined
+        this.controlPlane.clearCache()
         this.providerSyncAt = undefined
         return Response.json({ ok: true })
       })
@@ -961,7 +956,7 @@ export class Conversation extends DurableObject<Env> {
         this.runtime.resetAfterStop()
         await this.checkpoints.deleteAll()
         await this.resetConversationJobs()
-        this.controlTokenValue = undefined
+        this.controlPlane.clearCache()
         this.providerSyncAt = undefined
         logEvent("conversation.deleted")
         return Response.json({ ok: true })
@@ -1020,25 +1015,6 @@ export class Conversation extends DurableObject<Env> {
 
   // ------------------------------------------------------------ container start
 
-  /**
-   * Load or create the control-plane token. It is persisted so a restarted DO
-   * instance can still drive the container the previous instance started.
-   */
-  private async controlToken(): Promise<string> {
-    if (this.controlTokenValue) return this.controlTokenValue
-    const stored = await this.ctx.storage.get<string>("controlToken")
-    if (stored) {
-      this.controlTokenValue = stored
-      return stored
-    }
-    const bytes = new Uint8Array(32)
-    crypto.getRandomValues(bytes)
-    const token = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")
-    await this.ctx.storage.put("controlToken", token)
-    this.controlTokenValue = token
-    return token
-  }
-
   /** Startup options for the scheduling policy in use. */
   protected startOptions(): ContainerStartupOptions {
     const images = (this.ctx.container as unknown as { images?: Record<string, string> } | undefined)
@@ -1053,7 +1029,7 @@ export class Conversation extends DurableObject<Env> {
       // `basic` has no exact equivalent on this policy; standard-1 is the
       // closest size with enough memory for OpenCode plus stow.
       instance: "standard-1",
-      ...(this.controlTokenValue ? { env: { CONTROL_TOKEN: this.controlTokenValue } } : {}),
+      ...(this.controlPlane.cachedToken ? { env: { CONTROL_TOKEN: this.controlPlane.cachedToken } } : {}),
     } as ContainerStartupOptions
   }
 
@@ -1297,7 +1273,7 @@ export class Conversation extends DurableObject<Env> {
     try {
       // The token must exist before the container process starts, because it is
       // passed in the container environment.
-      await this.controlToken()
+      await this.controlPlane.token()
       await this.acquireLease()
       return await this.startBoundContainer(container)
     } catch (error) {
@@ -1371,9 +1347,9 @@ export class Conversation extends DurableObject<Env> {
         await this.store.patch({ slackEngaged: false })
         return "Stopped following this thread. Mention me to re-engage; use `!stop` to interrupt current work."
       },
-      listForms: (sessionID) => this.pendingForms(sessionID),
-      answerForm: (sessionID, formID, answer) => this.replyToForm(sessionID, formID, answer),
-      cancelForm: (sessionID, formID) => this.replyToForm(sessionID, formID),
+      listForms: (sessionID) => this.controlPlane.pendingForms(sessionID),
+      answerForm: (sessionID, formID, answer) => this.controlPlane.replyToForm(sessionID, formID, answer),
+      cancelForm: (sessionID, formID) => this.controlPlane.replyToForm(sessionID, formID),
       usageText: async () => {
         const response = await this.env.SETTINGS.getByName("global").fetch("https://settings/usage/today")
         if (!response.ok) throw new Error("Usage is temporarily unavailable")
@@ -1499,55 +1475,6 @@ export class Conversation extends DurableObject<Env> {
       })
       return "Stop requested; queued follow-ups cleared. Usage settlement will finish before the next turn."
     })
-  }
-
-  private async pendingForms(sessionID: string): Promise<Form[]> {
-    const rows = await this.withClient((client) => client.session.form.list({ sessionID }), false)
-    const pending: Form[] = []
-    for (const row of rows) {
-      const form = await this.withClient((client) => client.session.form.get({ sessionID, formID: row.id }), false)
-      if (form.sessionID === sessionID && form.state.status === "pending") pending.push(form)
-    }
-    return pending
-  }
-
-  private async replyToForm(sessionID: string, formID: string, answer?: FormAnswer): Promise<void> {
-    await this.withAdmissionLock(async () => {
-      if (await this.hasPendingRuntimeUpgrade()) throw new Error("A runtime upgrade is pending. Resume it before answering or cancelling a form.")
-      if ((await this.store.get()).sessionID !== sessionID) throw new Error("This question belongs to an older session.")
-      const form = await this.withClient((client) => client.session.form.get({ sessionID, formID }), false)
-      if (form.sessionID !== sessionID || form.state.status !== "pending") throw new Error("This question is no longer waiting for an answer.")
-      if (answer) await this.withClient((client) => client.session.form.reply({ sessionID, formID, answer }), false)
-      else await this.withClient((client) => client.session.form.cancel({ sessionID, formID, message: "Cancelled from Slack" }), false)
-      await this.scheduleConversationJob("turn:observe", Date.now() + 1000, {
-        reservationID: (await this.store.get()).budgetReservation?.reservationID,
-        reservationDate: (await this.store.get()).budgetReservation?.date,
-        sessionID,
-        reason: "form-completion-poll",
-      })
-    })
-  }
-
-  private async onSlackForm(input: SlackFormRequest): Promise<Response> {
-    try {
-      if (await this.hasPendingRuntimeUpgrade()) return Response.json({ error: "runtime upgrade is pending" }, { status: 409 })
-      if (!input || typeof input.sessionID !== "string" || typeof input.formID !== "string") return Response.json({ error: "invalid question" }, { status: 400 })
-      const state = await this.store.get()
-      if (state.sessionID !== input.sessionID || !state.slack || state.slack.channel !== input.channel) return Response.json({ error: "stale question or wrong channel" }, { status: 409 })
-      if (input.cancel === true) await this.replyToForm(input.sessionID, input.formID)
-      else {
-        const form = (await this.pendingForms(input.sessionID)).find((candidate) => candidate.id === input.formID)
-        const fields = form && visibleFields(form)
-        if (!form || fields?.length !== 1 || fields[0]?.key !== input.field ||
-          !["string", "boolean", "number"].includes(typeof input.value)) return Response.json({ error: "invalid question answer" }, { status: 400 })
-        const parsed = parseFormAnswer(form, String(input.value))
-        if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 })
-        await this.replyToForm(input.sessionID, input.formID, parsed.answer)
-      }
-      return Response.json({ ok: true })
-    } catch (error) {
-      return Response.json({ error: errorMessage(error) }, { status: 409 })
-    }
   }
 
   private async onSlackEvent(input: SlackEventRequest): Promise<Response> {
@@ -1794,19 +1721,6 @@ export class Conversation extends DurableObject<Env> {
     const settings = await this.settings().catch(() => undefined)
     if (settings?.streaming) this.ctx.waitUntil(this.startStream(sessionID))
     return Response.json({ ok: true, sessionID })
-  }
-
-  private async onPermission(input: PermissionRequest): Promise<Response> {
-    return this.withAdmissionLock(async () => {
-      if (await this.hasPendingRuntimeUpgrade()) return Response.json({ error: "runtime upgrade is pending" }, { status: 409 })
-      const sessionID = (await this.store.peekPermission(input.requestID)) ?? input.sessionID
-      if (!sessionID) return Response.json({ ok: false, error: "unknown request" }, { status: 404 })
-      await this.withClient((client) =>
-        client.permission.reply({ sessionID, requestID: input.requestID, decision: input.decision }),
-      )
-      await this.store.clearPermission(input.requestID)
-      return Response.json({ ok: true })
-    })
   }
 
   /** Diagnostics: the raw OpenCode message context for this conversation. */
@@ -2123,7 +2037,7 @@ export class Conversation extends DurableObject<Env> {
         this.withClient((client) => client.permission.list({ sessionID })).catch(
           () => [] as PermissionSummary[],
         ),
-        state.slack ? this.pendingForms(sessionID).catch(() => [] as Form[]) : Promise.resolve([] as Form[]),
+        state.slack ? this.controlPlane.pendingForms(sessionID).catch(() => [] as Form[]) : Promise.resolve([] as Form[]),
       ])
       const reply = latestAssistantReply(messages, state.turnBaseline)
       const settled = isSettled(messages, state.turnBaseline)
