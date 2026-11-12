@@ -41,16 +41,18 @@ a real HTTP model reply was observed, but accounting settlement did not identify
 the corresponding execution/terminal events because stock CLI 2.2.5 does not
 persist Bus events (`persist:false`). Its sequence 11 cursor is only a watermark,
 not unrecognized event rows. The published server API supports event persistence,
-and a custom Bun entrypoint is implemented and deployed only to isolated canary
+and a custom Bun entrypoint was implemented and first verified on isolated canary
 `event-retention-canary-20261111-02`. Its fresh HTTP task returned `READY` with
 terminal usage evidence and exact ledger acknowledgement. With separate user
 approval, fresh-conversation routing was enabled and the approved `#arfin-test`
 thread passed `!help`, `!new`, `!model`, a text reply, question Continue and
 permission approval. The task requested `SLACK_READY`; the final response
 matched. The two older `$0.10` holds remain for operator/manual reconciliation;
-do not auto-zero them. Existing held slots mean new conversations queue at the
-restored cap of 2. G0 text-reply/button evidence is passed; the wider product goal
-remains open for S8, capacity and S10 image handling. See the
+do not auto-zero them. The operator approved a temporary cap of 3, including its
+incremental runtime cost, until S8 reconciliation. Settings version 7 was verified
+with two held runtimes and one available slot. Restore the cap to 2 after S8 safely
+frees the held runtimes. G0 text-reply/button evidence is passed; the wider product
+goal remains open for S8 and S10 image handling. See the
 [connection record](runbook.md#slack-connection--2026-11-11) and
 [current usability evidence](plans/slack-usability.md#current-evidence).
 
@@ -66,8 +68,9 @@ returned `READY` and its usage was acknowledged; that does not reconstruct the
 older turns. Fresh-conversation routing was enabled with separate approval. The
 operator-approved `#arfin-test` thread passed `!help`, `!new`, `!model`, a text
 reply, question Continue and permission approval. The two older holds remain for
-S8 manual reconciliation, and new conversations queue while both standard
-slots are occupied. Slack image attachments remain planned under
+S8 manual reconciliation. An approved temporary third slot provides capacity for
+new work while the two older runtimes remain held. Slack image attachments remain
+planned under
 [S10](plans/slack-usability.md#s10--image-attachments-planned): authenticated image
 delivery, model capability checks and an explicit response with compatible-model
 suggestions when the selected model cannot read images. Selection stays unchanged
@@ -193,7 +196,7 @@ repositories until R1-7 removes long-lived credentials from repository execution
 | R0-1 | Connect Workers Builds (root `.`, `bun install`, `npx wrangler deploy`) | S | user | recorded **blocked**; deployment status not rechecked on Nov 11 |
 | R0-2 | Real Slack/HTTP tasks with observable outcomes; verify settle, files, restore and model usage | S | agent | blocked on R0-1 and remaining R0-11 work; same-workspace/S3 task claims additionally require R0-15; R0-10/R0-13 local prerequisites verified |
 | R0-3 | `bench/measure.ts` + `bench/container.sh`: cold start, checkpoint size/time, restore, turn latency | S | agent | blocked on R0-1/R0-2 for live task measurements |
-| R0-4 | Slack cutover: Event Subscriptions + Interactivity URLs, Socket Mode off, stop launchd bot | S | both | **partial**; app switched, engaged-thread replies enabled, old bot unloaded/disabled; help/usage/catalogue and text reply verified; question Continue and permission approval passed; two older holds remain for S8; both standard slots occupied; image attachments unimplemented; broader product goal remains open |
+| R0-4 | Slack cutover: Event Subscriptions + Interactivity URLs, Socket Mode off, stop launchd bot | S | both | **partial**; app switched, engaged-thread replies enabled, old bot unloaded/disabled; help/usage/catalogue and text reply verified; question Continue and permission approval passed; two older holds remain for S8; temporary third slot approved and verified available for new work; image attachments unimplemented; broader product goal remains open |
 | R0-5 | Audit 22: explicit conversation state machine (`idle → admitting → running → settling → idle`, guarded transitions) | M | agent | **done** |
 | R0-6 | Audit cluster 1: performance pass (hot paths, SSE fan-out, R2 sizes) | S | agent | **done** (findings 25–28) |
 | R0-7 | Finish audit 23: turn latency, queue depth, checkpoint bytes, failure classes | M | agent | **done** (OTel export deferred) |

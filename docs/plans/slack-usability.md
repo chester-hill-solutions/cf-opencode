@@ -37,7 +37,7 @@ setup with the operator and verify the deployed behavior.
 | S5 | Independent consequential review | Bounded reviewer after integration | No unresolved lifecycle/accounting or authorization finding |
 | S6 | Build, deploy, operator provider connection, live verification | Parent + operator | Commands respond; connected model replies; question/permission paths checked where reproducible |
 | S7 | Preserve connected credentials during settings restart | Reuse S1 Luna owner; bounded Terra review | Checkpoint both archive parts before destruction; preserve running/held work and concurrent onboarding; fail closed if saving fails |
-| S8 | Reconcile both retained usage holds | Parent + accounting contract review + operator | Define a specific operator-evidence contract for manual reconciliation; it is not implemented. Keep both holds and never infer zero spend from missing logs. |
+| S8 | Reconcile both retained usage holds | Parent + accounting contract review + operator | Define a specific operator-evidence contract for manual reconciliation; it is not implemented. Keep both holds and never infer zero spend from missing logs. Restore the two-container limit after reconciliation safely frees the held runtimes. |
 | S9a | Native event persistence with actual `@opencode/server` package — implemented and locally verified | Existing command-dispatch owner, Luna / high | Preserve process initialization, CLI layers and accounting policy |
 | S9b | Persistent-event runtime and named image — ARM and AMD64 builds/smokes passed | Same owner, Luna / high | Preserve Global/AppProcess layers, database path, policy, environment and agent UID |
 | S9c | Isolated canary routing — deployed; canary 02 passed | Inventory owner, Luna / medium | Pin base and evented image digests; durable image binding selects only the explicit canary or enabled fresh conversations |
@@ -83,8 +83,8 @@ after confirming it is needed and preparing the concrete change.
 Completion requires a live image interpretation with a compatible model and a
 live rejection with a model that cannot read images. The rejection must preserve
 the selected model and create no model request or reservation. Local tests alone
-do not close S10. Image support does not clear S8 holds or resolve the separate
-container-capacity decision.
+do not close S10. Image support does not reconcile S8 holds or remove the need
+for the temporary third slot.
 
 ## Verification and rollout
 
@@ -182,16 +182,18 @@ subscription. Testing outside the operator's DM requires an agreed destination.
   and must not be downgraded. The old canary-01 storage/evidence is preserved.
 - The `after: 0` usage-preview cursor fix passed regression tests and a live
   recheck after canary restore; there was no blocker and no ledger change. Capacity
-  was restored to 2 at settings version 6 after the Slack checks. Both slots are
-  occupied by the two older holds, so new conversations queue. Any temporary
-  third slot needs acknowledgement of its incremental runtime cost; this is
-  separate from manual reconciliation of the older holds.
+  was restored to 2 at settings version 6 after the Slack checks. The operator
+  subsequently approved a temporary third slot, including its incremental runtime
+  cost, until the two older holds are reconciled. The live limit is now 3 at
+  settings version 7. Verification found the two held runtimes occupying two
+  slots, with one slot available; both held reservations and sessions were
+  unchanged. Restore the limit to 2 after S8 safely frees the held runtimes.
 - Slack `!help`, `!new`, `!model`, text reply, question Continue and permission
   approval are verified in the approved `#arfin-test` thread.
 - The old Slack server-side session history was not recovered after upgrade;
   Slack messages remain. Do not describe the old DM as a restored server session.
 - S1/S2/S3/S4, isolated canary, fresh-conversation routing and the tested Slack
   text/button evidence are complete. S8 manual reconciliation for the two older
-  holds, the incremental runtime-cost decision for a third slot, and S10 image
-  support remain open; the wider product goal is not closed. Preserve held
-  containers and their evidence; do not force-recycle them.
+  holds and S10 image support remain open; the wider product goal is not closed.
+  The temporary third slot provides capacity for new work until S8 is resolved.
+  Preserve held containers and their evidence; do not force-recycle them.

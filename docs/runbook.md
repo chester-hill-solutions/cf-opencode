@@ -133,7 +133,7 @@ the log watermark, not a set of unrecognized rows. Stock CLI 2.2.5 configures it
 event Bus with `persist:false`, so replay has no execution, step-fence or terminal
 usage payloads. The published `@opencode/server@2.2.5` process API supports
 `events.persist:true`, but the stock CLI exposes no flag or environment variable;
-a custom Bun entrypoint is now deployed only to the isolated evented canary. That
+a custom Bun entrypoint was first verified on the isolated evented canary. That
 HTTP canary returned `READY` and its terminal usage was acknowledged against the
 ledger; the older sequence 11 turn remains unrecoverable. See the source links
 and live evidence in the [usability plan](plans/slack-usability.md#current-evidence).
@@ -145,9 +145,12 @@ charges or automatically clear them. The isolated canary's new hold was retired
 after exact ledger acknowledgement. Worker `eba77608-f3e4-4f48-b4e0-10a33e4e9567`
 now enables evented routing for proven-fresh conversations; existing histories,
 holds and checkpoints remain on the base image. The two older `$0.10` holds remain
-for S8 manual reconciliation and must not be auto-zeroed. Capacity is restored to
-2 (settings version 6); both slots are occupied, so new conversations queue. A
-possible third slot needs separate acknowledgement of incremental runtime cost.
+for S8 manual reconciliation and must not be auto-zeroed. After restoring the
+two-slot limit following testing, the operator approved a temporary third slot
+and its incremental runtime cost until reconciliation. The live limit is 3 at
+settings version 7; verification found two held runtimes and one available slot,
+with the held reservations and sessions unchanged. Restore `maxContainers` to 2
+after S8 safely frees the held runtimes.
 The old server-side session history was not recovered. Any future image rollout
 must preserve held containers and their evidence; do not force-recycle them.
 
