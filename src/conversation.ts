@@ -1,6 +1,5 @@
 import { DurableObject } from "cloudflare:workers"
 import { Lifecycle } from "agents/lifecycle"
-import type { MemoryLimitContext } from "agents/lifecycle"
 import { ClientError } from "@opencode/client"
 import { makeClient, portFetch, type ContainerPort } from "./opencode"
 import {
@@ -39,7 +38,7 @@ import { ConversationTurnExecution } from "./conversation/turn-execution"
 import { ConversationReadiness } from "./conversation/readiness"
 import { ConversationReconciliation } from "./conversation/reconciliation"
 import { ConversationAccountingCutover } from "./conversation/accounting-cutover"
-import { LEGACY_ALARM_MIGRATION_KEY, isFreshLegacyAlarmMigration, type LegacyAlarmMigration } from "./conversation/job-state"
+import { isFreshLegacyAlarmMigration } from "./conversation/job-state"
 import type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
 export type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
 import { parseModelRef, type Env } from "./env"
@@ -70,11 +69,8 @@ import {
   type RuntimeUpgradeCompletion,
   type RuntimeUpgradePending,
 } from "./runtime-upgrade"
-import {
-  ConversationJobs,
-  type ConversationJobKind,
-  type ConversationJobPayload,
-} from "./conversation/jobs"
+import type { ConversationJobPayload } from "./conversation/jobs"
+import { ConversationScheduler } from "./conversation/scheduler"
 
 type UnknownRecord = Record<string, unknown>
 
@@ -120,7 +116,7 @@ export type { BudgetReservationResult } from "./conversation/budget-reservations
 export class Conversation extends DurableObject<Env> {
   private readonly lifecycle: Lifecycle<Env>
   private readonly runtime: ConversationRuntime
-  private readonly jobs: ConversationJobs
+  private readonly scheduler: ConversationScheduler
   private readonly store: ConversationStore
   private readonly eventStream: ConversationEventStream
   private readonly checkpoints: ConversationCheckpoints
@@ -134,8 +130,6 @@ export class Conversation extends DurableObject<Env> {
   private readonly readiness: ConversationReadiness
   private readonly reconciliation: ConversationReconciliation
   private readonly accountingCutover: ConversationAccountingCutover
-  private jobEpoch = 0
-  private readonly activeLifecycleJobs = new Set<ConversationJobKind>()
   private consecutiveFailures = 0
   /** An admission is in flight in this instance; alarms must not reset it. */
   private admitting = false
@@ -185,18 +179,20 @@ export class Conversation extends DurableObject<Env> {
     this.lifecycle = new Lifecycle(this)
     this.eventStream = new ConversationEventStream(this.store)
     this.lifecycle.use(this.eventStream)
-    this.jobs = new ConversationJobs({
-      onStart: () => this.installLegacyAlarmBootstrap(),
-      turnObserve: (payload) => this.runTurnObservation(payload),
-      admissionRetry: (payload) => this.runAdmissionRetry(payload),
-      checkpointRetry: (payload) => this.runCheckpointRetry(payload),
-      recoveryWake: (payload) => this.runRecoveryWake(payload),
-      legacyBootstrap: (payload) => this.runLegacyAlarmBootstrap(payload),
-      leaseRenew: (payload) => this.runLeaseRenew(payload),
-      onJobError: (kind, payload, error) => this.handleConversationJobError(kind, payload, error),
-      onMemoryLimit: (context) => this.onLifecycleMemoryLimit(context),
+    this.scheduler = new ConversationScheduler({
+      storage: ctx.storage,
+      store: this.store,
+      waitUntil: (promise) => ctx.waitUntil(promise),
+      adoptLeaseIfNeeded: () => this.scheduleLeaseAdoptionIfNeeded(),
+      work: {
+        turnObserve: (payload) => this.processTurnObservation(payload),
+        admissionRetry: (payload) => this.processAdmissionRetry(payload),
+        checkpointRetry: (payload) => this.processCheckpointRetry(payload),
+        recoveryWake: (payload) => this.processRecoveryWake(payload),
+        leaseRenew: (payload) => this.processLeaseRenew(payload),
+      },
     })
-    this.lifecycle.use(this.jobs)
+    this.lifecycle.use(this.scheduler.capability)
     this.recoveryActions = new ConversationRecoveryActions({
       conversationID: ctx.id.toString(),
       storage: ctx.storage,
@@ -206,10 +202,10 @@ export class Conversation extends DurableObject<Env> {
         fetch: (input, init) => this.env.SETTINGS.getByName("global").fetch(input, init),
       },
       withAdmissionLock: (task) => this.withAdmissionLock(task),
-      live: () => ({ admitting: this.admitting, pumping: this.turnExecution.isPumping, activeJobs: this.activeLifecycleJobs.size }),
+      live: () => ({ admitting: this.admitting, pumping: this.turnExecution.isPumping, activeJobs: this.scheduler.activeCount }),
       jobs: {
-        epoch: () => this.ensureJobEpoch(),
-        scheduleRecovery: (at, payload, allowSealed) => this.scheduleConversationJob("recovery:wake", at, payload, allowSealed),
+        epoch: () => this.scheduler.epoch(),
+        scheduleRecovery: (at, payload, allowSealed) => this.scheduler.schedule("recovery:wake", at, payload, allowSealed),
       },
     })
     this.controlPlane = new ConversationControlPlane({
@@ -219,7 +215,7 @@ export class Conversation extends DurableObject<Env> {
       withClient: (fn, recoverOnRejection) => this.withClient(fn, recoverOnRejection),
       withAdmissionLock: (task) => this.withAdmissionLock(task),
       hasPendingRuntimeUpgrade: () => this.hasPendingRuntimeUpgrade(),
-      scheduleObservation: (at, payload) => this.scheduleConversationJob("turn:observe", at, payload),
+      scheduleObservation: (at, payload) => this.scheduler.schedule("turn:observe", at, payload),
     })
     this.images = new ConversationImages({
       storage: ctx.storage,
@@ -243,8 +239,8 @@ export class Conversation extends DurableObject<Env> {
         confirmedStopped: () => this.runtime.confirmedStopped,
       },
       jobs: {
-        schedule: (at, reason) => this.scheduleConversationJob("lease:renew", at, { reason }),
-        cancel: () => this.jobs.cancel("lease:renew"),
+        schedule: (at, reason) => this.scheduler.schedule("lease:renew", at, { reason }),
+        cancel: () => this.scheduler.cancel("lease:renew"),
       },
     })
     this.budgetReservations = new ConversationBudgetReservations({
@@ -253,8 +249,8 @@ export class Conversation extends DurableObject<Env> {
       store: this.store,
       settings: () => this.env.SETTINGS.getByName("global"),
       jobs: {
-        cancelQueuedAdmission: () => this.jobs.cancel("admission:retry"),
-        observe: (at, payload) => this.scheduleConversationJob("turn:observe", at, payload),
+        cancelQueuedAdmission: () => this.scheduler.cancel("admission:retry"),
+        observe: (at, payload) => this.scheduler.schedule("turn:observe", at, payload),
       },
       beforeDispatch: () => this.leases.ensureHeld(),
     })
@@ -267,8 +263,8 @@ export class Conversation extends DurableObject<Env> {
       archiveEnv: env,
       getControl: () => this.runtime.port(CONTROL_PORT),
       retry: {
-        schedule: (at, reason) => this.scheduleConversationJob("checkpoint:retry", at, { reason }),
-        cancel: () => this.jobs.cancel("checkpoint:retry"),
+        schedule: (at, reason) => this.scheduler.schedule("checkpoint:retry", at, { reason }),
+        cancel: () => this.scheduler.cancel("checkpoint:retry"),
       },
       count: (name) => this.count(name),
       deliverError: (message) => this.deliver({ type: "error", message }),
@@ -296,7 +292,7 @@ export class Conversation extends DurableObject<Env> {
         slackBotToken: () => this.env.SLACK_BOT_TOKEN,
       },
       conversationKey: () => this.key ?? this.ctx.id.name ?? this.ctx.id.toString(),
-      jobs: { schedule: (kind, at, payload) => this.scheduleConversationJob(kind, at, payload) },
+      jobs: { schedule: (kind, at, payload) => this.scheduler.schedule(kind, at, payload) },
       settings: () => this.settings(),
       releaseBudgetReservation: (reservation) => this.releaseBudgetReservation(reservation),
       waitUntil: (promise) => this.ctx.waitUntil(promise),
@@ -360,58 +356,6 @@ export class Conversation extends DurableObject<Env> {
     })
   }
 
-  private async ensureJobEpoch(): Promise<number> {
-    if (this.jobEpoch > 0) return this.jobEpoch
-    const stored = await this.ctx.storage.get<number>("conversationJobEpoch")
-    this.jobEpoch = Number.isSafeInteger(stored) && (stored as number) > 0 ? stored as number : 1
-    if (stored === undefined) await this.ctx.storage.put("conversationJobEpoch", this.jobEpoch)
-    return this.jobEpoch
-  }
-
-  private async scheduleConversationJob(
-    kind: ConversationJobKind,
-    at: number,
-    payload: Omit<ConversationJobPayload, "epoch" | "dueAt"> = {},
-    allowSealed = false,
-  ): Promise<void> {
-    const epoch = await this.ensureJobEpoch()
-    if (!allowSealed && await this.ctx.storage.get<boolean>("lifecycleJobsSealed")) {
-      throw new Error("conversation recovery jobs are sealed after an alarm memory limit")
-    }
-    await this.jobs.schedule(kind, at, { ...payload, epoch, dueAt: at })
-  }
-
-  /** Capture an old physical alarm before Lifecycle can replace the alarm source. */
-  private async captureLegacyAlarmMigration(alarmEntry: boolean): Promise<void> {
-    await this.ctx.storage.transaction(async (txn) => {
-      if (await txn.get<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY)) return
-      // Read and write under the same local transaction: SDK startup must not
-      // replace an old alarm between observing it and publishing the marker.
-      const physicalAlarm = await txn.getAlarm()
-      const dueAt = physicalAlarm ?? (alarmEntry ? Date.now() : null)
-      await txn.put<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY, {
-        version: 1,
-        dueAt,
-        scheduled: false,
-        consumed: dueAt === null,
-      })
-    })
-  }
-
-  /** Publish a one-shot translated wake only when a legacy alarm was observed. */
-  private async installLegacyAlarmBootstrap(): Promise<void> {
-    await this.ensureJobEpoch()
-    await this.ctx.storage.transaction(async (txn) => {
-      const migration = await txn.get<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY)
-      if (!migration || migration.version !== 1 || migration.dueAt === null ||
-        migration.scheduled || migration.consumed || await txn.get<boolean>("lifecycleJobsSealed")) return
-      const dueAt = Math.max(Date.now(), migration.dueAt)
-      await this.scheduleConversationJob("legacy:bootstrap", dueAt, { reason: "legacy-alarm-bootstrap" })
-      await txn.put<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY, { ...migration, dueAt, scheduled: true })
-    })
-    await this.scheduleLeaseAdoptionIfNeeded()
-  }
-
   private nativeLeaseEnabled(): boolean {
     return Boolean(this.ctx.container && !this.transport && !this.env.CONTAINER_URL && this.key !== ONBOARDING_KEY)
   }
@@ -419,121 +363,13 @@ export class Conversation extends DurableObject<Env> {
   /** Old native containers may predate the durable lease intent and renewal job. */
   private async scheduleLeaseAdoptionIfNeeded(): Promise<void> {
     if (!this.nativeLeaseEnabled() || !this.ctx.container?.running || await this.leases.status()) return
-    if (!this.jobs.has("lease:renew")) {
-      await this.scheduleConversationJob("lease:renew", Date.now(), { reason: "adopt-running-lease" })
+    if (!this.scheduler.has("lease:renew")) {
+      await this.scheduler.schedule("lease:renew", Date.now(), { reason: "adopt-running-lease" })
     }
-  }
-
-  /** One legacy alarm reconstructs missing domain intents once; it never prompts. */
-  private async runLegacyAlarmBootstrap(payload: ConversationJobPayload): Promise<undefined> {
-    if (!(await this.jobIsCurrent(payload))) return undefined
-    await this.ctx.storage.transaction(async (txn) => {
-      const migration = await txn.get<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY)
-      if (!migration || migration.version !== 1 || !migration.scheduled || migration.consumed) return
-      if (await txn.get<boolean>("lifecycleJobsSealed")) {
-        await txn.put<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY, {
-          ...migration,
-          scheduled: false,
-          consumed: true,
-        })
-        return
-      }
-      await this.rehydrateConversationJobs()
-      await txn.put<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY, {
-        ...migration,
-        scheduled: false,
-        consumed: true,
-      })
-    })
-  }
-
-  /** Recreate lost SDK wake rows from durable domain state; no external I/O. */
-  private async rehydrateConversationJobs(): Promise<void> {
-    const epoch = await this.ensureJobEpoch()
-    if (await this.ctx.storage.get<boolean>("lifecycleJobsSealed")) return
-    const state = await this.store.get()
-    const phase = state.phase ?? "idle"
-    if (!this.jobs.has("turn:observe") &&
-      (state.budgetReservation?.dispatched || phase === "running" || phase === "settling")) {
-      await this.scheduleConversationJob("turn:observe", Date.now(), {
-        reservationID: state.budgetReservation?.reservationID,
-        reservationDate: state.budgetReservation?.date,
-        sessionID: state.sessionID,
-        reason: "startup-rehydrate",
-      })
-    }
-    if (!this.jobs.has("recovery:wake") && phase === "admitting" && !state.budgetReservation?.dispatched) {
-      await this.scheduleConversationJob("recovery:wake", Date.now() + POLL_MS, {
-        ...(state.admissionID ? { admissionID: state.admissionID } : {}),
-        reason: "stale-admission-recovery",
-      })
-    }
-    if (state.queued) {
-      if (!this.jobs.has("admission:retry")) {
-        const queueID = state.queued.id ?? crypto.randomUUID()
-        if (!state.queued.id) await this.store.patch({ queued: { ...state.queued, id: queueID } })
-        await this.scheduleConversationJob("admission:retry", state.queued.nextAttemptAt ?? Date.now(), {
-          queueID,
-          reason: "queued-admission",
-        })
-      }
-    }
-    if (state.checkpointPending && !this.jobs.has("checkpoint:retry")) {
-      const retryAt = state.checkpointRetryAt ?? Date.now() + CHECKPOINT_RETRY_MS
-      if (!state.checkpointRetryAt) await this.store.patch({ checkpointRetryAt: retryAt })
-      await this.scheduleConversationJob("checkpoint:retry", retryAt, { reason: "checkpoint-retry" })
-    }
-    // Keep the local cache synchronized if a prior instance committed a reset epoch.
-    this.jobEpoch = epoch
-  }
-
-  private async onLifecycleMemoryLimit(context: MemoryLimitContext): Promise<void> {
-    if (!context.sealed) return
-    const message = "lifecycle recovery sealed after repeated alarm memory limits"
-    await this.ctx.storage.transaction(async (txn) => {
-      await txn.put("lifecycleJobsSealed", true)
-      const state = await txn.get<ConversationState>("state")
-      if (state) await txn.put("state", {
-        ...state,
-        lifecycleJobsSealed: true,
-        lifecycleJobError: { kind: "memory-limit", message, at: Date.now() },
-      })
-    })
-  }
-
-  private async resetConversationJobs(): Promise<void> {
-    const epoch = await this.ensureJobEpoch()
-    const nextEpoch = epoch + 1
-    await this.ctx.storage.transaction(async () => {
-      await this.ctx.storage.put("conversationJobEpoch", nextEpoch)
-      await this.jobs.cancel("turn:observe")
-      await this.jobs.cancel("admission:retry")
-      await this.jobs.cancel("checkpoint:retry")
-      await this.jobs.cancel("recovery:wake")
-      await this.jobs.cancel("legacy:bootstrap")
-      await this.jobs.cancel("lease:renew")
-      await this.ctx.storage.put<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY, {
-        version: 1,
-        dueAt: null,
-        scheduled: false,
-        consumed: true,
-      })
-      const stored = await this.ctx.storage.list()
-      for (const key of stored.keys()) {
-        if (key === "conversationJobEpoch") continue
-        if (key === "state" || key === "seq" || key === "events" || key === "controlToken" ||
-          key === "snapshot" || key === "containerImageVariant" || key === "runtimeUpgradePending" ||
-          key === "runtimeUpgradeCompletion" || key === "conversationJobClaims" || key === "lifecycleJobsSealed" ||
-          key.startsWith("tombstones:")) {
-          await this.ctx.storage.delete(key)
-        }
-      }
-    })
-    this.jobEpoch = nextEpoch
   }
 
   async fetch(request: Request): Promise<Response> {
-    await this.captureLegacyAlarmMigration(false)
+    await this.scheduler.captureLegacyAlarmMigration(false)
     return this.lifecycle.fetch(request)
   }
 
@@ -797,7 +633,7 @@ export class Conversation extends DurableObject<Env> {
       logEvent("turn.record_failed", { error: errorMessage(err) })
       await this.store.patch({ phase: "running", turnBaseline: baseline }).catch(() => {})
       const state = await this.store.get().catch(() => undefined)
-      await this.scheduleConversationJob("turn:observe", Date.now() + POLL_MS, {
+      await this.scheduler.schedule("turn:observe", Date.now() + POLL_MS, {
         reservationID: state?.budgetReservation?.reservationID,
         reservationDate: state?.budgetReservation?.date,
         sessionID: state?.sessionID,
@@ -813,7 +649,7 @@ export class Conversation extends DurableObject<Env> {
       await this.store.patch({ phase: "running" }).catch(() => {})
     }
     const state = await this.store.get()
-    if (scheduleRecovery) await this.scheduleConversationJob("recovery:wake", Date.now() + POLL_MS, {
+    if (scheduleRecovery) await this.scheduler.schedule("recovery:wake", Date.now() + POLL_MS, {
       reservationID: state.budgetReservation?.reservationID,
       reservationDate: state.budgetReservation?.date,
       sessionID: state.sessionID,
@@ -991,7 +827,7 @@ export class Conversation extends DurableObject<Env> {
         // A reset must not leave a checkpoint that the next cold start would
         // restore over the freshly cleared conversation.
         await this.checkpoints.deleteAll()
-        await this.resetConversationJobs()
+        await this.scheduler.reset()
         this.controlPlane.clearCache()
         this.readiness.resetProviderSync()
         return Response.json({ ok: true })
@@ -1044,7 +880,7 @@ export class Conversation extends DurableObject<Env> {
           return Response.json({ ok: false, error: "container lease release is pending; state was kept" }, { status: 503 })
         }
         await this.checkpoints.deleteAll()
-        await this.resetConversationJobs()
+        await this.scheduler.reset()
         this.controlPlane.clearCache()
         this.readiness.resetProviderSync()
         logEvent("conversation.deleted")
@@ -1058,7 +894,7 @@ export class Conversation extends DurableObject<Env> {
     const state = await this.store.get()
     const phase = state.phase ?? "idle"
     const active = phase === "admitting" || phase === "running" || phase === "settling" || phase === "queued"
-    if (state.budgetReservation || active || this.recoveryActions.active || this.activeLifecycleJobs.size > 0 || state.checkpointPending) {
+    if (state.budgetReservation || active || this.recoveryActions.active || this.scheduler.activeCount > 0 || state.checkpointPending) {
       return Response.json(
         { ok: false, error: "conversation has unresolved work; wait for it to settle before reset or delete" },
         { status: 409 },
@@ -1176,7 +1012,7 @@ export class Conversation extends DurableObject<Env> {
           const admissionID = crypto.randomUUID()
           const admissionStartedAt = Date.now()
           await this.store.patch({ phase: "admitting", admissionID, admissionStartedAt })
-          await this.scheduleConversationJob("recovery:wake", admissionStartedAt + POLL_MS, {
+          await this.scheduler.schedule("recovery:wake", admissionStartedAt + POLL_MS, {
             admissionID,
             reason: "inflight-admission-recovery",
           })
@@ -1328,7 +1164,7 @@ export class Conversation extends DurableObject<Env> {
       // Interrupting proves neither zero spend nor successful settlement. The
       // normal log/context reconciliation retains and eventually releases holds.
       await this.store.patch({ queued: undefined })
-      await this.scheduleConversationJob("turn:observe", Date.now() + 1000, {
+      await this.scheduler.schedule("turn:observe", Date.now() + 1000, {
         reservationID: state.budgetReservation?.reservationID,
         reservationDate: state.budgetReservation?.date,
         sessionID: state.sessionID,
@@ -1754,7 +1590,7 @@ export class Conversation extends DurableObject<Env> {
       // sent, so force the phase rather than leaving the turn invisible.
       await this.store.patch({ phase: "running" })
     }
-    await this.scheduleConversationJob("turn:observe", Date.now() + POLL_MS, {
+    await this.scheduler.schedule("turn:observe", Date.now() + POLL_MS, {
       sessionID: (await this.store.get()).sessionID,
       reason: "turn-started",
     })
@@ -1798,7 +1634,7 @@ export class Conversation extends DurableObject<Env> {
   // -------------------------------------------------------------- reply pump
 
   async acquireBudgetReservation(): Promise<BudgetReservationResult> {
-    await this.captureLegacyAlarmMigration(false)
+    await this.scheduler.captureLegacyAlarmMigration(false)
     await this.lifecycle.start()
     return await this.budgetReservations.acquire()
   }
@@ -1809,103 +1645,26 @@ export class Conversation extends DurableObject<Env> {
     turnBaseline: string | undefined,
     fromQueue = false,
   ): Promise<boolean> {
-    await this.captureLegacyAlarmMigration(false)
+    await this.scheduler.captureLegacyAlarmMigration(false)
     await this.lifecycle.start()
     return await this.budgetReservations.markDispatched(reservation, turnBaseline, fromQueue)
   }
 
   /** Release a known hold; keep local ownership unless Settings acknowledges it. */
   async releaseBudgetReservation(reservation: BudgetReservation): Promise<boolean> {
-    await this.captureLegacyAlarmMigration(false)
+    await this.scheduler.captureLegacyAlarmMigration(false)
     await this.lifecycle.start()
     return await this.budgetReservations.release(reservation)
   }
 
   /** Platform alarms are dispatched only by the Lifecycle-owned SQLite queue. */
   async alarm(): Promise<void> {
-    await this.captureLegacyAlarmMigration(true)
+    await this.scheduler.captureLegacyAlarmMigration(true)
     await this.lifecycle.alarm()
   }
 
-  private async jobIsCurrent(payload: ConversationJobPayload): Promise<boolean> {
-    return payload.epoch === await this.ensureJobEpoch()
-  }
-
-  private async handoffConversationJob(
-    kind: ConversationJobKind,
-    payload: ConversationJobPayload,
-    work: () => Promise<{ rescheduleAt: number } | undefined>,
-  ): Promise<{ rescheduleAt: number } | undefined> {
-    if (!(await this.jobIsCurrent(payload))) return undefined
-    if (this.activeLifecycleJobs.has(kind)) return { rescheduleAt: Date.now() + POLL_MS }
-    const now = Date.now()
-    const claimID = crypto.randomUUID()
-    const claimUntil = now + 120_000
-    const epoch = payload.epoch!
-    const decision = await this.ctx.storage.transaction(async (txn) => {
-      const currentEpoch = await txn.get<number>("conversationJobEpoch")
-      if (currentEpoch !== epoch || await txn.get<boolean>("lifecycleJobsSealed")) return { kind: "stale" as const }
-      const claims = await txn.get<Record<string, { epoch: number; claimID: string; until: number }>>("conversationJobClaims") ?? {}
-      const current = claims[kind]
-      if (current?.epoch === epoch && current.until > now) return { kind: "active" as const, until: current.until }
-      claims[kind] = { epoch, claimID, until: claimUntil }
-      await txn.put("conversationJobClaims", claims)
-      await this.jobs.schedule(kind, claimUntil, { ...payload, epoch, claimID, dueAt: claimUntil })
-      return { kind: "claimed" as const }
-    })
-    if (decision.kind === "stale") return undefined
-    if (decision.kind === "active") return { rescheduleAt: decision.until }
-
-    this.activeLifecycleJobs.add(kind)
-    const task = this.jobs.runHostTask(async () => {
-      let outcome: { rescheduleAt: number } | undefined
-      let failure: unknown
-      try {
-        outcome = await work()
-      } catch (error) {
-        failure = error
-      }
-      try {
-        await this.ctx.storage.transaction(async (txn) => {
-          if (await txn.get<number>("conversationJobEpoch") !== epoch) return
-          const claims = await txn.get<Record<string, { epoch: number; claimID: string; until: number }>>("conversationJobClaims") ?? {}
-          if (claims[kind]?.claimID !== claimID || claims[kind]?.epoch !== epoch) return
-          delete claims[kind]
-          await txn.put("conversationJobClaims", claims)
-          const state = await txn.get<ConversationState>("state")
-          const jobPayload = this.jobs.getPayload(kind)
-          if (jobPayload?.claimID === claimID) {
-            await this.jobs.cancel(kind)
-            const retryAt = failure ? Date.now() + 30_000 : outcome?.rescheduleAt
-            if (retryAt !== undefined) await this.scheduleConversationJob(kind, Math.max(Date.now(), retryAt), payload)
-          }
-          if (state) {
-            const lifecycleJobError = failure
-              ? { kind, message: "job failed; owned work remains pending", at: Date.now() }
-              : state.lifecycleJobError?.kind === kind ? undefined : state.lifecycleJobError
-            await txn.put("state", { ...state, lifecycleJobError })
-          }
-        })
-      } catch (error) {
-        console.warn("conversation lifecycle handoff completion failed", { kind, error: errorMessage(error) })
-      } finally {
-        this.activeLifecycleJobs.delete(kind)
-      }
-      if (failure) throw failure
-    })
-    this.ctx.waitUntil(task.catch(() => {
-      console.warn("conversation lifecycle handoff failed", { kind })
-    }))
-    this.jobs.trackAlarmWork(task)
-    return undefined
-  }
-
-  private async runTurnObservation(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
-    return this.handoffConversationJob("turn:observe", payload, () => this.processTurnObservation(payload))
-  }
-
   private async processTurnObservation(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
-    if (!(await this.jobIsCurrent(payload)) || await this.hasPendingRuntimeUpgrade()) return undefined
+    if (!(await this.scheduler.isCurrent(payload)) || await this.hasPendingRuntimeUpgrade()) return undefined
     const before = await this.store.get()
     const reservation = before.budgetReservation
     if (payload.reservationID && (!reservation?.dispatched || reservation.reservationID !== payload.reservationID ||
@@ -1951,12 +1710,8 @@ export class Conversation extends DurableObject<Env> {
     return { rescheduleAt: Date.now() + (this.turnExecution.isStreaming ? 30_000 : (settings?.pollSeconds ?? 2) * 1000) }
   }
 
-  private async runAdmissionRetry(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
-    return this.handoffConversationJob("admission:retry", payload, () => this.processAdmissionRetry(payload))
-  }
-
   private async processAdmissionRetry(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
-    if (!(await this.jobIsCurrent(payload)) || await this.hasPendingRuntimeUpgrade()) return undefined
+    if (!(await this.scheduler.isCurrent(payload)) || await this.hasPendingRuntimeUpgrade()) return undefined
     const state = await this.store.get()
     if (payload.queueID) {
       if (!state.queued || state.queued.id !== payload.queueID) return undefined
@@ -1971,12 +1726,8 @@ export class Conversation extends DurableObject<Env> {
     return undefined
   }
 
-  private async runCheckpointRetry(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
-    return this.handoffConversationJob("checkpoint:retry", payload, () => this.processCheckpointRetry(payload))
-  }
-
   private async processCheckpointRetry(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
-    if (!(await this.jobIsCurrent(payload)) || await this.hasPendingRuntimeUpgrade()) return undefined
+    if (!(await this.scheduler.isCurrent(payload)) || await this.hasPendingRuntimeUpgrade()) return undefined
     const state = await this.store.get()
     if (!state.checkpointPending) return undefined
     const due = state.checkpointRetryAt ?? Date.now() + CHECKPOINT_RETRY_MS
@@ -1989,26 +1740,8 @@ export class Conversation extends DurableObject<Env> {
     return undefined
   }
 
-  private async runRecoveryWake(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
-    return this.handoffConversationJob("recovery:wake", payload, () => this.processRecoveryWake(payload))
-  }
-
-  private async runLeaseRenew(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
-    return this.handoffConversationJob("lease:renew", payload, async () => {
-      const record = await this.leases.status()
-      if (!record) {
-        if (payload.reason === "adopt-running-lease" && this.nativeLeaseEnabled() && this.ctx.container?.running) {
-          await this.leases.ensureHeld()
-        }
-        return undefined
-      }
-      await this.leases.maintain()
-      return undefined
-    })
-  }
-
   private async processRecoveryWake(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
-    if (!(await this.jobIsCurrent(payload)) || await this.hasPendingRuntimeUpgrade()) return undefined
+    if (!(await this.scheduler.isCurrent(payload)) || await this.hasPendingRuntimeUpgrade()) return undefined
     const state = await this.store.get()
     if (payload.reason === "stale-admission-recovery") {
       if ((state.phase ?? "idle") !== "admitting" || state.budgetReservation?.dispatched ||
@@ -2027,7 +1760,7 @@ export class Conversation extends DurableObject<Env> {
           phase: current.queued ? "queued" : "idle",
           ...(current.queued && queueID ? { queued: { ...current.queued, id: queueID, nextAttemptAt: retryAt } } : {}),
         })
-        if (current.queued && queueID && retryAt !== undefined) await this.scheduleConversationJob("admission:retry", retryAt, {
+        if (current.queued && queueID && retryAt !== undefined) await this.scheduler.schedule("admission:retry", retryAt, {
           queueID,
           reason: "queued-after-stale-admission",
         })
@@ -2041,7 +1774,7 @@ export class Conversation extends DurableObject<Env> {
     if (this.recoveryActions.active || this.admitting || this.turnExecution.isPumping) return { rescheduleAt: Date.now() + POLL_MS }
     // This wake only observes/reconciles the already dispatched prompt.
     if (!(["running", "settling"].includes(state.phase ?? "idle"))) await this.resumeDispatchedTurn(false)
-    await this.scheduleConversationJob("turn:observe", Date.now() + POLL_MS, {
+    await this.scheduler.schedule("turn:observe", Date.now() + POLL_MS, {
       reservationID: reservation.reservationID,
       reservationDate: reservation.date,
       sessionID: state.sessionID,
@@ -2050,17 +1783,16 @@ export class Conversation extends DurableObject<Env> {
     return undefined
   }
 
-  private async handleConversationJobError(
-    kind: ConversationJobKind,
-    payload: ConversationJobPayload,
-    error: unknown,
-  ): Promise<{ rescheduleAt: number } | undefined> {
-    if (!(await this.jobIsCurrent(payload))) return undefined
-    console.warn("conversation lifecycle job failed", { kind })
-    await this.store.patch({ lifecycleJobError: { kind, message: "job failed; owned work remains pending", at: Date.now() } })
-    // Retain the existing owner and work; SDK retries are disabled so a failed
-    // wake is retried only by this bounded domain backoff.
-    return { rescheduleAt: Date.now() + 30_000 }
+  private async processLeaseRenew(payload: ConversationJobPayload): Promise<undefined> {
+    const record = await this.leases.status()
+    if (!record) {
+      if (payload.reason === "adopt-running-lease" && this.nativeLeaseEnabled() && this.ctx.container?.running) {
+        await this.leases.ensureHeld()
+      }
+      return undefined
+    }
+    await this.leases.maintain()
+    return undefined
   }
 
   // ---------------------------------------------------------------- container
@@ -2382,7 +2114,7 @@ export class Conversation extends DurableObject<Env> {
     try {
       claimed = await this.ctx.storage.transaction(async () => {
         const wasClaimed = await this.store.enqueue(entry)
-        if (wasClaimed) await this.scheduleConversationJob("admission:retry", nextAttemptAt, {
+        if (wasClaimed) await this.scheduler.schedule("admission:retry", nextAttemptAt, {
           queueID: entry.id,
           reason: "queued-admission",
         })
@@ -2409,7 +2141,7 @@ export class Conversation extends DurableObject<Env> {
     await this.ctx.storage.transaction(async () => {
       await this.store.patch({ queued: { ...queued, ...updates, nextAttemptAt: retryAt } })
       await this.store.advance("queued")
-      await this.scheduleConversationJob("admission:retry", retryAt, { queueID: queued.id, reason })
+      await this.scheduler.schedule("admission:retry", retryAt, { queueID: queued.id, reason })
     })
   }
 
