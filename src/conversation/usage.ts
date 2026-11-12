@@ -36,7 +36,7 @@ export interface ConversationUsageOptions {
   conversationID: string
   store: ConversationStore
   settings: UsageSettingsPort
-  withClient<T>(fn: (client: OpenCodeClient) => Promise<T>): Promise<T>
+  withClient<T>(fn: (client: OpenCodeClient) => Promise<T>, recoverOnRejection?: boolean): Promise<T>
 }
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -196,99 +196,101 @@ export class ConversationUsage {
     let reconstructedTerminal: ConversationState["usageTerminal"]
     let synced = false
     let logWatermark = replayAfter
-    const log = await this.options.withClient(async (client) =>
-      client.experimental.session.log({ sessionID, after: replayAfter, follow: false }),
-    )
-    let latestSeq = replayAfter
-    for await (const item of log) {
-      if (!item || typeof item !== "object") throw new Error("durable session log is unreadable")
-      if ((item as { type?: string }).type === "log.synced") {
-        const marker = item as { aggregateID?: string; seq?: number }
-        if (synced || marker.aggregateID !== sessionID ||
-          (marker.seq === undefined
-            ? latestSeq > 0 || requiredWatermark > 0
-            : typeof marker.seq !== "number" || !Number.isSafeInteger(marker.seq) ||
-              marker.seq < latestSeq || marker.seq < requiredWatermark)) {
-          throw new Error("durable session log sync marker is invalid")
+    // Retain the runtime borrow through iterator consumption and final proof.
+    // Invalid ledger evidence must not trigger transport recycling.
+    await this.options.withClient(async (client) => {
+      const log = await client.experimental.session.log({ sessionID, after: replayAfter, follow: false })
+      let latestSeq = replayAfter
+      for await (const item of log) {
+        if (!item || typeof item !== "object") throw new Error("durable session log is unreadable")
+        if ((item as { type?: string }).type === "log.synced") {
+          const marker = item as { aggregateID?: string; seq?: number }
+          if (synced || marker.aggregateID !== sessionID ||
+            (marker.seq === undefined
+              ? latestSeq > 0 || requiredWatermark > 0
+              : typeof marker.seq !== "number" || !Number.isSafeInteger(marker.seq) ||
+                marker.seq < latestSeq || marker.seq < requiredWatermark)) {
+            throw new Error("durable session log sync marker is invalid")
+          }
+          if (marker.seq !== undefined) logWatermark = marker.seq
+          synced = true
+          continue
         }
-        if (marker.seq !== undefined) logWatermark = marker.seq
-        synced = true
-        continue
-      }
-      if (synced) throw new Error("durable session log has rows after log.synced")
-      const raw = item as Record<string, unknown>
-      const durable = raw.durable as Record<string, unknown> | undefined
-      const data = raw.data as Record<string, unknown> | undefined
-      const seq = durable?.seq
-      if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) {
-        throw new Error("durable event sequence is unreadable")
-      }
-      if (durable?.aggregateID !== sessionID ||
-        (data?.sessionID !== undefined && data.sessionID !== sessionID)) {
-        throw new Error("durable event session does not match")
-      }
-      if ((raw.type === "session.execution.started" || raw.type === "session.execution.succeeded" ||
-        raw.type === "session.execution.failed" || raw.type === "session.execution.interrupted") &&
-        (typeof raw.id !== "string" || raw.id.length === 0 || data?.sessionID !== sessionID)) {
-        throw new Error("durable execution fence is unreadable")
-      }
-      if (seq <= latestSeq) throw new Error("durable event sequence is out of order")
+        if (synced) throw new Error("durable session log has rows after log.synced")
+        const raw = item as Record<string, unknown>
+        const durable = raw.durable as Record<string, unknown> | undefined
+        const data = raw.data as Record<string, unknown> | undefined
+        const seq = durable?.seq
+        if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) {
+          throw new Error("durable event sequence is unreadable")
+        }
+        if (durable?.aggregateID !== sessionID ||
+          (data?.sessionID !== undefined && data.sessionID !== sessionID)) {
+          throw new Error("durable event session does not match")
+        }
+        if ((raw.type === "session.execution.started" || raw.type === "session.execution.succeeded" ||
+          raw.type === "session.execution.failed" || raw.type === "session.execution.interrupted") &&
+          (typeof raw.id !== "string" || raw.id.length === 0 || data?.sessionID !== sessionID)) {
+          throw new Error("durable execution fence is unreadable")
+        }
+        if (seq <= latestSeq) throw new Error("durable event sequence is out of order")
 
-      const usage = durableUsageEvent(raw, sessionID)
-      if (raw.type === "session.execution.started") execution.startedSeq = seq
-      if (raw.type === "session.execution.succeeded" || raw.type === "session.execution.failed" ||
-        raw.type === "session.execution.interrupted") execution.terminalSeq = seq
-      if (usage) {
-        const today = new Date().toISOString().slice(0, 10)
-        const usageDate = Date.parse(`${usage.date}T00:00:00.000Z`)
-        const todayStart = Date.parse(`${today}T00:00:00.000Z`)
-        if (usageDate > todayStart) throw new Error("durable usage event is in the future")
-        const expired = usageDate < todayStart - 30 * 24 * 60 * 60 * 1000
-        if (expired && terminalMessageID !== undefined && usage.assistantMessageID === terminalMessageID) {
-          throw new Error("terminal assistant usage is outside the accounting window")
+        const usage = durableUsageEvent(raw, sessionID)
+        if (raw.type === "session.execution.started") execution.startedSeq = seq
+        if (raw.type === "session.execution.succeeded" || raw.type === "session.execution.failed" ||
+          raw.type === "session.execution.interrupted") execution.terminalSeq = seq
+        if (usage) {
+          const today = new Date().toISOString().slice(0, 10)
+          const usageDate = Date.parse(`${usage.date}T00:00:00.000Z`)
+          const todayStart = Date.parse(`${today}T00:00:00.000Z`)
+          if (usageDate > todayStart) throw new Error("durable usage event is in the future")
+          const expired = usageDate < todayStart - 30 * 24 * 60 * 60 * 1000
+          if (expired && terminalMessageID !== undefined && usage.assistantMessageID === terminalMessageID) {
+            throw new Error("terminal assistant usage is outside the accounting window")
+          }
+          if (!expired) await this.report(usage, receipt?.cutoverID)
+          if (raw.type === "session.step.ended" || raw.type === "session.step.failed") {
+            if (!usage.assistantMessageID) throw new Error("durable step has no assistant message id")
+            execution.latestStepSeq = seq
+            if (reconstructing) reconstructedTerminal = { sessionID, assistantMessageID: usage.assistantMessageID, seq }
+          }
         }
-        if (!expired) await this.report(usage, receipt?.cutoverID)
-        if (raw.type === "session.step.ended" || raw.type === "session.step.failed") {
-          if (!usage.assistantMessageID) throw new Error("durable step has no assistant message id")
-          execution.latestStepSeq = seq
-          if (reconstructing) reconstructedTerminal = { sessionID, assistantMessageID: usage.assistantMessageID, seq }
+        if (!reconstructing) {
+          await this.options.store.patch({
+            usageCursor: { sessionID, seq: Math.max(previousCursor, seq, sessionReceipt?.throughSeq ?? 0) },
+            usageExecution: execution,
+            ...(usage?.assistantMessageID && (raw.type === "session.step.ended" || raw.type === "session.step.failed")
+              ? { usageTerminal: { sessionID, assistantMessageID: usage.assistantMessageID, seq } }
+              : {}),
+            usageError: undefined,
+          })
         }
+        latestSeq = seq
       }
-      if (!reconstructing) {
+      if (!synced) throw new Error("durable session log ended without log.synced")
+      if (logWatermark < requiredWatermark) throw new Error("durable log watermark fell behind the acknowledged cursor")
+      const acknowledgedCursor = Math.max(logWatermark, latestSeq, previousCursor, sessionReceipt?.throughSeq ?? 0)
+      const currentState = await this.options.store.get()
+      if (reconstructing || acknowledgedCursor > (currentState.usageCursor?.sessionID === sessionID
+        ? currentState.usageCursor.seq
+        : 0)) {
         await this.options.store.patch({
-          usageCursor: { sessionID, seq: Math.max(previousCursor, seq, sessionReceipt?.throughSeq ?? 0) },
+          usageCursor: { sessionID, seq: acknowledgedCursor },
           usageExecution: execution,
-          ...(usage?.assistantMessageID && (raw.type === "session.step.ended" || raw.type === "session.step.failed")
-            ? { usageTerminal: { sessionID, assistantMessageID: usage.assistantMessageID, seq } }
-            : {}),
+          ...(reconstructing ? { usageTerminal: reconstructedTerminal } : {}),
           usageError: undefined,
         })
       }
-      latestSeq = seq
-    }
-    if (!synced) throw new Error("durable session log ended without log.synced")
-    if (logWatermark < requiredWatermark) throw new Error("durable log watermark fell behind the acknowledged cursor")
-    const acknowledgedCursor = Math.max(logWatermark, latestSeq, previousCursor, sessionReceipt?.throughSeq ?? 0)
-    const currentState = await this.options.store.get()
-    if (reconstructing || acknowledgedCursor > (currentState.usageCursor?.sessionID === sessionID
-      ? currentState.usageCursor.seq
-      : 0)) {
-      await this.options.store.patch({
-        usageCursor: { sessionID, seq: acknowledgedCursor },
-        usageExecution: execution,
-        ...(reconstructing ? { usageTerminal: reconstructedTerminal } : {}),
-        usageError: undefined,
-      })
-    }
-    if (!terminalMessageID) return
-    const latest = await this.options.store.get()
-    const terminal = latest.usageTerminal
-    const fences = latest.usageExecution
-    if (terminal?.sessionID !== sessionID || terminal.assistantMessageID !== terminalMessageID ||
-      terminal.seq !== fences?.latestStepSeq || fences.sessionID !== sessionID ||
-      fences.terminalSeq <= terminal.seq || fences.startedSeq > fences.terminalSeq) {
-      throw new Error("terminal assistant usage is not acknowledged in the durable log")
-    }
+      if (!terminalMessageID) return
+      const latest = await this.options.store.get()
+      const terminal = latest.usageTerminal
+      const fences = latest.usageExecution
+      if (terminal?.sessionID !== sessionID || terminal.assistantMessageID !== terminalMessageID ||
+        terminal.seq !== fences?.latestStepSeq || fences.sessionID !== sessionID ||
+        fences.terminalSeq <= terminal.seq || fences.startedSeq > fences.terminalSeq) {
+        throw new Error("terminal assistant usage is not acknowledged in the durable log")
+      }
+    }, false)
   }
 
   private async report(usage: NonNullable<ReturnType<typeof durableUsageEvent>>, cutoverID?: string): Promise<void> {

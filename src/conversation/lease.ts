@@ -1,18 +1,11 @@
 import { traceId } from "../telemetry"
 import { emitConversationTelemetry, type ConversationTelemetryEventName, type ConversationTelemetryResult } from "./telemetry"
+import { isConversationLeaseRecord, type ConversationLeaseRecord } from "./lease-state"
+export type { ConversationLeaseRecord } from "./lease-state"
 
 const LEASE_TTL_MS = 10 * 60_000
 const LEASE_RENEW_MS = LEASE_TTL_MS / 2
 const LEASE_RETRY_MS = 30_000
-
-export interface ConversationLeaseRecord {
-  version: 1
-  desired: "held" | "released"
-  status: "pending" | "acknowledged"
-  requestStartedAt: number
-  acknowledgedUntil?: number
-  errorCode?: "capacity" | "authority_unavailable" | "stopped_unconfirmed"
-}
 
 export interface LeaseSettingsPort {
   fetch(input: Request | string | URL, init?: RequestInit): Promise<Response>
@@ -61,7 +54,7 @@ export class ConversationLease {
   async status(): Promise<ConversationLeaseRecord | undefined> {
     const value = await this.options.storage.get<unknown>("containerLease")
     if (value === undefined) return undefined
-    if (!isLeaseRecord(value)) throw new Error("container lease state is unreadable")
+    if (!isConversationLeaseRecord(value)) throw new Error("container lease state is unreadable")
     return value
   }
 
@@ -242,20 +235,4 @@ async function acknowledges(response: Response): Promise<boolean> {
   }
   return Boolean(body && typeof body === "object" && !Array.isArray(body) &&
     (body as { ok?: unknown }).ok === true)
-}
-
-function isLeaseRecord(value: unknown): value is ConversationLeaseRecord {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false
-  const record = value as Record<string, unknown>
-  const validError = record.errorCode === undefined || record.errorCode === "capacity" ||
-    record.errorCode === "authority_unavailable" || record.errorCode === "stopped_unconfirmed"
-  const validUntil = record.acknowledgedUntil === undefined ||
-    (typeof record.acknowledgedUntil === "number" && Number.isFinite(record.acknowledgedUntil) &&
-      record.acknowledgedUntil >= (record.requestStartedAt as number))
-  return record.version === 1 && (record.desired === "held" || record.desired === "released") &&
-    (record.status === "pending" || record.status === "acknowledged") &&
-    typeof record.requestStartedAt === "number" && Number.isFinite(record.requestStartedAt) &&
-    record.requestStartedAt >= 0 && validError && validUntil &&
-    !(record.desired === "held" && record.status === "acknowledged" &&
-      (typeof record.acknowledgedUntil !== "number" || !Number.isFinite(record.acknowledgedUntil)))
 }

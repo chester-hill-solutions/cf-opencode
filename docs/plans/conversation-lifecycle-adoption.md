@@ -1,8 +1,8 @@
 # Conversation Lifecycle adoption
 
-Status: execution authorized; LC-0, EventStream and LC-1a's complete alarm cutover
-pass integrated local verification on the isolated branch;
-lease renewal, remaining extraction, idle close and telemetry remain open.
+Status: execution in progress on the isolated lifecycle branch. Alarm/lease
+integration and most extractions are verified. Sealed-idle recovery repair,
+runtime-use exclusion, idle-close measurement and remaining telemetry are open.
 Date: 2026-11-12. Baseline: `0c90963`. Owner: platform/runtime.
 
 ## Outcome
@@ -32,12 +32,12 @@ Execution snapshot (the detailed assignments and release gates remain below):
 | Slice | State |
 |---|---|
 | LC-0 | SDK pin/SQLite compatibility and earlier native smoke verified. |
-| LC-1a | Full alarm cutover verified locally and in CI/native smoke at `8661766` (run 43286834935). |
+| LC-1a | Full alarm cutover verified locally and in CI/native smoke through `6d85109` (run 43295111182). |
 | LC-1b | EventStream and durable lease renewal/release recovery wired; integrated local checks pass. Runtime-use/idle-close gating remains LC-3. |
-| LC-2 | Checkpoints, runtime cache/ports, image/snapshot policy, readiness, usage, reservations, recovery actions, reconciliation, cutover, control plane and turn execution extracted. Scheduler kernel, admission/queue and upgrade coordinator moves remain. |
+| LC-2 | Checkpoints, runtime cache/ports, image/snapshot policy, readiness, usage, reservations, recovery actions, reconciliation, cutover, control plane and turn execution extracted. Scheduler, admission/queue and runtime-upgrade families extracted; coordinator reduced to about 1,900 lines. |
 | LC-3 | Runtime-use gate, no-inference measurement tool and isolated qualification fixture prepared. Close/reopen policy and actual measurements pending. |
-| LC-4 | Checkpoint, lease and permission outcome events wired/tested. Recovery-action module prepared; turn/admission/runtime categories pending. |
-| LC-5 | Existing replay/dedupe retained; optional further work not started. |
+| LC-4 | Checkpoint, lease and permission outcome events wired/tested. Recovery actions wired; turn/admission/runtime categories pending. |
+| LC-5 | Existing replay/dedupe guarantees and limits documented. Optional protocol extensions deferred. |
 
 ### Research baseline
 
@@ -555,3 +555,18 @@ prove these contracts; the review is not runtime qualification.
   checks. Routing still validates proposals before delegating. Seventy-two
   focused Worker tests and full typecheck pass; 674 inline coordinator lines
   were removed. Pure policy/Settings implementations remain unchanged.
+
+- [CI run 43295111182](https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43295111182)
+  passed checks and native smoke through `6d85109`. Scheduler extraction then
+  passed 66 focused Worker tests plus full typecheck.
+- A real Worker regression reproduced an idle reset returning 500 when a
+  memory-limit seal prevents lease-release job publication. The repair adds an
+  explicit, snapshot-fenced sealed-idle operator retry and actionable cleanup
+  blocking; it does not infer financial settlement or resubmit a prompt.
+
+- Admission/queue and runtime upgrade wiring passed 53 focused Worker tests and
+  full typecheck. The sealed-idle repair passes 15 Worker recovery tests,
+  including rollback after injected queue failure and unchanged duplicate
+  financial retries. Pure classifier tests cover maintenance intent, malformed
+  evidence, active claims, unknown holds and snapshot changes. Durable log
+  consumption now stays inside its client borrow; nine ledger tests pass.

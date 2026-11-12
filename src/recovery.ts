@@ -1,4 +1,5 @@
 import type { BudgetReservation, ConversationState } from "./state"
+import { isConversationLeaseRecord } from "./conversation/lease-state"
 
 export interface RecoveryRetirement {
   conversationID: string
@@ -23,7 +24,20 @@ export interface RecoveryAuthority {
   snapshotID: string
   holds: RecoveryHold[]
   legacyRows: unknown[]
+  blockers?: unknown[]
   retirement?: RecoveryRetirement
+}
+
+/** Read-only scheduler/storage evidence for sealed idle recovery. */
+export interface RecoverySchedulerEvidence {
+  sealed: boolean
+  epoch: number
+  checkpointPending: boolean
+  checkpointRetryAt?: number
+  leaseIntent?: unknown
+  claims?: unknown
+  activeJobs: number
+  pendingUpgrade: boolean
 }
 
 export interface RecoveryLiveState {
@@ -32,7 +46,7 @@ export interface RecoveryLiveState {
 }
 
 export interface RecoveryClassification {
-  kind: "none" | "undispatched" | "dispatched" | "blocked"
+  kind: "none" | "undispatched" | "dispatched" | "sealed_idle" | "blocked"
   blockers: string[]
   actions: Array<"cancel_before_dispatch" | "retry">
 }
@@ -55,14 +69,58 @@ function validExecution(value: unknown): value is NonNullable<ConversationState[
     )
 }
 
+function schedulerEvidenceBlockers(scheduler: RecoverySchedulerEvidence): string[] {
+  const blockers: string[] = []
+  if (typeof scheduler.sealed !== "boolean") blockers.push("scheduler_seal_malformed")
+  if (!Number.isSafeInteger(scheduler.epoch) || scheduler.epoch < 1) blockers.push("scheduler_epoch_malformed")
+  if (typeof scheduler.checkpointPending !== "boolean") blockers.push("scheduler_checkpoint_state_malformed")
+  if (scheduler.checkpointRetryAt !== undefined &&
+    (!Number.isSafeInteger(scheduler.checkpointRetryAt) || scheduler.checkpointRetryAt < 0)) {
+    blockers.push("scheduler_checkpoint_deadline_malformed")
+  }
+  if (typeof scheduler.activeJobs !== "number" || !Number.isSafeInteger(scheduler.activeJobs) || scheduler.activeJobs < 0) {
+    blockers.push("scheduler_active_job_count_malformed")
+  }
+  if (typeof scheduler.pendingUpgrade !== "boolean") blockers.push("runtime_upgrade_state_malformed")
+  if (scheduler.leaseIntent !== undefined && !isConversationLeaseRecord(scheduler.leaseIntent)) {
+    blockers.push("lease_intent_malformed")
+  }
+
+  const claims = scheduler.claims
+  if (claims === undefined) return blockers
+  if (!claims || typeof claims !== "object" || Array.isArray(claims)) {
+    blockers.push("scheduler_claims_malformed")
+    return blockers
+  }
+  for (const [name, value] of Object.entries(claims)) {
+    if (!name || !value || typeof value !== "object" || Array.isArray(value)) {
+      blockers.push("scheduler_claim_malformed")
+      continue
+    }
+    const claim = value as Record<string, unknown>
+    if (Object.keys(claim).some((key) => !["epoch", "claimID", "until"].includes(key)) ||
+      !Number.isSafeInteger(claim.epoch) || (claim.epoch as number) < 1 ||
+      typeof claim.claimID !== "string" || claim.claimID.length === 0 ||
+      !Number.isSafeInteger(claim.until) || (claim.until as number) < 0) {
+      blockers.push("scheduler_claim_malformed")
+      continue
+    }
+    if (claim.epoch === scheduler.epoch && (claim.until as number) > Date.now()) {
+      blockers.push("scheduler_claim_active")
+    }
+  }
+  return blockers
+}
+
 /** Classify only from persisted ownership and explicitly labelled cached fences. */
 export function classifyRecovery(input: {
   conversationID: string
   state: ConversationState
   authority?: RecoveryAuthority
   live: RecoveryLiveState
+  scheduler?: RecoverySchedulerEvidence
 }): RecoveryClassification {
-  const { conversationID, state, authority, live } = input
+  const { conversationID, state, authority, live, scheduler } = input
   const blockers: string[] = []
   const reservationValue: unknown = state.budgetReservation
   const reservation = validReservation(reservationValue) ? reservationValue : undefined
@@ -84,6 +142,27 @@ export function classifyRecovery(input: {
   if (!reservation) {
     if (authority?.holds.length) blockers.push("central_hold_without_local_owner")
     if ((state.phase ?? "idle") !== "idle" || state.queued) blockers.push("work_without_local_reservation")
+    if (scheduler) {
+      blockers.push(...schedulerEvidenceBlockers(scheduler))
+      if (scheduler.sealed) {
+        if (!authority) blockers.push("settings_authority_unavailable")
+        if (authority && authority.conversationID !== conversationID) blockers.push("settings_conversation_mismatch")
+        if (authority?.legacyRows.length) blockers.push("legacy_usage_rows_present")
+        if (authority?.blockers?.length) blockers.push("central_authority_blocked")
+        if (scheduler.activeJobs !== 0) blockers.push("scheduler_jobs_active")
+        if (scheduler.pendingUpgrade) blockers.push("runtime_upgrade_pending")
+
+        if (cachedExecutionMalformed) blockers.push("cached_execution_malformed")
+        else if (execution) {
+          if (execution.sessionID !== state.sessionID) blockers.push("cached_execution_session_mismatch")
+          if (execution.startedSeq > execution.terminalSeq || execution.latestStepSeq > execution.terminalSeq) {
+            blockers.push("cached_execution_unfinished")
+          }
+        }
+        if (blockers.length) return { kind: "blocked", blockers, actions: [] }
+        return { kind: "sealed_idle", blockers, actions: ["retry"] }
+      }
+    }
     return { kind: blockers.length ? "blocked" : "none", blockers, actions: [] }
   }
 
@@ -135,6 +214,7 @@ export async function recoverySnapshotID(input: {
   state: ConversationState
   authority?: RecoveryAuthority
   live: RecoveryLiveState
+  scheduler?: RecoverySchedulerEvidence
 }): Promise<string> {
   const state = input.state
   const snapshot = {
@@ -161,9 +241,11 @@ export async function recoverySnapshotID(input: {
       snapshotID: input.authority.snapshotID,
       holds: input.authority.holds,
       legacyRows: input.authority.legacyRows,
+      blockers: input.authority.blockers,
       retirement: input.authority.retirement ?? null,
     } : null,
     live: input.live,
+    ...(input.scheduler !== undefined ? { scheduler: input.scheduler } : {}),
   }
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(snapshot)))
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")

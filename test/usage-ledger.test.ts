@@ -22,6 +22,38 @@ function durableEvent(
 }
 
 describe("durable usage ledger", () => {
+  it("retains client ownership through log iteration and rejects invalid evidence without recycling", async () => {
+    const stub = env.CONVERSATION.getByName("C1:usage-log-borrow")
+    await runInDurableObject(stub, async (instance, state) => {
+      await state.storage.put("state", { sessionID: "ses_1", seen: [], pending: {} })
+      let borrowed = false
+      let recoveryFlag: boolean | undefined
+      let consumed = false
+      const target = instance as unknown as {
+        withClient<T>(fn: (client: any) => Promise<T>, recoverOnRejection?: boolean): Promise<T>
+        usage: { refresh(sessionID: string): Promise<void> }
+      }
+      target.withClient = async (fn, flag) => {
+        recoveryFlag = flag
+        borrowed = true
+        try {
+          return await fn({ experimental: { session: { log: async function* () {
+            expect(borrowed).toBe(true)
+            consumed = true
+            yield { type: "log.synced", aggregateID: "wrong-session", seq: 0 }
+          } } } })
+        } finally {
+          borrowed = false
+        }
+      }
+      await expect(target.usage.refresh("ses_1")).rejects.toThrow("sync marker is invalid")
+      expect(consumed).toBe(true)
+      expect(borrowed).toBe(false)
+      expect(recoveryFlag).toBe(false)
+      expect((await state.storage.get<{ usageCursor?: unknown }>("state"))?.usageCursor).toBeUndefined()
+    })
+  })
+
   it("replays step and auxiliary actuals once and proves the terminal step", async () => {
     await runInDurableObject(env.SETTINGS.getByName("global"), async (_instance, state) => {
       await state.storage.deleteAll()

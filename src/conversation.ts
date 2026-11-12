@@ -5,7 +5,6 @@ import { makeClient, portFetch, type ContainerPort } from "./opencode"
 import {
   ConversationStore,
   type BudgetReservation,
-  type CheckpointManifest,
   type ConversationPhase,
   type ConversationState,
   type SlackTarget,
@@ -28,7 +27,7 @@ import type { ConversationEvent } from "./events"
 import { ConversationEventStream } from "./conversation/event-stream"
 import { ConversationCheckpoints } from "./conversation/checkpoints"
 import { ConversationRuntime } from "./conversation/runtime"
-import { ConversationUsage, type UsageCutoverLedger } from "./conversation/usage"
+import { ConversationUsage } from "./conversation/usage"
 import { ConversationRecoveryActions } from "./conversation/recovery-actions"
 import { ConversationControlPlane } from "./conversation/control-plane"
 import { ConversationImages } from "./conversation/images"
@@ -38,6 +37,8 @@ import { ConversationTurnExecution } from "./conversation/turn-execution"
 import { ConversationReadiness } from "./conversation/readiness"
 import { ConversationReconciliation } from "./conversation/reconciliation"
 import { ConversationAccountingCutover } from "./conversation/accounting-cutover"
+import { ConversationAdmissions, isBusyPhase } from "./conversation/admissions"
+import { ConversationRuntimeUpgrades } from "./conversation/runtime-upgrades"
 import { isFreshLegacyAlarmMigration } from "./conversation/job-state"
 import type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
 export type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
@@ -46,13 +47,9 @@ import { retryAfterSeconds } from "./backoff"
 import { logEvent } from "./log"
 import type { HarnessSettings } from "./settings"
 import { staleAction } from "./lifecycle"
-import { nextBudgetReset } from "./budget"
-import { CAPACITY_RETRY_MS, isCapacityRejection } from "./queue"
 import { GITHUB_TOKEN_KEY, workspaceID } from "./vault"
 import { LEGACY_ACCOUNT_STATE_KEY, parseConversationKey } from "./tenancy"
-import { plaintextArchivesAllowed } from "./archive-policy"
-import { ACCOUNTING_POLICY_ID, AccountingPolicyError, assertAccountingPolicy } from "./accounting-policy"
-import { proveRuntimeQuiescence } from "./runtime-quiescence"
+import { AccountingPolicyError } from "./accounting-policy"
 import { parseOperatorReconciliationProposal } from "./operator-reconciliation"
 import { handleSlackCommand } from "./slack-commands"
 import { hasConnectedProvider } from "./onboarding"
@@ -64,11 +61,6 @@ import {
   type ImageModelCheck,
   type SlackImageAttachment,
 } from "./slack-images"
-import {
-  parseRuntimeUpgradePending,
-  type RuntimeUpgradeCompletion,
-  type RuntimeUpgradePending,
-} from "./runtime-upgrade"
 import type { ConversationJobPayload } from "./conversation/jobs"
 import { ConversationScheduler } from "./conversation/scheduler"
 
@@ -77,8 +69,6 @@ type UnknownRecord = Record<string, unknown>
 function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
-
-
 
 const OPENCODE_PORT = 4000
 const CONTROL_PORT = 4001
@@ -130,15 +120,14 @@ export class Conversation extends DurableObject<Env> {
   private readonly readiness: ConversationReadiness
   private readonly reconciliation: ConversationReconciliation
   private readonly accountingCutover: ConversationAccountingCutover
+  private readonly admissions: ConversationAdmissions
+  private readonly runtimeUpgrades: ConversationRuntimeUpgrades
   private consecutiveFailures = 0
-  /** An admission is in flight in this instance; alarms must not reset it. */
-  private admitting = false
   /** Fences admissions and polling while an operator recovery action is in flight. */
   /** Conversation key, sent by the Worker; admin traffic skips the cap. */
   private key?: string
   /** Source onboarding work must finish before its runtime can be restarted. */
   private onboardingOperations = 0
-  private runtimeUpgradeResuming = false
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
@@ -147,7 +136,7 @@ export class Conversation extends DurableObject<Env> {
       conversationID: ctx.id.toString(),
       store: this.store,
       settings: { fetch: (input, init) => this.env.SETTINGS.getByName("global").fetch(input, init) },
-      withClient: (fn) => this.withClient(fn),
+      withClient: (fn, recoverOnRejection) => this.withClient(fn, recoverOnRejection),
     })
     this.runtime = new ConversationRuntime({
       network: {
@@ -201,10 +190,12 @@ export class Conversation extends DurableObject<Env> {
       settings: {
         fetch: (input, init) => this.env.SETTINGS.getByName("global").fetch(input, init),
       },
-      withAdmissionLock: (task) => this.withAdmissionLock(task),
-      live: () => ({ admitting: this.admitting, pumping: this.turnExecution.isPumping, activeJobs: this.scheduler.activeCount }),
+      withAdmissionLock: (task) => this.admissions.withLock(task),
+      live: () => ({ admitting: this.admissions.active, pumping: this.turnExecution.isPumping, activeJobs: this.scheduler.activeCount }),
       jobs: {
         epoch: () => this.scheduler.epoch(),
+        evidence: () => this.scheduler.evidence(),
+        resumeSealedIdle: (evidence, state) => this.scheduler.resumeSealedIdle(evidence, state),
         scheduleRecovery: (at, payload, allowSealed) => this.scheduler.schedule("recovery:wake", at, payload, allowSealed),
       },
     })
@@ -213,8 +204,8 @@ export class Conversation extends DurableObject<Env> {
       storage: ctx.storage,
       store: this.store,
       withClient: (fn, recoverOnRejection) => this.withClient(fn, recoverOnRejection),
-      withAdmissionLock: (task) => this.withAdmissionLock(task),
-      hasPendingRuntimeUpgrade: () => this.hasPendingRuntimeUpgrade(),
+      withAdmissionLock: (task) => this.admissions.withLock(task),
+      hasPendingRuntimeUpgrade: () => this.runtimeUpgrades.hasPending(),
       scheduleObservation: (at, payload) => this.scheduler.schedule("turn:observe", at, payload),
     })
     this.images = new ConversationImages({
@@ -282,7 +273,7 @@ export class Conversation extends DurableObject<Env> {
       },
       guards: {
         recovering: () => this.recoveryActions.active,
-        hasPendingUpgrade: () => this.hasPendingRuntimeUpgrade(),
+        hasPendingUpgrade: () => this.runtimeUpgrades.hasPending(),
       },
       delivery: {
         event: (event, options) => this.deliver(event, options),
@@ -317,14 +308,57 @@ export class Conversation extends DurableObject<Env> {
       activity: {
         pumping: () => this.turnExecution.isPumping,
         onboardingOperations: () => this.onboardingOperations,
-        upgradeResuming: () => this.runtimeUpgradeResuming,
+        upgradeResuming: () => this.runtimeUpgrades.resuming,
       },
       upgrade: {
-        pending: () => this.readRuntimeUpgradePending(),
-        checkpoint: (pending) => this.runtimeUpgradeCheckpoint(pending),
-        proveSession: (client, sessionID) => this.proveRuntimeUpgradeSession(client, sessionID),
+        pending: () => this.runtimeUpgrades.pending(),
+        checkpoint: (pending) => this.runtimeUpgrades.checkpoint(pending),
+        proveSession: (client, sessionID) => this.runtimeUpgrades.proveSession(client, sessionID),
       },
       adoptLeaseIfNeeded: () => this.scheduleLeaseAdoptionIfNeeded(),
+    })
+    this.runtimeUpgrades = new ConversationRuntimeUpgrades({
+      storage: ctx.storage,
+      store: this.store,
+      usage: this.usage,
+      recoveryActions: this.recoveryActions,
+      runtime: this.runtime,
+      images: this.images,
+      checkpoints: this.checkpoints,
+      leases: this.leases,
+      id: ctx.id.toString(),
+      container: () => this.ctx.container,
+      archives: { bucket: env.CHECKPOINTS, policyEnv: env },
+      withAdmissionLock: (task) => this.admissions.withLock(task),
+      live: () => ({ admitting: this.admissions.active, pumping: this.turnExecution.isPumping }),
+      withClient: (fn, recoverOnRejection) => this.withClient(fn, recoverOnRejection),
+      ensureReady: () => this.ensureReady(),
+    })
+    this.admissions = new ConversationAdmissions({
+      storage: ctx.storage,
+      store: this.store,
+      budgetReservations: this.budgetReservations,
+      session: {
+        ensure: (text, transport, slack) => this.ensureSession(text, transport, slack),
+        baseline: (sessionID) => this.turnBaseline(sessionID),
+      },
+      recovery: {
+        active: () => this.recoveryActions.active,
+        pumping: () => this.turnExecution.isPumping,
+        pendingUpgrade: () => this.runtimeUpgrades.hasPending(),
+      },
+      jobs: { schedule: (kind, at, payload) => this.scheduler.schedule(kind, at, payload) },
+      prompt: async (sessionID, text) => {
+        await this.withClient((client) => client.session.prompt({ sessionID, text }))
+      },
+      settings: async () => ({ streaming: (await this.settings()).streaming }),
+      delivery: {
+        event: (event, options) => this.deliver(event, options),
+        postChunked: (channel, text, threadTs) => this.postChunked(channel, text, threadTs),
+        count: (name) => this.count(name),
+      },
+      startStream: (sessionID) => this.turnExecution.startStream(sessionID),
+      waitUntil: (promise) => ctx.waitUntil(promise),
     })
     this.reconciliation = new ConversationReconciliation({
       storage: ctx.storage,
@@ -336,8 +370,8 @@ export class Conversation extends DurableObject<Env> {
       settings: () => ({
         fetch: (input, init) => this.env.SETTINGS.getByName("global").fetch(input, init),
       }),
-      withAdmissionLock: (task) => this.withAdmissionLock(task),
-      live: () => ({ admitting: this.admitting, pumping: this.turnExecution.isPumping }),
+      withAdmissionLock: (task) => this.admissions.withLock(task),
+      live: () => ({ admitting: this.admissions.active, pumping: this.turnExecution.isPumping }),
       withClient: (fn, recoverOnRejection) => this.withClient(fn, recoverOnRejection),
       ensureReady: () => this.ensureReady(),
     })
@@ -350,7 +384,7 @@ export class Conversation extends DurableObject<Env> {
       dynamicSettings: {
         fetch: (input, init) => this.env.SETTINGS.getByName("global").fetch(input, init),
       },
-      withAdmissionLock: (task) => this.withAdmissionLock(task),
+      withAdmissionLock: (task) => this.admissions.withLock(task),
       withClient: (fn, recoverOnRejection) => this.withClient(fn, recoverOnRejection),
       ensureReady: () => this.ensureReady(),
     })
@@ -415,7 +449,7 @@ export class Conversation extends DurableObject<Env> {
       if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 })
       return this.reconciliation.apply(parsed.value)
     }
-    if (url.pathname === "/runtime/upgrade" && request.method === "GET") return this.previewRuntimeUpgrade()
+    if (url.pathname === "/runtime/upgrade" && request.method === "GET") return this.runtimeUpgrades.preview()
     if (url.pathname === "/runtime/upgrade" && request.method === "POST") {
       let body: unknown
       try {
@@ -427,7 +461,7 @@ export class Conversation extends DurableObject<Env> {
         typeof body.expectedPlanID !== "string" || !/^[a-f0-9]{64}$/.test(body.expectedPlanID)) {
         return Response.json({ error: "expectedPlanID must be a SHA-256 plan id" }, { status: 400 })
       }
-      return this.applyRuntimeUpgrade(body.expectedPlanID)
+      return this.runtimeUpgrades.apply(body.expectedPlanID)
     }
     if (url.pathname === "/recovery" && request.method === "GET") return this.recoveryActions.inspect()
     if (url.pathname === "/recovery" && request.method === "POST") {
@@ -503,7 +537,7 @@ export class Conversation extends DurableObject<Env> {
     // before calling string methods on it.
     const text = typeof input.text === "string" ? input.text.trim() : ""
     if (!text) return Response.json({ ok: false, error: "empty message" }, { status: 400 })
-    if (await this.hasPendingRuntimeUpgrade()) return Response.json({ ok: false, error: "runtime upgrade is pending; no message was queued" }, { status: 409 })
+    if (await this.runtimeUpgrades.hasPending()) return Response.json({ ok: false, error: "runtime upgrade is pending; no message was queued" }, { status: 409 })
 
     const idempotencyKey = typeof input.idempotencyKey === "string" ? input.idempotencyKey : undefined
     if (input.idempotencyKey !== undefined && idempotencyKey === undefined) {
@@ -527,8 +561,8 @@ export class Conversation extends DurableObject<Env> {
 
     const prompt = input.user ? `${input.user}: ${text}` : text
 
-    if (!(await this.claimAdmission())) {
-      const queued = await this.enqueue(prompt, undefined)
+    if (!(await this.admissions.claim())) {
+      const queued = await this.admissions.enqueue(prompt, undefined)
       if (!queued) {
         await releaseClaim()
         return Response.json({ ok: false, error: "busy" }, { status: 503 })
@@ -541,10 +575,10 @@ export class Conversation extends DurableObject<Env> {
       sessionID = await this.ensureSession(text, input.transport ?? "http", input.slack)
       baseline = await this.turnBaseline(sessionID)
     } catch (err) {
-      this.admitting = false
+      this.admissions.finishLocal()
       void this.count("admission.failed")
       logEvent("admission.failed", { transport: "http" })
-      const queued = await this.enqueue(prompt, undefined)
+      const queued = await this.admissions.enqueue(prompt, undefined)
       if (!queued) {
         await this.store.advance("idle")
         await releaseClaim()
@@ -555,7 +589,7 @@ export class Conversation extends DurableObject<Env> {
 
     const reservation = await this.acquireBudgetReservation()
     if (reservation.kind === "denied") {
-      this.admitting = false
+      this.admissions.finishLocal()
       await this.store.advance("idle")
       await releaseClaim()
       return Response.json(
@@ -570,7 +604,7 @@ export class Conversation extends DurableObject<Env> {
       )
     }
     if (reservation.kind === "conflict" || reservation.kind === "unavailable") {
-      this.admitting = false
+      this.admissions.finishLocal()
       await this.store.advance("idle")
       await releaseClaim()
       return Response.json(
@@ -579,14 +613,14 @@ export class Conversation extends DurableObject<Env> {
       )
     }
     if (reservation.kind === "already-dispatched") {
-      await this.resumeDispatchedTurn()
+      await this.admissions.resumeDispatched()
       return Response.json(
         { ok: false, error: reservation.message, reservation: reservation.kind },
         { status: 503 },
       )
     }
     if (!(await this.markBudgetReservationDispatched(reservation.reservation, baseline))) {
-      this.admitting = false
+      this.admissions.finishLocal()
       await this.store.advance("idle")
       await releaseClaim()
       return Response.json(
@@ -599,7 +633,7 @@ export class Conversation extends DurableObject<Env> {
       // ambiguous: keep the hold and never turn it into queueable work.
       await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
     } catch (err) {
-      await this.recordAcceptedTurn(baseline)
+      await this.admissions.recordAccepted(baseline)
       if (idempotencyKey) await this.store.markTombstone(`msg:${idempotencyKey}`).catch(() => {})
       await this.deliver({
         type: "error",
@@ -612,49 +646,13 @@ export class Conversation extends DurableObject<Env> {
     }
     // The prompt is accepted; a bookkeeping or stream failure must not
     // re-enqueue it, or the model would be charged twice for one message.
-    await this.recordAcceptedTurn(baseline)
+    await this.admissions.recordAccepted(baseline)
     if (idempotencyKey) {
       await this.store.markTombstone(`msg:${idempotencyKey}`).catch(() => {})
     }
     const settings = await this.settings().catch(() => undefined)
     if (settings?.streaming) this.ctx.waitUntil(this.turnExecution.startStream(sessionID))
     return Response.json({ ok: true, sessionID })
-  }
-
-  /**
-   * Record a turn whose prompt OpenCode has already accepted. Bookkeeping
-   * failures must never cause the prompt to be sent again, so a failure is
-   * reported and the turn is made visible on a best-effort basis.
-   */
-  private async recordAcceptedTurn(baseline: string | undefined): Promise<void> {
-    try {
-      await this.startRun(baseline)
-    } catch (err) {
-      logEvent("turn.record_failed", { error: errorMessage(err) })
-      await this.store.patch({ phase: "running", turnBaseline: baseline }).catch(() => {})
-      const state = await this.store.get().catch(() => undefined)
-      await this.scheduler.schedule("turn:observe", Date.now() + POLL_MS, {
-        reservationID: state?.budgetReservation?.reservationID,
-        reservationDate: state?.budgetReservation?.date,
-        sessionID: state?.sessionID,
-        reason: "accepted-turn-bookkeeping-recovery",
-      }).catch(() => {})
-    }
-  }
-
-  /** Resume polling a persisted ambiguous dispatch without resetting its turn metadata. */
-  private async resumeDispatchedTurn(scheduleRecovery = true): Promise<void> {
-    this.admitting = false
-    if (!(await this.store.advance("running"))) {
-      await this.store.patch({ phase: "running" }).catch(() => {})
-    }
-    const state = await this.store.get()
-    if (scheduleRecovery) await this.scheduler.schedule("recovery:wake", Date.now() + POLL_MS, {
-      reservationID: state.budgetReservation?.reservationID,
-      reservationDate: state.budgetReservation?.date,
-      sessionID: state.sessionID,
-      reason: "dispatched-turn-recovery",
-    }).catch(() => {})
   }
 
   private async settings(): Promise<HarnessSettings> {
@@ -813,8 +811,8 @@ export class Conversation extends DurableObject<Env> {
 
   /** Hard reset: drop the container and this conversation's stored state. */
   private async onReset(): Promise<Response> {
-    return this.withAdmissionLock(async () => {
-      if (await this.hasPendingRuntimeUpgrade()) return Response.json({ error: "runtime upgrade is pending; resume it before reset" }, { status: 409 })
+    return this.admissions.withLock(async () => {
+      if (await this.runtimeUpgrades.hasPending()) return Response.json({ error: "runtime upgrade is pending; resume it before reset" }, { status: 409 })
       const blocked = await this.blockLifecycleDuringActiveTurn()
       if (blocked) return blocked
       return this.withUsageLifecycle(async () => {
@@ -840,8 +838,8 @@ export class Conversation extends DurableObject<Env> {
    * kept: this is what a long-lived conversation needs after an image deploy.
    */
   private async onRecycle(): Promise<Response> {
-    return this.withAdmissionLock(async () => {
-      if (await this.hasPendingRuntimeUpgrade()) return Response.json({ error: "runtime upgrade is pending; resume it before recycling" }, { status: 409 })
+    return this.admissions.withLock(async () => {
+      if (await this.runtimeUpgrades.hasPending()) return Response.json({ error: "runtime upgrade is pending; resume it before recycling" }, { status: 409 })
       const blocked = await this.blockLifecycleDuringActiveTurn()
       if (blocked) return blocked
 
@@ -868,8 +866,8 @@ export class Conversation extends DurableObject<Env> {
 
   /** Remove the workspace archives and this conversation's stored state. */
   private async onDelete(): Promise<Response> {
-    return this.withAdmissionLock(async () => {
-      if (await this.hasPendingRuntimeUpgrade()) return Response.json({ error: "runtime upgrade is pending; resume it before deleting this conversation" }, { status: 409 })
+    return this.admissions.withLock(async () => {
+      if (await this.runtimeUpgrades.hasPending()) return Response.json({ error: "runtime upgrade is pending; resume it before deleting this conversation" }, { status: 409 })
       const blocked = await this.blockLifecycleDuringActiveTurn()
       if (blocked) return blocked
       return this.withUsageLifecycle(async () => {
@@ -891,6 +889,9 @@ export class Conversation extends DurableObject<Env> {
 
   /** Do not destroy state or archives while a turn or owned hold is unresolved. */
   private async blockLifecycleDuringActiveTurn(): Promise<Response | undefined> {
+    if (await this.ctx.storage.get<boolean>("lifecycleJobsSealed")) {
+      return Response.json({ ok: false, error: "lifecycle jobs are sealed; inspect recovery and retry before cleanup" }, { status: 409 })
+    }
     const state = await this.store.get()
     const phase = state.phase ?? "idle"
     const active = phase === "admitting" || phase === "running" || phase === "settling" || phase === "queued"
@@ -985,47 +986,6 @@ export class Conversation extends DurableObject<Env> {
     return this.runtime.startBoundContainer(container)
   }
 
-  /** A phase where a new prompt must wait for the current turn. */
-  private isBusy(phase: ConversationPhase | undefined): boolean {
-    return phase === "admitting" || phase === "running" || phase === "settling" || phase === "queued"
-  }
-
-  /** Serializes check-then-claim steps so two requests cannot both admit. */
-  private admissionTail: Promise<unknown> = Promise.resolve()
-
-  private withAdmissionLock<T>(task: () => Promise<T>): Promise<T> {
-    const run = this.admissionTail.then(task, task)
-    this.admissionTail = run.then(
-      () => undefined,
-      () => undefined,
-    )
-    return run
-  }
-
-  private claimAdmission(): Promise<boolean> {
-    return this.withAdmissionLock(async () => {
-      let claimed = false
-      try {
-        await this.ctx.storage.transaction(async () => {
-          const state = await this.store.get()
-          if (this.recoveryActions.active || await this.hasPendingRuntimeUpgrade() || state.queued || this.isBusy(state.phase)) return
-          const admissionID = crypto.randomUUID()
-          const admissionStartedAt = Date.now()
-          await this.store.patch({ phase: "admitting", admissionID, admissionStartedAt })
-          await this.scheduler.schedule("recovery:wake", admissionStartedAt + POLL_MS, {
-            admissionID,
-            reason: "inflight-admission-recovery",
-          })
-          claimed = true
-        })
-      } catch (error) {
-        console.warn("admission claim was not persisted", { error: errorMessage(error) })
-      }
-      this.admitting = claimed
-      return claimed
-    })
-  }
-
   // -------------------------------------------------------------- Slack adapter
 
   private async handleSlackControl(text: string, input: SlackEventRequest, target: SlackTarget): Promise<void> {
@@ -1104,15 +1064,15 @@ export class Conversation extends DurableObject<Env> {
   /** Model/session changes share the admission lock, so a prompt cannot race them. */
   private async requireSlackIdle(): Promise<ConversationState> {
     const state = await this.store.get()
-    if (await this.hasPendingRuntimeUpgrade()) throw new Error("A runtime upgrade is pending. Resume it before changing the model or session.")
-    if (this.admitting || this.turnExecution.isPumping || this.recoveryActions.active || this.isBusy(state.phase) || state.queued || state.budgetReservation) {
+    if (await this.runtimeUpgrades.hasPending()) throw new Error("A runtime upgrade is pending. Resume it before changing the model or session.")
+    if (this.admissions.active || this.turnExecution.isPumping || this.recoveryActions.active || isBusyPhase(state.phase) || state.queued || state.budgetReservation) {
       throw new Error("This conversation has unfinished work. Use `!stop`, then wait for settlement; `!status` shows any retained usage hold.")
     }
     return state
   }
 
   private async changeSlackModel(ref: string): Promise<void> {
-    await this.withAdmissionLock(async () => {
+    await this.admissions.withLock(async () => {
       const state = await this.requireSlackIdle()
       const model = parseModelRef(ref)
       if (!model) throw new Error("Use a provider/model reference from `!model`.")
@@ -1123,7 +1083,7 @@ export class Conversation extends DurableObject<Env> {
 
   /** Change only the session mapping; archives, sources and historical sessions survive. */
   private async changeSlackSession(sessionID: string | undefined, target: SlackTarget): Promise<void> {
-    await this.withAdmissionLock(async () => {
+    await this.admissions.withLock(async () => {
       const current = await this.requireSlackIdle()
       let selectedModel = current.modelOverride
       if (sessionID) {
@@ -1151,15 +1111,15 @@ export class Conversation extends DurableObject<Env> {
   }
 
   private async stopSlackWork(): Promise<string> {
-    return this.withAdmissionLock(async () => {
+    return this.admissions.withLock(async () => {
       const state = await this.store.get()
-      if (this.admitting || state.phase === "admitting") return "A message is being admitted. Retry `!stop` once startup finishes."
+      if (this.admissions.active || state.phase === "admitting") return "A message is being admitted. Retry `!stop` once startup finishes."
       if (state.queued && !state.budgetReservation && state.phase === "queued") {
         await this.store.patch({ queued: undefined, phase: "idle" })
         return "Stopped the queued message before dispatch."
       }
       if (!state.sessionID) return "No session mapped here yet."
-      if (!this.isBusy(state.phase) && !state.budgetReservation) return "This session is already idle."
+      if (!isBusyPhase(state.phase) && !state.budgetReservation) return "This session is already idle."
       await this.withClient((client) => client.session.interrupt({ sessionID: state.sessionID!, resume: false }), false)
       // Interrupting proves neither zero spend nor successful settlement. The
       // normal log/context reconciliation retains and eventually releases holds.
@@ -1185,7 +1145,7 @@ export class Conversation extends DurableObject<Env> {
     const strippedText = this.stripMention(event.text ?? "")
     const text = strippedText || (hasImage ? "Describe the attached image." : "")
     if (!text) return Response.json({ ok: true })
-    if (await this.hasPendingRuntimeUpgrade()) {
+    if (await this.runtimeUpgrades.hasPending()) {
       const target = { channel: event.channel, ...(input.replyTs ? { replyTs: input.replyTs } : {}) }
       await this.postChunked(target.channel, "Runtime upgrade is pending. No message was queued; an operator must resume the upgrade first.", target.replyTs).catch(() => {})
       return Response.json({ error: "runtime upgrade pending" }, { status: 409 })
@@ -1230,7 +1190,7 @@ export class Conversation extends DurableObject<Env> {
         if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
         return Response.json({ ok: true })
       }
-      const queued = await this.enqueue(prompt, target)
+      const queued = await this.admissions.enqueue(prompt, target)
       accepted = queued
       if (!queued) {
         await this.postChunked(
@@ -1243,7 +1203,7 @@ export class Conversation extends DurableObject<Env> {
       return Response.json({ ok: true, queued })
     }
 
-    if (!(await this.claimAdmission())) {
+    if (!(await this.admissions.claim())) {
       if (hasImage) {
         await this.postChunked(
           target.channel,
@@ -1253,7 +1213,7 @@ export class Conversation extends DurableObject<Env> {
         if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
         return Response.json({ ok: true, queued: false })
       }
-      const queued = await this.enqueue(prompt, target)
+      const queued = await this.admissions.enqueue(prompt, target)
       accepted = queued
       if (!queued) {
         await this.postChunked(
@@ -1273,7 +1233,7 @@ export class Conversation extends DurableObject<Env> {
         // the model this prompt will actually use.
         sessionID = await this.ensureSession(text, "slack", target)
       } catch {
-        this.admitting = false
+        this.admissions.finishLocal()
         await this.store.advance("idle")
         await this.postChunked(
           target.channel,
@@ -1293,7 +1253,7 @@ export class Conversation extends DurableObject<Env> {
         check = checkSlackImageModel(undefined, undefined)
       }
       if (check.status !== "compatible") {
-        this.admitting = false
+        this.admissions.finishLocal()
         await this.store.advance("idle")
         await this.postChunked(target.channel, this.slackImageCompatibilityMessage(check, catalogueUnavailable), target.replyTs).catch(() => {})
         if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
@@ -1302,7 +1262,7 @@ export class Conversation extends DurableObject<Env> {
       try {
         imageAttachment = await downloadSlackImage(files, this.env.SLACK_BOT_TOKEN ?? "")
       } catch (error) {
-        this.admitting = false
+        this.admissions.finishLocal()
         await this.store.advance("idle")
         const message = error instanceof Error ? error.message : "That image could not be validated."
         await this.postChunked(target.channel, `⚠️ ${message} Nothing was sent or reserved; please resend the image.`, target.replyTs).catch(() => {})
@@ -1315,7 +1275,7 @@ export class Conversation extends DurableObject<Env> {
       if (!sessionID) sessionID = await this.ensureSession(text, "slack", target)
       baseline = await this.turnBaseline(sessionID)
     } catch (err) {
-      this.admitting = false
+      this.admissions.finishLocal()
       logEvent("admission.failed", { transport: "slack", stage: "readiness" })
       if (hasImage) {
         imageAttachment = undefined
@@ -1328,7 +1288,7 @@ export class Conversation extends DurableObject<Env> {
         if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
         return Response.json({ ok: true, queued: false })
       }
-      const queued = await this.enqueue(prompt, target)
+      const queued = await this.admissions.enqueue(prompt, target)
       accepted = queued
       if (!queued) {
         await this.store.advance("idle")
@@ -1345,7 +1305,7 @@ export class Conversation extends DurableObject<Env> {
     const reservation = await this.acquireBudgetReservation()
     if (reservation.kind === "denied") {
       imageAttachment = undefined
-      this.admitting = false
+      this.admissions.finishLocal()
       await this.store.advance("idle")
       await this.postChunked(
         target.channel,
@@ -1357,7 +1317,7 @@ export class Conversation extends DurableObject<Env> {
     }
     if (reservation.kind === "conflict" || reservation.kind === "unavailable") {
       imageAttachment = undefined
-      this.admitting = false
+      this.admissions.finishLocal()
       await this.store.advance("idle")
       await this.postChunked(
         target.channel,
@@ -1369,7 +1329,7 @@ export class Conversation extends DurableObject<Env> {
     }
     if (reservation.kind === "already-dispatched") {
       imageAttachment = undefined
-      await this.resumeDispatchedTurn()
+      await this.admissions.resumeDispatched()
       await this.postChunked(
         target.channel,
         "⚠️ A previous prompt has an unresolved dispatch result. This message was not sent; please retry after it settles.",
@@ -1380,7 +1340,7 @@ export class Conversation extends DurableObject<Env> {
     }
     if (!(await this.markBudgetReservationDispatched(reservation.reservation, baseline))) {
       imageAttachment = undefined
-      this.admitting = false
+      this.admissions.finishLocal()
       await this.store.advance("idle")
       await this.postChunked(
         target.channel,
@@ -1398,7 +1358,7 @@ export class Conversation extends DurableObject<Env> {
       }))
     } catch (err) {
       imageAttachment = undefined
-      await this.recordAcceptedTurn(baseline)
+      await this.admissions.recordAccepted(baseline)
       if (input.eventID) await this.store.markTombstone(input.eventID).catch(() => {})
       await this.deliver({
         type: "error",
@@ -1410,7 +1370,7 @@ export class Conversation extends DurableObject<Env> {
     imageAttachment = undefined
 
     // The prompt is accepted; bookkeeping and stream failures must not re-send it.
-    await this.recordAcceptedTurn(baseline)
+    await this.admissions.recordAccepted(baseline)
     if (input.eventID) {
       // Mark event as processed so it stays blocked beyond the 200-event window
       await this.store.markTombstone(input.eventID).catch(() => {})
@@ -1466,7 +1426,7 @@ export class Conversation extends DurableObject<Env> {
   // ------------------------------------------------------------------- prompt
 
   private async ensureSession(text: string, transport: Transport, slack?: SlackTarget): Promise<string> {
-    if (await this.hasPendingRuntimeUpgrade()) throw new Error("runtime upgrade is pending; an operator must resume it before a session can change")
+    if (await this.runtimeUpgrades.hasPending()) throw new Error("runtime upgrade is pending; an operator must resume it before a session can change")
     await this.ensureReady()
     await this.leases.ensureHeld()
     if (this.runtime.eventPersistence !== true || !this.runtime.generation ||
@@ -1569,33 +1529,6 @@ export class Conversation extends DurableObject<Env> {
     return undefined
   }
 
-  private async startRun(turnBaseline?: string): Promise<void> {
-    this.admitting = false
-    const current = await this.store.get()
-    const dispatchedAt = current.budgetReservation?.dispatched === true &&
-      typeof current.runStartedAt === "number" && Number.isFinite(current.runStartedAt) && current.runStartedAt > 0
-      ? current.runStartedAt
-      : Date.now()
-    await this.store.patch({
-      lastReply: undefined,
-      lastSlackReply: undefined,
-      // The durable dispatch marker is written before the provider request.
-      // Preserve that time: an immediate provider error may be timestamped
-      // before the prompt HTTP call returns, and must still belong to this turn.
-      runStartedAt: dispatchedAt,
-      turnBaseline,
-    })
-    if (!(await this.store.advance("running"))) {
-      // A concurrent alarm may have reset the admission; the prompt is already
-      // sent, so force the phase rather than leaving the turn invisible.
-      await this.store.patch({ phase: "running" })
-    }
-    await this.scheduler.schedule("turn:observe", Date.now() + POLL_MS, {
-      sessionID: (await this.store.get()).sessionID,
-      reason: "turn-started",
-    })
-  }
-
   private async buildPrompt(channel: string, ts: string, threadTs: string | undefined, text: string): Promise<string> {
     const messages = await this.fetchContext(channel, ts, threadTs)
     const context = formatSlackContext(messages, {
@@ -1664,17 +1597,17 @@ export class Conversation extends DurableObject<Env> {
   }
 
   private async processTurnObservation(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
-    if (!(await this.scheduler.isCurrent(payload)) || await this.hasPendingRuntimeUpgrade()) return undefined
+    if (!(await this.scheduler.isCurrent(payload)) || await this.runtimeUpgrades.hasPending()) return undefined
     const before = await this.store.get()
     const reservation = before.budgetReservation
     if (payload.reservationID && (!reservation?.dispatched || reservation.reservationID !== payload.reservationID ||
       reservation.date !== payload.reservationDate)) return undefined
     if (!reservation?.dispatched && !["running", "settling"].includes(before.phase ?? "idle")) return undefined
-    if (this.recoveryActions.active || this.admitting || this.turnExecution.isPumping) return { rescheduleAt: Date.now() + POLL_MS }
+    if (this.recoveryActions.active || this.admissions.active || this.turnExecution.isPumping) return { rescheduleAt: Date.now() + POLL_MS }
 
     const phase = before.phase ?? "idle"
     if (reservation?.dispatched && phase !== "running" && phase !== "settling") {
-      await this.resumeDispatchedTurn(false)
+      await this.admissions.resumeDispatched(false)
     }
     const state = await this.store.get()
     const action = staleAction(state, Date.now(), false)
@@ -1711,14 +1644,14 @@ export class Conversation extends DurableObject<Env> {
   }
 
   private async processAdmissionRetry(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
-    if (!(await this.scheduler.isCurrent(payload)) || await this.hasPendingRuntimeUpgrade()) return undefined
+    if (!(await this.scheduler.isCurrent(payload)) || await this.runtimeUpgrades.hasPending()) return undefined
     const state = await this.store.get()
     if (payload.queueID) {
       if (!state.queued || state.queued.id !== payload.queueID) return undefined
       const due = state.queued.nextAttemptAt ?? 0
       if (Date.now() < due) return { rescheduleAt: due }
-      if (this.admitting || this.turnExecution.isPumping || this.recoveryActions.active) return { rescheduleAt: Date.now() + POLL_MS }
-      await this.drainQueue()
+      if (this.admissions.active || this.turnExecution.isPumping || this.recoveryActions.active) return { rescheduleAt: Date.now() + POLL_MS }
+      await this.admissions.drainQueue()
       const after = await this.store.get()
       if (!after.queued || after.queued.id !== payload.queueID) return undefined
       return { rescheduleAt: Math.max(after.queued.nextAttemptAt ?? 0, Date.now() + POLL_MS) }
@@ -1727,13 +1660,13 @@ export class Conversation extends DurableObject<Env> {
   }
 
   private async processCheckpointRetry(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
-    if (!(await this.scheduler.isCurrent(payload)) || await this.hasPendingRuntimeUpgrade()) return undefined
+    if (!(await this.scheduler.isCurrent(payload)) || await this.runtimeUpgrades.hasPending()) return undefined
     const state = await this.store.get()
     if (!state.checkpointPending) return undefined
     const due = state.checkpointRetryAt ?? Date.now() + CHECKPOINT_RETRY_MS
     if (!state.checkpointRetryAt) await this.store.patch({ checkpointRetryAt: due })
     if (Date.now() < due) return { rescheduleAt: due }
-    if ((state.phase ?? "idle") !== "idle" || this.admitting || this.turnExecution.isPumping || this.recoveryActions.active) {
+    if ((state.phase ?? "idle") !== "idle" || this.admissions.active || this.turnExecution.isPumping || this.recoveryActions.active) {
       return { rescheduleAt: Date.now() + POLL_MS }
     }
     await this.recoveryActions.runAction(() => this.checkpoints.retry())
@@ -1741,12 +1674,12 @@ export class Conversation extends DurableObject<Env> {
   }
 
   private async processRecoveryWake(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
-    if (!(await this.scheduler.isCurrent(payload)) || await this.hasPendingRuntimeUpgrade()) return undefined
+    if (!(await this.scheduler.isCurrent(payload)) || await this.runtimeUpgrades.hasPending()) return undefined
     const state = await this.store.get()
     if (payload.reason === "stale-admission-recovery") {
       if ((state.phase ?? "idle") !== "admitting" || state.budgetReservation?.dispatched ||
         (payload.admissionID && state.admissionID !== payload.admissionID)) return undefined
-      if (this.recoveryActions.active || this.admitting || this.turnExecution.isPumping) return { rescheduleAt: Date.now() + POLL_MS }
+      if (this.recoveryActions.active || this.admissions.active || this.turnExecution.isPumping) return { rescheduleAt: Date.now() + POLL_MS }
       if (staleAction(state, Date.now(), false) !== "admission") return undefined
       const queueID = state.queued?.id ?? (state.queued ? crypto.randomUUID() : undefined)
       const retryAt = state.queued ? Math.max(state.queued.nextAttemptAt ?? 0, Date.now()) : undefined
@@ -1771,9 +1704,9 @@ export class Conversation extends DurableObject<Env> {
     const reservation = state.budgetReservation
     if (!reservation?.dispatched || reservation.reservationID !== payload.reservationID ||
       reservation.date !== payload.reservationDate) return undefined
-    if (this.recoveryActions.active || this.admitting || this.turnExecution.isPumping) return { rescheduleAt: Date.now() + POLL_MS }
+    if (this.recoveryActions.active || this.admissions.active || this.turnExecution.isPumping) return { rescheduleAt: Date.now() + POLL_MS }
     // This wake only observes/reconciles the already dispatched prompt.
-    if (!(["running", "settling"].includes(state.phase ?? "idle"))) await this.resumeDispatchedTurn(false)
+    if (!(["running", "settling"].includes(state.phase ?? "idle"))) await this.admissions.resumeDispatched(false)
     await this.scheduler.schedule("turn:observe", Date.now() + POLL_MS, {
       reservationID: reservation.reservationID,
       reservationDate: reservation.date,
@@ -1832,451 +1765,6 @@ export class Conversation extends DurableObject<Env> {
   /** Start the container, restore the checkpoint on first boot, start OpenCode. */
   private ensureReady(): Promise<ContainerPort> {
     return this.runtime.ensureReady(() => this.readiness.prepare())
-  }
-
-  private async readRuntimeUpgradePending(): Promise<RuntimeUpgradePending | undefined> {
-    const raw = await this.ctx.storage.get<unknown>("runtimeUpgradePending")
-    if (raw === undefined) return undefined
-    const pending = parseRuntimeUpgradePending(raw)
-    if (pending.conversationID !== this.ctx.id.toString()) {
-      throw new Error("runtime upgrade intent belongs to another conversation")
-    }
-    return pending
-  }
-
-  private async hasPendingRuntimeUpgrade(): Promise<boolean> {
-    return (await this.ctx.storage.get<unknown>("runtimeUpgradePending")) !== undefined
-  }
-
-  private async previewRuntimeUpgrade(): Promise<Response> {
-    return this.withAdmissionLock(async () => {
-      if (this.admitting || this.turnExecution.isPumping || this.recoveryActions.active) {
-        return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
-      }
-      try {
-        return await this.recoveryActions.runAction(() => this.usage.serialize(async () => {
-          const pending = await this.readRuntimeUpgradePending()
-          if (pending) {
-            const state = await this.store.get()
-            const ledger = await this.usage.ledger().catch(() => undefined)
-            if (!ledger || ledger.conversationID !== this.ctx.id.toString() || ledger.holds.length || ledger.blockers.length ||
-              state.sessionID !== pending.sessionID || state.queued || state.budgetReservation || state.checkpointPending ||
-              (state.phase ?? "idle") !== "idle") {
-              return Response.json({ pending: true, canApply: false, error: "runtime upgrade resume is blocked by changed work or usage state" }, { status: 409 })
-            }
-            return Response.json({ pending: true, canApply: true, planID: pending.planID, sessionID: pending.sessionID, targetImage: pending.targetImage })
-          }
-          const draft = await this.buildRuntimeUpgradePlan()
-          if (!draft.ok) return Response.json({ canApply: false, blockers: draft.blockers, error: draft.error }, { status: draft.status })
-          return Response.json(draft.body)
-        }))
-      } catch {
-        return Response.json({ error: "runtime upgrade preview could not be verified", retryable: true }, { status: 503 })
-      }
-    })
-  }
-
-  private async buildRuntimeUpgradePlan(): Promise<
-    | { ok: true; body: UnknownRecord; pending: RuntimeUpgradePending }
-    | { ok: false; status: number; error: string; blockers: string[] }
-  > {
-    const state = await this.store.get()
-    const sessionID = state.sessionID
-    const blockers: string[] = []
-    if (!sessionID) blockers.push("original_session_required")
-    if ((state.phase ?? "idle") !== "idle") blockers.push("conversation_not_idle")
-    if (state.queued) blockers.push("queued_work")
-    if (state.budgetReservation) blockers.push("local_usage_hold")
-    if (state.checkpointPending) blockers.push("checkpoint_pending")
-    if (this.admitting || this.turnExecution.isPumping || !this.recoveryActions.active) blockers.push("live_local_operation")
-    const target = this.ctx.container?.images?.evented
-    const targetImage = typeof target === "string" ? target : ""
-    if (!/^[a-zA-Z0-9._:/-]+@sha256:[a-f0-9]{64}$/.test(targetImage)) blockers.push("pinned_evented_image_unavailable")
-    if ((await this.ctx.storage.get<unknown>("containerImageVariant")) === "evented") blockers.push("runtime_already_evented")
-    let ledger: UsageCutoverLedger | undefined
-    try {
-      ledger = await this.usage.ledger()
-      if (ledger.conversationID !== this.ctx.id.toString() || ledger.blockers.length || ledger.holds.length) {
-        blockers.push("central_usage_hold_or_ledger_blocker")
-      }
-    } catch {
-      blockers.push("central_usage_authority_unavailable")
-    }
-    if (blockers.length) return { ok: false, status: blockers.includes("central_usage_authority_unavailable") ? 503 : 409, error: "runtime upgrade is blocked", blockers }
-    try {
-      await this.ensureReady()
-      const port = this.runtime.apiPort
-      const generation = this.runtime.generation
-      if (!port || !generation) throw new Error("runtime generation unavailable")
-      const client = makeClient(portFetch(port))
-      assertAccountingPolicy(await client.config.get())
-      const quiescent = await this.proveRuntimeUpgradeSession(client, sessionID!)
-      if (quiescent.proof.sessionID !== sessionID || quiescent.proof.runtimeGeneration !== generation) {
-        throw new Error("runtime changed during quiescence proof")
-      }
-      const localSnapshot = await this.runtimeUpgradeLocalSnapshot()
-      const localSnapshotID = await this.sha256(JSON.stringify(localSnapshot))
-      const sourceGeneration = generation
-      const planCore = {
-        conversationID: this.ctx.id.toString(), sessionID, contextDigest: quiescent.proof.contextDigest,
-        sourceGeneration, targetImage, localSnapshotID, centralSnapshotID: ledger!.snapshotID,
-      }
-      const planID = await this.sha256(JSON.stringify(planCore))
-      const manifest: CheckpointManifest = {
-        workspace: { key: "preview/workspace.tar.gz", size: 1, encrypted: true },
-        state: { key: "preview/state.tar.gz", size: 1, encrypted: true },
-        createdAt: 1,
-      }
-      const intent: RuntimeUpgradePending = {
-        planID, conversationID: this.ctx.id.toString(), sessionID: sessionID!,
-        contextDigest: quiescent.proof.contextDigest, sourceGeneration, targetImage,
-        checkpointManifest: manifest, startedAt: Math.max(1, Date.now()),
-      }
-      return {
-        ok: true,
-        pending: intent,
-        body: {
-          canApply: true, planID, conversationID: this.ctx.id.toString(), sessionID,
-          sourceGeneration, targetImage, contextDigest: quiescent.proof.contextDigest,
-          localSnapshotID, centralSnapshotID: ledger!.snapshotID,
-          checkpointParts: ["workspace", "state"],
-          note: "Applying checkpoints and verifies the saved session before switching this conversation to the evented runtime.",
-        },
-      }
-    } catch {
-      return { ok: false, status: 503, error: "runtime upgrade quiescence could not be verified", blockers: ["runtime_or_session_unavailable"] }
-    }
-  }
-
-  private async runtimeUpgradeLocalSnapshot(): Promise<UnknownRecord> {
-    const state = await this.store.get()
-    return {
-      sessionID: state.sessionID ?? null,
-      phase: state.phase ?? "idle",
-      queued: state.queued ?? null,
-      budgetReservation: state.budgetReservation ?? null,
-      checkpointPending: state.checkpointPending ?? null,
-      checkpointManifest: state.checkpointManifest ?? null,
-      checkpointKey: state.checkpointKey ?? null,
-      settingsVersion: state.settingsVersion ?? null,
-      operatorReconciliation: state.operatorReconciliation ?? null,
-      containerImageVariant: await this.ctx.storage.get<unknown>("containerImageVariant") ?? null,
-    }
-  }
-
-  private async sha256(value: string): Promise<string> {
-    const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))
-    return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("")
-  }
-
-  private async proveRuntimeUpgradeSession(
-    client: ReturnType<typeof makeClient>,
-    sessionID: string,
-  ): Promise<Awaited<ReturnType<typeof proveRuntimeQuiescence>>> {
-    return proveRuntimeQuiescence({
-      client,
-      sessionID,
-      getRuntimeGeneration: async (signal) => {
-        const control = await this.runtime.port(CONTROL_PORT)
-        const response = await control.fetch("http://container/start", { method: "POST", signal })
-        if (!response.ok) throw new Error("runtime proof unavailable")
-        const proof = await response.json() as UnknownRecord
-        if (proof.ok !== true || proof.accountingPolicy !== ACCOUNTING_POLICY_ID ||
-          typeof proof.opencodeGeneration !== "string" || !proof.opencodeGeneration) {
-          throw new Error("runtime generation proof invalid")
-        }
-        this.runtime.recordProof(proof.opencodeGeneration, proof.eventPersistence === true)
-        return proof.opencodeGeneration
-      },
-    })
-  }
-
-  private async validateRuntimeUpgradeArchive(manifest: CheckpointManifest): Promise<void> {
-    if (!manifest.state || manifest.workspace.size <= 0 || manifest.state.size <= 0 ||
-      manifest.workspace.key === manifest.state.key) throw new Error("split checkpoint is incomplete")
-    const keyPrefix = `workspaces/${this.ctx.id.toString()}/`
-    for (const part of [manifest.workspace, manifest.state]) {
-      if (!part.key.startsWith(keyPrefix) || !Number.isSafeInteger(part.size) || part.size <= 0) {
-        throw new Error("split checkpoint metadata is invalid")
-      }
-      const object = await this.env.CHECKPOINTS.get(part.key)
-      if (!object || object.size !== part.size ||
-        object.customMetadata?.encrypted !== (part.encrypted ? "1" : "0")) {
-        throw new Error("split checkpoint object does not match its manifest")
-      }
-      if (!part.encrypted && !plaintextArchivesAllowed(this.env)) {
-        throw new Error("plaintext checkpoint archives are disabled")
-      }
-      const clear = await this.checkpoints.decryptBody(object.body, part.encrypted)
-      const bytes = await new Response(clear).arrayBuffer()
-      if (bytes.byteLength <= 0) throw new Error("split checkpoint archive is empty")
-    }
-  }
-
-  private async applyRuntimeUpgrade(expectedPlanID: string): Promise<Response> {
-    return this.withAdmissionLock(async () => {
-      if (this.admitting || this.turnExecution.isPumping || this.recoveryActions.active) {
-        return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
-      }
-      try {
-        return await this.recoveryActions.runAction(() => this.usage.serialize(async () => {
-          const completed = await this.ctx.storage.get<RuntimeUpgradeCompletion>("runtimeUpgradeCompletion")
-          if (completed?.planID === expectedPlanID && completed.conversationID === this.ctx.id.toString()) {
-            return Response.json({ ok: true, completed: true, replayed: true, receipt: completed })
-          }
-          let pending = await this.readRuntimeUpgradePending()
-          if (!pending) {
-            const plan = await this.buildRuntimeUpgradePlan()
-            if (!plan.ok) return Response.json({ error: plan.error, blockers: plan.blockers }, { status: plan.status })
-            if (plan.pending.planID !== expectedPlanID) return Response.json({ error: "runtime upgrade plan changed; review a fresh preview" }, { status: 409 })
-            if (!await this.checkpoints.capture()) return Response.json({ error: "checkpoint failed; current runtime was kept" }, { status: 503 })
-            const latestState = await this.store.get()
-            const manifest = latestState.checkpointManifest
-            if (!manifest) return Response.json({ error: "a published split checkpoint is required; current runtime was kept" }, { status: 503 })
-            await this.validateRuntimeUpgradeArchive(manifest)
-            if (!this.runtime.apiPort) return Response.json({ error: "runtime port changed after checkpoint; current runtime was kept" }, { status: 409 })
-            const afterCheckpoint = await this.proveRuntimeUpgradeSession(
-              makeClient(portFetch(this.runtime.apiPort)), plan.pending.sessionID,
-            )
-            if (afterCheckpoint.proof.contextDigest !== plan.pending.contextDigest ||
-              afterCheckpoint.proof.runtimeGeneration !== plan.pending.sourceGeneration) {
-              return Response.json({ error: "session changed after checkpoint; current runtime was kept" }, { status: 409 })
-            }
-            pending = parseRuntimeUpgradePending({ ...plan.pending, checkpointManifest: manifest })
-            await this.ctx.storage.transaction(async (txn) => {
-              await txn.put("runtimeUpgradePending", pending!)
-              await txn.put("containerImageVariant", "evented")
-            })
-          } else if (pending.planID !== expectedPlanID) {
-            return Response.json({ error: "another runtime upgrade is pending" }, { status: 409 })
-          }
-          const current = await this.store.get()
-          const ledger = await this.usage.ledger().catch(() => undefined)
-          if (!ledger || ledger.conversationID !== this.ctx.id.toString() || ledger.holds.length || ledger.blockers.length ||
-            current.sessionID !== pending.sessionID || current.queued || current.budgetReservation || current.checkpointPending ||
-            (current.phase ?? "idle") !== "idle" || this.admitting || this.turnExecution.isPumping) {
-            return Response.json({ error: "runtime upgrade resume is blocked by changed work or usage state" }, { status: 409 })
-          }
-          await this.validateRuntimeUpgradeArchive(pending.checkpointManifest)
-          const container = this.ctx.container
-          if (!container) return Response.json({ error: "container binding unavailable; upgrade remains pending" }, { status: 503 })
-          if (container.images?.evented !== pending.targetImage) {
-            return Response.json({ error: "configured evented image changed; upgrade remains pending" }, { status: 409 })
-          }
-          if (!(await this.runtime.stop())) {
-            return Response.json({ error: "container stop was not confirmed; upgrade remains pending" }, { status: 503 })
-          }
-          if (!(await this.leases.releaseAfterStop())) {
-            return Response.json({ error: "container lease release is pending; upgrade remains pending" }, { status: 503 })
-          }
-          this.runtimeUpgradeResuming = true
-          try {
-            await this.ensureReady()
-          } finally {
-            this.runtimeUpgradeResuming = false
-          }
-          const receipt = await this.ctx.storage.get<RuntimeUpgradeCompletion>("runtimeUpgradeCompletion")
-          if (!receipt || receipt.planID !== expectedPlanID) {
-            return Response.json({ error: "restored runtime proof is incomplete; upgrade remains pending" }, { status: 503 })
-          }
-          return Response.json({ ok: true, completed: true, receipt })
-        }))
-      } catch (error) {
-        return Response.json({ error: errorMessage(error), pending: true, retryable: true }, { status: 503 })
-      }
-    })
-  }
-
-  private async runtimeUpgradeCheckpoint(pending: RuntimeUpgradePending): Promise<{
-    workspace: R2ObjectBody
-    state: R2ObjectBody
-    split: true
-  }> {
-    await this.validateRuntimeUpgradeArchive(pending.checkpointManifest)
-    const workspace = await this.env.CHECKPOINTS.get(pending.checkpointManifest.workspace.key)
-    const state = await this.env.CHECKPOINTS.get(pending.checkpointManifest.state!.key)
-    if (!workspace || !state) throw new Error("pending runtime upgrade checkpoint parts are unavailable")
-    return { workspace, state, split: true }
-  }
-
-  /** Hold one admission when the container cannot start; drain it from the alarm. */
-  private async enqueue(text: string, slack?: SlackTarget): Promise<boolean> {
-    if (this.recoveryActions.active || await this.hasPendingRuntimeUpgrade()) return false
-    const nextAttemptAt = Date.now() + 5000
-    const entry = {
-      id: crypto.randomUUID(),
-      text,
-      ...(slack ? { slack } : {}),
-      attempts: 0,
-      nextAttemptAt,
-    }
-    let claimed = false
-    try {
-      claimed = await this.ctx.storage.transaction(async () => {
-        const wasClaimed = await this.store.enqueue(entry)
-        if (wasClaimed) await this.scheduler.schedule("admission:retry", nextAttemptAt, {
-          queueID: entry.id,
-          reason: "queued-admission",
-        })
-        return wasClaimed
-      })
-    } catch (error) {
-      console.warn("queue admission was not persisted", { error: errorMessage(error) })
-    }
-    if (!claimed) return false
-    void this.count("queue.enqueued")
-    logEvent("queue.enqueued", { transport: slack ? "slack" : "http" })
-    if (slack) {
-      await this.postChunked(slack.channel, "⏳ Container busy — queued; I'll retry shortly.", slack.replyTs).catch(() => {})
-    }
-    return true
-  }
-
-  private async scheduleQueuedRetry(
-    queued: NonNullable<ConversationState["queued"]>,
-    retryAt: number,
-    updates: Partial<NonNullable<ConversationState["queued"]>> = {},
-    reason: string,
-  ): Promise<void> {
-    await this.ctx.storage.transaction(async () => {
-      await this.store.patch({ queued: { ...queued, ...updates, nextAttemptAt: retryAt } })
-      await this.store.advance("queued")
-      await this.scheduler.schedule("admission:retry", retryAt, { queueID: queued.id, reason })
-    })
-  }
-
-  private async drainQueue(): Promise<boolean> {
-    if (this.admitting || this.turnExecution.isPumping || this.recoveryActions.active) return false
-    // Claim the queued work under the same lock as admissions, so a new
-    // message cannot start while the queue is being drained.
-    const queued = await this.withAdmissionLock(async () => {
-      const state = await this.store.get()
-      // The warm stream stays connected while idle; it must not block the queue.
-      if (!state.queued || this.admitting || this.turnExecution.isPumping || this.recoveryActions.active || state.budgetReservation?.dispatched) return undefined
-      if (Date.now() < (state.queued.nextAttemptAt ?? 0)) return undefined
-      const phase = state.phase ?? "idle"
-      if (phase === "running" || phase === "settling" || phase === "admitting") return undefined
-      await this.store.advance("admitting")
-      this.admitting = true
-      return state.queued
-    })
-    if (!queued) return false
-
-    let sessionID = ""
-    let baseline: string | undefined
-    try {
-      sessionID = await this.ensureSession(queued.text, queued.slack ? "slack" : "http", queued.slack)
-      baseline = await this.turnBaseline(sessionID)
-    } catch (err) {
-      this.admitting = false
-      // Capacity pressure is temporary: keep the message queued until a lease
-      // frees up instead of burning the prompt-retry budget and dropping it.
-      if (isCapacityRejection(err)) {
-        const retryAt = Date.now() + CAPACITY_RETRY_MS
-        logEvent("queue.capacity", { attempts: queued.attempts })
-        await this.scheduleQueuedRetry(queued, retryAt, { lastError: "container capacity reached" }, "queue-capacity-retry")
-        return false
-      }
-      const attempts = queued.attempts + 1
-      if (attempts >= 5) {
-        await this.store.patch({ queued: undefined, lastTurnError: errorMessage(err) })
-        await this.store.advance("idle")
-        void this.count("queue.failed")
-        logEvent("queue.failed", { attempts })
-        await this.deliver(
-          { type: "error", message: `queued message could not start: ${errorMessage(err)}` },
-          { slack: false },
-        )
-        if (queued.slack) {
-          await this.postChunked(
-            queued.slack.channel,
-            `⚠️ Couldn't start the session: ${errorMessage(err)}`,
-            queued.slack.replyTs,
-          ).catch(() => {})
-        }
-        return false
-      }
-      const retryAt = Date.now() + Math.min(5000 * attempts, 30_000)
-      await this.scheduleQueuedRetry(queued, retryAt, { attempts, lastError: errorMessage(err) }, "queue-session-retry")
-      return false
-    }
-
-    const reservation = await this.acquireBudgetReservation()
-    if (reservation.kind === "denied") {
-      this.admitting = false
-      const retryAt = nextBudgetReset(Date.now())
-      const notice = "daily budget reached"
-      if (queued.slack && queued.lastError !== notice) {
-        await this.postChunked(
-          queued.slack.channel,
-          `⚠️ ${reservation.message}. I'll retry this queued message after the daily reset.`,
-          queued.slack.replyTs,
-        ).catch(() => {})
-      }
-      await this.scheduleQueuedRetry(queued, retryAt, { lastError: notice }, "queue-budget-reset")
-      return false
-    }
-    if (reservation.kind === "conflict" || reservation.kind === "unavailable") {
-      this.admitting = false
-      const retryAt = Date.now() + 30_000
-      if (queued.slack && queued.lastError !== reservation.message) {
-        await this.postChunked(
-          queued.slack.channel,
-          `⚠️ Queued message is waiting for budget authority: ${reservation.message}.`,
-          queued.slack.replyTs,
-        ).catch(() => {})
-      }
-      await this.scheduleQueuedRetry(queued, retryAt, { lastError: reservation.message }, "queue-budget-retry")
-      return false
-    }
-    if (reservation.kind === "already-dispatched") {
-      await this.resumeDispatchedTurn()
-      if (queued.slack) {
-        await this.postChunked(
-          queued.slack.channel,
-          "⚠️ The queued message is waiting for a previous prompt with an unresolved dispatch result.",
-          queued.slack.replyTs,
-        ).catch(() => {})
-      }
-      return false
-    }
-    if (!(await this.markBudgetReservationDispatched(reservation.reservation, baseline, true))) {
-      this.admitting = false
-      const retryAt = Date.now() + 30_000
-      await this.scheduleQueuedRetry(queued, retryAt, { lastError: "could not persist budget dispatch state" }, "queue-dispatch-marker-retry")
-      return false
-    }
-    try {
-      // Once marked, request failure is ambiguous and this queue item must not
-      // be replayed or released as if dispatch definitely never happened.
-      await this.withClient((client) => client.session.prompt({ sessionID, text: queued.text }))
-    } catch (err) {
-      this.admitting = false
-      await this.recordAcceptedTurn(baseline)
-      void this.count("queue.dispatch_ambiguous")
-      logEvent("queue.dispatch_ambiguous", { error: errorMessage(err) })
-      await this.deliver({
-        type: "error",
-        message: `queued prompt dispatch outcome is unknown; reservation retained: ${errorMessage(err)}`,
-      }).catch(() => {})
-      if (queued.slack) {
-        await this.postChunked(
-          queued.slack.channel,
-          "⚠️ Queued prompt dispatch outcome is unknown; its reservation is retained and it will not be retried automatically.",
-          queued.slack.replyTs,
-        ).catch(() => {})
-      }
-      return false
-    }
-
-    // The dispatch marker already consumed this queued item atomically. A new
-    // follow-up may have been queued while the provider request was pending.
-    void this.count("queue.drained")
-    logEvent("queue.drained", { attempts: queued.attempts })
-    await this.recordAcceptedTurn(baseline)
-    const settings = await this.settings().catch(() => undefined)
-    if (settings?.streaming) this.ctx.waitUntil(this.turnExecution.startStream(sessionID))
-    return true
   }
 
   // -------------------------------------------------------------------- Slack

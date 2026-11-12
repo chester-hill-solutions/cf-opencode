@@ -1,3 +1,4 @@
+import type { RecoverySchedulerEvidence } from "../recovery"
 import type { MemoryLimitContext, LifecycleJobOutcome } from "agents/lifecycle"
 import { ConversationJobs, type ConversationJobKind, type ConversationJobPayload } from "./jobs"
 import { ConversationStore, type ConversationState } from "../state"
@@ -182,6 +183,54 @@ export class ConversationScheduler {
         lifecycleJobError: { kind: "memory-limit", message, at: Date.now() },
       })
     })
+  }
+
+  /** Authoritative local evidence for the narrowly scoped sealed-idle retry. */
+  async evidence(): Promise<RecoverySchedulerEvidence> {
+    const state = await this.options.store.get()
+    return {
+      sealed: await this.options.storage.get<boolean>("lifecycleJobsSealed") === true,
+      epoch: await this.epoch(),
+      checkpointPending: state.checkpointPending === true,
+      ...(state.checkpointRetryAt === undefined ? {} : { checkpointRetryAt: state.checkpointRetryAt }),
+      leaseIntent: await this.options.storage.get<unknown>("containerLease"),
+      claims: await this.options.storage.get<unknown>("conversationJobClaims"),
+      activeJobs: this.activeCount,
+      pendingUpgrade: await this.options.storage.get<unknown>("runtimeUpgradePending") !== undefined,
+    }
+  }
+
+  /** No provider/financial I/O. Roll back both unsealing and jobs on any failure. */
+  async resumeSealedIdle(expected: RecoverySchedulerEvidence, expectedState: ConversationState): Promise<void> {
+    const nextEpoch = expected.epoch + 1
+    if (!Number.isSafeInteger(nextEpoch)) throw new Error("conversation job epoch is exhausted")
+    await this.options.storage.transaction(async (txn) => {
+      const current = await this.evidence()
+      const state = await this.options.store.get()
+      if (!expected.sealed || JSON.stringify(current) !== JSON.stringify(expected) ||
+        JSON.stringify(state) !== JSON.stringify(expectedState)) {
+        throw new Error("sealed recovery evidence changed")
+      }
+      for (const kind of ["turn:observe", "admission:retry", "checkpoint:retry", "recovery:wake", "legacy:bootstrap", "lease:renew"] as const) {
+        await this.capability.cancel(kind)
+      }
+      await txn.put("conversationJobEpoch", nextEpoch)
+      await txn.delete("conversationJobClaims")
+      await txn.delete("lifecycleJobsSealed")
+      await txn.put("state", { ...state, lifecycleJobsSealed: false, lifecycleJobError: undefined })
+      await txn.put<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY, {
+        version: 1, dueAt: null, scheduled: false, consumed: true,
+      })
+      if (state.checkpointPending) {
+        const at = Math.max(Date.now(), state.checkpointRetryAt ?? Date.now())
+        await this.capability.schedule("checkpoint:retry", at, { epoch: nextEpoch, dueAt: at, reason: "sealed-idle-recovery" })
+      }
+      if (current.leaseIntent !== undefined) {
+        const at = Date.now()
+        await this.capability.schedule("lease:renew", at, { epoch: nextEpoch, dueAt: at, reason: "sealed-idle-recovery" })
+      }
+    })
+    this.jobEpoch = nextEpoch
   }
 
   async reset(): Promise<void> {

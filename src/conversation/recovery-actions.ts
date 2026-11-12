@@ -1,6 +1,6 @@
 import { ConversationStore, type ConversationState } from "../state"
 import type { ConversationUsage } from "./usage"
-import { classifyRecovery, recoverySnapshotID, type RecoveryAuthority } from "../recovery"
+import { classifyRecovery, recoverySnapshotID, type RecoveryAuthority, type RecoverySchedulerEvidence } from "../recovery"
 import { traceId } from "../telemetry"
 import { emitConversationTelemetry } from "./telemetry"
 
@@ -12,6 +12,8 @@ export interface RecoverySettingsPort {
 
 export interface RecoveryJobsPort {
   epoch(): Promise<number>
+  evidence(): Promise<RecoverySchedulerEvidence>
+  resumeSealedIdle(evidence: RecoverySchedulerEvidence, state: ConversationState): Promise<void>
   scheduleRecovery(at: number, payload: {
     reservationID: string
     reservationDate?: string
@@ -77,6 +79,7 @@ export class ConversationRecoveryActions {
         snapshotID: ledger.snapshotID,
         holds: ledger.holds,
         legacyRows: ledger.legacyRows,
+        blockers: ledger.blockers,
         ...(ledger.retirement ? { retirement: ledger.retirement } : {}),
       }
     } catch (error) {
@@ -84,16 +87,19 @@ export class ConversationRecoveryActions {
     }
     const currentLive = this.options.live()
     const live = { admitting: currentLive.admitting, pumping: currentLive.pumping }
+    const evidence = await this.options.jobs.evidence()
+    const scheduler = evidence.sealed && state.budgetReservation === undefined ? evidence : undefined
     const classification = classifyRecovery({
-      conversationID: this.options.conversationID, state, authority, live,
+      conversationID: this.options.conversationID, state, authority, live, ...(scheduler ? { scheduler } : {}),
     })
     const snapshotID = await recoverySnapshotID({
-      conversationID: this.options.conversationID, state, authority, live,
+      conversationID: this.options.conversationID, state, authority, live, ...(scheduler ? { scheduler } : {}),
     })
     return {
       conversationID: this.options.conversationID,
       snapshotID,
       kind: classification.kind,
+      ...(scheduler ? { scheduler } : {}),
       blockers: classification.blockers,
       actions: classification.actions,
       local: {
@@ -191,6 +197,24 @@ export class ConversationRecoveryActions {
         return Response.json({ error: "recovery action is blocked", recovery: status }, { status: 409 })
       }
       const current = await this.options.store.get()
+      if (action === "retry" && status.kind === "sealed_idle") {
+        return this.options.usage.serialize(async () => {
+          try {
+            this.recoveryAction = true
+            const refreshed = await this.status()
+            if (refreshed.snapshotID !== expectedSnapshotID || refreshed.kind !== "sealed_idle") {
+              return Response.json({ error: "recovery snapshot changed", recovery: refreshed }, { status: 409 })
+            }
+            const evidence = refreshed.scheduler as RecoverySchedulerEvidence
+            await this.options.jobs.resumeSealedIdle(evidence, current)
+            return Response.json({ ok: true, scheduled: true }, { status: 202 })
+          } catch {
+            return Response.json({ error: "sealed recovery evidence changed or jobs could not be restored", retryable: true }, { status: 503 })
+          } finally {
+            this.recoveryAction = false
+          }
+        })
+      }
       const reservation = current.budgetReservation
       if (!reservation) return Response.json({ error: "local reservation is unavailable" }, { status: 409 })
       if (action === "retry") {
