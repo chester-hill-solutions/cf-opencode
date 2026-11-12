@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers"
 import { Lifecycle } from "agents/lifecycle"
 import type { MemoryLimitContext } from "agents/lifecycle"
-import { ClientError, type CredentialEntry } from "@opencode/client"
+import { ClientError } from "@opencode/client"
 import { makeClient, portFetch, type ContainerPort } from "./opencode"
 import {
   ConversationStore,
@@ -36,6 +36,7 @@ import { ConversationImages } from "./conversation/images"
 import { ConversationLease } from "./conversation/lease"
 import { ConversationBudgetReservations, type BudgetReservationResult } from "./conversation/budget-reservations"
 import { ConversationTurnExecution } from "./conversation/turn-execution"
+import { ConversationReadiness } from "./conversation/readiness"
 import { LEGACY_ALARM_MIGRATION_KEY, isFreshLegacyAlarmMigration, type LegacyAlarmMigration } from "./conversation/job-state"
 import type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
 export type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
@@ -47,7 +48,7 @@ import { staleAction } from "./lifecycle"
 import { nextBudgetReset } from "./budget"
 import { CAPACITY_RETRY_MS, isCapacityRejection } from "./queue"
 import { GITHUB_TOKEN_KEY, workspaceID } from "./vault"
-import { accountStateKey, LEGACY_ACCOUNT_STATE_KEY, parseConversationKey } from "./tenancy"
+import { LEGACY_ACCOUNT_STATE_KEY, parseConversationKey } from "./tenancy"
 import { plaintextArchivesAllowed } from "./archive-policy"
 import { ACCOUNTING_POLICY_ID, AccountingPolicyError, assertAccountingPolicy } from "./accounting-policy"
 import { classifyRecovery, recoverySnapshotID, type RecoveryAuthority, type RecoveryHold, type RecoveryRetirement } from "./recovery"
@@ -72,7 +73,6 @@ import {
 } from "./slack-images"
 import {
   parseRuntimeUpgradePending,
-  verifyRestoredRuntimeUpgrade,
   type RuntimeUpgradeCompletion,
   type RuntimeUpgradePending,
 } from "./runtime-upgrade"
@@ -162,6 +162,7 @@ export class Conversation extends DurableObject<Env> {
   private readonly leases: ConversationLease
   private readonly budgetReservations: ConversationBudgetReservations
   private readonly turnExecution: ConversationTurnExecution
+  private readonly readiness: ConversationReadiness
   private jobEpoch = 0
   private readonly activeLifecycleJobs = new Set<ConversationJobKind>()
   private consecutiveFailures = 0
@@ -170,8 +171,6 @@ export class Conversation extends DurableObject<Env> {
   /** Fences admissions and polling while an operator recovery action is in flight. */
   /** Conversation key, sent by the Worker; admin traffic skips the cap. */
   private key?: string
-  /** Onboarding credential epoch copied into this legacy conversation instance. */
-  private providerSyncAt?: number
   /** Source onboarding work must finish before its runtime can be restarted. */
   private onboardingOperations = 0
   private runtimeUpgradeResuming = false
@@ -330,6 +329,35 @@ export class Conversation extends DurableObject<Env> {
       settings: () => this.settings(),
       releaseBudgetReservation: (reservation) => this.releaseBudgetReservation(reservation),
       waitUntil: (promise) => this.ctx.waitUntil(promise),
+    })
+    this.readiness = new ConversationReadiness({
+      storage: ctx.storage,
+      store: this.store,
+      runtime: this.runtime,
+      images: this.images,
+      checkpoints: this.checkpoints,
+      leases: this.leases,
+      identity: { id: ctx.id.toString(), key: () => this.key },
+      platform: {
+        container: () => this.ctx.container,
+        transportEnabled: () => Boolean(this.transport),
+      },
+      env: () => this.env,
+      configuration: {
+        settings: () => this.settings(),
+        githubToken: () => this.secret(GITHUB_TOKEN_KEY),
+      },
+      activity: {
+        pumping: () => this.turnExecution.isPumping,
+        onboardingOperations: () => this.onboardingOperations,
+        upgradeResuming: () => this.runtimeUpgradeResuming,
+      },
+      upgrade: {
+        pending: () => this.readRuntimeUpgradePending(),
+        checkpoint: (pending) => this.runtimeUpgradeCheckpoint(pending),
+        proveSession: (client, sessionID) => this.proveRuntimeUpgradeSession(client, sessionID),
+      },
+      adoptLeaseIfNeeded: () => this.scheduleLeaseAdoptionIfNeeded(),
     })
   }
 
@@ -966,7 +994,7 @@ export class Conversation extends DurableObject<Env> {
         await this.checkpoints.deleteAll()
         await this.resetConversationJobs()
         this.controlPlane.clearCache()
-        this.providerSyncAt = undefined
+        this.readiness.resetProviderSync()
         return Response.json({ ok: true })
       })
     })
@@ -1019,7 +1047,7 @@ export class Conversation extends DurableObject<Env> {
         await this.checkpoints.deleteAll()
         await this.resetConversationJobs()
         this.controlPlane.clearCache()
-        this.providerSyncAt = undefined
+        this.readiness.resetProviderSync()
         logEvent("conversation.deleted")
         return Response.json({ ok: true })
       })
@@ -2708,7 +2736,7 @@ export class Conversation extends DurableObject<Env> {
 
   /** Start the container, restore the checkpoint on first boot, start OpenCode. */
   private ensureReady(): Promise<ContainerPort> {
-    return this.runtime.ensureReady(() => this.doEnsureReady())
+    return this.runtime.ensureReady(() => this.readiness.prepare())
   }
 
   private async readRuntimeUpgradePending(): Promise<RuntimeUpgradePending | undefined> {
@@ -2964,221 +2992,6 @@ export class Conversation extends DurableObject<Env> {
     })
   }
 
-  private async doEnsureReady(): Promise<ContainerPort> {
-    const upgradePending = await this.readRuntimeUpgradePending()
-    if (upgradePending && !this.runtimeUpgradeResuming) {
-      throw new Error("runtime upgrade is pending; an operator must resume verification before this conversation can run")
-    }
-    if (upgradePending && upgradePending.conversationID !== this.ctx.id.toString()) {
-      throw new Error("runtime upgrade intent belongs to another conversation")
-    }
-    if (this.ctx.container?.running) this.runtime.applyInactivity(this.ctx.container)
-    await this.images.loadContainerImageVariant(this.ctx.container)
-    await this.scheduleLeaseAdoptionIfNeeded()
-    if (upgradePending && this.ctx.container?.images?.evented !== upgradePending.targetImage) {
-      throw new Error("configured evented image does not match the pending upgrade")
-    }
-    const settings = await this.settings()
-    const state = await this.store.get()
-    const container = this.ctx.container
-    if (!container && !this.env.CONTAINER_URL && !this.transport) throw new Error("no container bound")
-
-    const versionChanged = state.settingsVersion !== undefined && state.settingsVersion !== settings.version
-    // A warm event stream can stay open across idle turns; only a live turn
-    // should protect the container from a settings-driven restart.
-    const busy =
-      this.turnExecution.isPumping ||
-      (this.key === ONBOARDING_KEY && this.onboardingOperations > 0) ||
-      state.budgetReservation !== undefined ||
-      state.phase === "running" ||
-      state.phase === "settling"
-    const providerSyncAt = settings.onboarding.opencodeConnectedAt
-    const providerSyncEligible = Boolean(
-      providerSyncAt && this.key && this.key !== ONBOARDING_KEY && !parseConversationKey(this.key),
-    )
-    if (!providerSyncEligible) this.providerSyncAt = undefined
-    const providerSyncNeeded = providerSyncEligible && this.providerSyncAt !== providerSyncAt
-    let deferSettingsRestart = false
-
-    // A settings change is applied between runs: destroying mid-run loses the turn.
-    if (container && versionChanged && container.running && busy) {
-      if (this.runtime.ready && this.runtime.apiPort && this.runtime.generation) return this.runtime.apiPort
-      // A restarted DO can lack the old port cache while an accepted prompt is
-      // still running. Verify the live runtime without reconfiguring or
-      // destroying it; the new settings apply after this turn settles.
-      deferSettingsRestart = true
-    }
-    if (!upgradePending && container && versionChanged && container.running && !deferSettingsRestart) {
-      // A settings-driven restart must carry forward the provider credentials
-      // and OpenCode database that live in the current container. Its prior
-      // checkpoint may predate an account connection, so never destroy before
-      // a fresh portable archive is safely stored.
-      const saved = await this.checkpoints.capture()
-      if (!saved) throw new Error("settings changed but checkpoint failed; keeping the current container")
-      if (!(await this.runtime.stop())) throw new Error("container stop was not confirmed; keeping the current runtime")
-      if (!(await this.leases.releaseAfterStop())) throw new Error("container lease release is pending; keeping restart blocked")
-      await this.images.clearSnapshot()
-    }
-
-    // Fast path: this instance already verified the container for this spec.
-    if (!upgradePending && this.runtime.ready && this.runtime.apiPort && this.runtime.generation &&
-      (!container || container.running) && !versionChanged && (!providerSyncNeeded || busy)) {
-      return this.runtime.apiPort
-    }
-
-    const control = await this.runtime.port(CONTROL_PORT)
-
-    const status = (await (
-      await control.fetch("http://container/status", { signal: AbortSignal.timeout(10_000) })
-    ).json()) as { initialized?: boolean }
-
-    if (!status.initialized) {
-      const checkpoint = upgradePending
-        ? await this.runtimeUpgradeCheckpoint(upgradePending)
-        : await this.checkpoints.latest()
-      if (checkpoint) {
-        const workspace = await this.checkpoints.decryptBody(
-          checkpoint.workspace.body,
-          checkpoint.workspace.customMetadata?.encrypted === "1",
-        )
-        const workspaceQuery = checkpoint.split
-          ? `?part=workspace${checkpoint.state ? "" : "&final=1"}`
-          : ""
-        const restoredWorkspace = await control.fetch(
-          `http://container/restore${workspaceQuery}`,
-          {
-            method: "POST",
-            body: workspace,
-            signal: AbortSignal.timeout(60_000),
-          },
-        )
-        if (!restoredWorkspace.ok) {
-          logEvent("checkpoint.restore.failed", {
-            part: "workspace",
-            status: restoredWorkspace.status,
-          })
-          throw new Error(`workspace restore failed: ${restoredWorkspace.status}`)
-        }
-        if (checkpoint.state) {
-          const state = await this.checkpoints.decryptBody(
-            checkpoint.state.body,
-            checkpoint.state.customMetadata?.encrypted === "1",
-          )
-          const restoredState = await control.fetch("http://container/restore?part=state", {
-            method: "POST",
-            body: state,
-            signal: AbortSignal.timeout(60_000),
-          })
-          if (!restoredState.ok) {
-            logEvent("checkpoint.restore.failed", { part: "state", status: restoredState.status })
-            throw new Error(`state restore failed: ${restoredState.status}`)
-          }
-        }
-        await this.store.patch({
-          checkpointFingerprint: undefined,
-          checkpointStateFingerprint: undefined,
-        })
-      } else if (!upgradePending) {
-        // A fresh conversation inherits the account's provider credentials, so
-        // onboarding only has to happen once. A namespaced agent uses its own
-        // seed and never falls back to the legacy global one.
-        const seed = await this.env.CHECKPOINTS.get(
-          accountStateKey(parseConversationKey(this.key)),
-        )
-        if (seed?.body) {
-          const body =
-            seed.customMetadata?.encrypted === "1"
-              ? await this.checkpoints.decryptBody(seed.body, true)
-              : seed.body
-          const seeded = await control.fetch("http://container/seed-state", {
-            method: "POST",
-            body,
-            signal: AbortSignal.timeout(60_000),
-          })
-          if (!seeded.ok) logEvent("account.seed.failed", { status: seeded.status })
-        }
-      }
-    }
-
-    // Configure after restore: /restore replaces /workspace, including the config.
-    // A warm container on the same spec already has its config.
-    if (!upgradePending && (!status.initialized || (versionChanged && !deferSettingsRestart))) {
-      const githubToken = await this.secret(GITHUB_TOKEN_KEY)
-      await control.fetch("http://container/configure", {
-        method: "POST",
-        body: JSON.stringify({ ...settings, ...(githubToken ? { githubToken } : {}) }),
-        signal: AbortSignal.timeout(10_000),
-      })
-    }
-
-    const startedAt = Date.now()
-    const started = await control.fetch("http://container/start", {
-      method: "POST",
-      signal: AbortSignal.timeout(120_000),
-    })
-    if (!started.ok) throw new Error(`container start failed: ${await started.text()}`)
-    const proof = await started.json().catch(() => undefined) as {
-      ok?: unknown
-      accountingPolicy?: unknown
-      opencodeGeneration?: unknown
-      eventPersistence?: unknown
-    } | undefined
-    if (proof?.ok !== true || proof.accountingPolicy !== ACCOUNTING_POLICY_ID ||
-      typeof proof.opencodeGeneration !== "string" || !proof.opencodeGeneration) {
-      throw new AccountingPolicyError("container start returned no valid accounting runtime proof")
-    }
-    // Proof fields are committed together only after policy verification succeeds.
-    if (this.runtime.imageVariant === "evented" && proof.eventPersistence !== true) {
-      throw new AccountingPolicyError("evented canary runtime did not confirm persistent events")
-    }
-    const runtimeChanged = this.runtime.generation !== proof.opencodeGeneration
-    // Verify effective OpenCode config through its local API before caching the
-    // port or allowing any call that could run a provider prompt.
-    const port = await this.runtime.port(OPENCODE_PORT)
-    const opencode = makeClient(portFetch(port))
-    assertAccountingPolicy(await opencode.config.get())
-    if (upgradePending) {
-      const targetImage = this.ctx.container?.images?.evented
-      if (!targetImage || targetImage !== upgradePending.targetImage || this.runtime.imageVariant !== "evented") {
-        throw new Error("restored runtime image does not match the pending upgrade")
-      }
-      const restoredQuiescence = await this.proveRuntimeUpgradeSession(opencode, upgradePending.sessionID)
-      if (restoredQuiescence.proof.runtimeGeneration !== proof.opencodeGeneration ||
-        restoredQuiescence.proof.contextDigest !== upgradePending.contextDigest) {
-        throw new Error("restored runtime quiescence does not match the saved upgrade intent")
-      }
-      const completion = await verifyRestoredRuntimeUpgrade({
-        pending: upgradePending,
-        client: opencode.session,
-        actualTargetImage: targetImage,
-        eventPersistence: proof.eventPersistence === true,
-        currentGeneration: proof.opencodeGeneration,
-      })
-      await this.ctx.storage.transaction(async (txn) => {
-        const current = parseRuntimeUpgradePending(await txn.get("runtimeUpgradePending"))
-        if (current.planID !== upgradePending.planID || current.conversationID !== this.ctx.id.toString()) {
-          throw new Error("runtime upgrade intent changed during restore verification")
-        }
-        await txn.put("runtimeUpgradeCompletion", completion)
-        await txn.delete("runtimeUpgradePending")
-      })
-    }
-    if (providerSyncEligible && providerSyncAt && runtimeChanged && busy) this.providerSyncAt = undefined
-    if (providerSyncEligible && providerSyncAt && !busy && (providerSyncNeeded || runtimeChanged)) {
-      await this.syncOnboardingCredentials(opencode)
-      this.providerSyncAt = providerSyncAt
-    }
-    await this.store.increment("containerStarts")
-
-    if (!upgradePending && state.settingsVersion !== settings.version && !deferSettingsRestart) {
-      await this.store.patch({ settingsVersion: settings.version })
-    }
-
-    logEvent("container.ready", { durationMs: Date.now() - startedAt })
-    this.runtime.markVerified(port, proof.opencodeGeneration, proof.eventPersistence === true)
-    return port
-  }
-
   private async runtimeUpgradeCheckpoint(pending: RuntimeUpgradePending): Promise<{
     workspace: R2ObjectBody
     state: R2ObjectBody
@@ -3189,39 +3002,6 @@ export class Conversation extends DurableObject<Env> {
     const state = await this.env.CHECKPOINTS.get(pending.checkpointManifest.state!.key)
     if (!workspace || !state) throw new Error("pending runtime upgrade checkpoint parts are unavailable")
     return { workspace, state, split: true }
-  }
-
-  /** Copy missing active legacy-account credentials; existing conversation values always win. */
-  private async syncOnboardingCredentials(target: ReturnType<typeof makeClient>): Promise<void> {
-    try {
-      const sourceResponse = await this.env.CONVERSATION.getByName(ONBOARDING_KEY).fetch(
-        "https://conversation/provider-credentials",
-        { headers: { "x-conversation-key": ONBOARDING_KEY } },
-      )
-      if (!sourceResponse.ok) throw new Error("source unavailable")
-      const source = await sourceResponse.json() as unknown
-      if (!Array.isArray(source)) throw new Error("invalid source")
-      const sourceCredentials = (source as CredentialEntry[]).filter(
-        (credential) => credential?.active && credential.value.type === "key",
-      )
-      const local = await target.credential.list()
-      const activeIntegrations = new Set(
-        local.filter((credential) => credential.active).map((credential) => credential.integrationID),
-      )
-      for (const credential of sourceCredentials) {
-        if (!credential.integrationID || activeIntegrations.has(credential.integrationID)) continue
-        await target.credential.create({
-          id: credential.id,
-          integrationID: credential.integrationID,
-          label: credential.label,
-          value: credential.value,
-          activate: true,
-        })
-        activeIntegrations.add(credential.integrationID)
-      }
-    } catch {
-      throw new Error("provider setup sync failed; reconnect providers with !setup")
-    }
   }
 
   /** Hold one admission when the container cannot start; drain it from the alarm. */

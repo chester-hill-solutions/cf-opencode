@@ -544,3 +544,9 @@ prove these contracts; the review is not runtime qualification.
 - The internal note now documents exact HTTP idempotency and SSE cursor limits.
   A new snapshot/after/follow protocol and permanent message receipts remain
   optional deferred work, not guarantees implied by this refactor.
+- Restore/readiness and provider credential synchronization now belong to
+  `ConversationReadiness`, using existing image, checkpoint, runtime and lease
+  owners. Settings-restart deferral, accounting/event proof and upgrade restore
+  verification are preserved. Sixty-three affected Worker tests and full
+  typecheck pass. Runtime-use exclusion is the next behavior integration, not
+  implied by this mechanical move.

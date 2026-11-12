@@ -16,7 +16,7 @@ type Internal = {
   snapshotHandle(): Promise<unknown>
   startContainer(): Promise<boolean>
   startBoundContainer(container: unknown): Promise<boolean>
-  doEnsureReady(): Promise<unknown>
+  readiness: { prepare(): Promise<unknown> }
   leases: { ensureHeld(): Promise<void> }
 }
 
@@ -708,7 +708,7 @@ describe("isolated evented container image selection", () => {
       runtimeCache(instance).invalidate()
       let error = ""
       try {
-        await internal.doEnsureReady()
+        await internal.readiness.prepare()
       } catch (cause) {
         error = cause instanceof Error ? cause.message : String(cause)
       }

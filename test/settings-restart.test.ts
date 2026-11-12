@@ -125,12 +125,12 @@ describe("settings-driven container restart", () => {
       const calls: string[] = []
       const container = installContainer(instance, calls)
       const internal = instance as unknown as {
-        doEnsureReady(): Promise<unknown>
+        readiness: { prepare(): Promise<unknown> }
       }
       const cache = runtimeCache(instance)
       cache.markVerified({ fetch: async () => new Response(null) }, "old-generation", true)
       cache.applyInactivity(container)
-      await internal.doEnsureReady()
+      await internal.readiness.prepare()
       const state = await runtime.storage.get<ConversationState>("state")
       if (!state) throw new Error("state missing after settings restart")
       return {
@@ -170,9 +170,9 @@ describe("settings-driven container restart", () => {
     const result = await runInDurableObject(stub, async (instance, runtime) => {
       const calls: string[] = []
       const container = installContainer(instance, calls, { checkpointFails: true })
-      const internal = instance as unknown as { doEnsureReady(): Promise<unknown> }
+      const internal = instance as unknown as { readiness: { prepare(): Promise<unknown> } }
       let error = ""
-      try { await internal.doEnsureReady() } catch (cause) { error = cause instanceof Error ? cause.message : String(cause) }
+      try { await internal.readiness.prepare() } catch (cause) { error = cause instanceof Error ? cause.message : String(cause) }
       return {
         calls, error, containerRunning: container.running,
         snapshot: await runtime.storage.get("snapshot"),
@@ -195,10 +195,10 @@ describe("settings-driven container restart", () => {
       const calls: string[] = []
       const container = installContainer(instance, calls)
       const internal = instance as unknown as {
-        doEnsureReady(): Promise<unknown>
+        readiness: { prepare(): Promise<unknown> }
       }
       runtimeCache(instance).markVerified({ fetch: async () => new Response(null) }, "current-generation", true)
-      await internal.doEnsureReady()
+      await internal.readiness.prepare()
       return {
         calls, containerRunning: container.running,
         snapshot: await runtime.storage.get("snapshot"),
@@ -219,8 +219,8 @@ describe("settings-driven container restart", () => {
       const calls: string[] = []
       const restores: Array<{ path: string; bytes: number[] }> = []
       installContainer(instance, calls, { splitCheckpoint: true }, restores)
-      const internal = instance as unknown as { doEnsureReady(): Promise<unknown> }
-      await internal.doEnsureReady()
+      const internal = instance as unknown as { readiness: { prepare(): Promise<unknown> } }
+      await internal.readiness.prepare()
       const state = await runtime.storage.get<ConversationState>("state")
       if (!state) throw new Error("conversation state missing after split restore")
       return { calls, restores, state }
@@ -275,20 +275,20 @@ describe("settings-driven container restart", () => {
         }
       }
       const internal = instance as unknown as {
-        doEnsureReady(): Promise<unknown>
+        readiness: { prepare(): Promise<unknown> }
       }
       runtimeCache(instance).markVerified(instance.transport!(4000), "live-generation", true)
       const onboarding = instance.fetch(new Request("https://conversation/onboarding/models", {
         headers: { "x-conversation-key": "onboarding" },
       }))
       await entered
-      await internal.doEnsureReady()
+      await internal.readiness.prepare()
       const callsWhileOnboarding = [...calls]
       const runningWhileOnboarding = container.running
       releaseModel()
       const response = await onboarding
       const catalogue = await response.json()
-      await internal.doEnsureReady()
+      await internal.readiness.prepare()
       return { callsWhileOnboarding, runningWhileOnboarding, calls, catalogue }
     })
     expect(result.callsWhileOnboarding).not.toContain("container.destroy")
@@ -311,7 +311,7 @@ describe("settings-driven container restart", () => {
         stateCheckpoint: { entered, wait: gate },
       })
       const internal = instance as unknown as {
-        doEnsureReady(): Promise<unknown>
+        readiness: { prepare(): Promise<unknown> }
       }
       runtimeCache(instance).markVerified(instance.transport!(4000), "live-generation", true)
 
@@ -319,13 +319,13 @@ describe("settings-driven container restart", () => {
         headers: { "x-conversation-key": "onboarding" },
       }))
       await streamEntered
-      await internal.doEnsureReady()
+      await internal.readiness.prepare()
       const callsWhileStreaming = [...calls]
       const runningWhileStreaming = container.running
       release()
       const response = await pending
       const bytes = [...new Uint8Array(await response.arrayBuffer())]
-      await internal.doEnsureReady()
+      await internal.readiness.prepare()
       return { callsWhileStreaming, runningWhileStreaming, calls, bytes }
     })
 
