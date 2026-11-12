@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { env, evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test"
+import { env, evictDurableObject, runInDurableObject } from "cloudflare:test"
 import type { Conversation } from "../src/conversation"
 import type { ConversationState } from "../src/state"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
@@ -306,50 +306,71 @@ describe("Conversation Lifecycle startup recovery", () => {
     expect(afterHeartbeat.domain.some((job) => job.id === "turn:observe")).toBe(true)
   })
 
-  it.each(["fetch-first", "alarm-first"] as const)(
-    "preserves a due physical legacy wake while cold fetch and alarm race (%s)",
+  it.each(["fetch-before-due", "fetch-after-due"] as const)(
+    "preserves a platform-scheduled legacy wake around cold fetch (%s)",
     async (order) => {
-      const conversation = stub(`startup-due-alarm-race-${order}`)
+      const conversation = stub(`startup-native-alarm-${order}`)
       let conversationID = ""
       const reservationID = `reservation-startup-due-${order}`
-      const dueAt = Date.now() - 1
+      const dueAt = Date.now() + 1_000
+      const calls: string[] = []
+      const prompts = { count: 0 }
       await runInDurableObject(conversation, async (_instance, runtime) => {
+        _instance.transport = runtimeProbe(calls, prompts)
         conversationID = runtime.id.toString()
         await seedHeldState(runtime.storage, conversationID, reservationID, `ses_startup_due_${order}`)
         await runtime.storage.setAlarm(dueAt)
+        // Simulate state written by a pre-Lifecycle version. The old code had
+        // a physical alarm but no migration marker.
+        await runtime.storage.delete("lifecycleLegacyAlarmMigration")
       })
       await evictDurableObject(conversation)
 
-      const calls: string[] = []
-      const prompts = { count: 0 }
-      const beforeRace = await runInDurableObject(conversation, async (instance, runtime) => {
-        // Install the deterministic transport before launching separate public
-        // input events. This callback is only fixture setup/observation; the
-        // fetch and alarm below go through Cloudflare's input gates.
+      const beforeEvents = await runInDurableObject(conversation, async (instance, runtime) => {
+        // This test-only callback installs a transport and reads storage. It
+        // never calls fetch/alarm, so it does not replace a platform event.
         instance.transport = runtimeProbe(calls, prompts)
         return {
           marker: await runtime.storage.get<LegacyAlarmMarker>("lifecycleLegacyAlarmMigration"),
           alarm: await runtime.storage.getAlarm(),
         }
       })
-      const healthRequest = new Request("https://conversation/health")
-      let health: Promise<Response>
-      let alarm: Promise<boolean>
-      if (order === "fetch-first") {
-        health = conversation.fetch(healthRequest)
-        alarm = runDurableObjectAlarm(conversation)
+
+      expect(beforeEvents.marker).toBeUndefined()
+      expect(beforeEvents.alarm).toBe(dueAt)
+      const healthRequest = () => conversation.fetch(new Request("https://conversation/health"))
+      if (order === "fetch-before-due") {
+        expect((await healthRequest()).status).toBe(200)
       } else {
-        alarm = runDurableObjectAlarm(conversation)
-        health = conversation.fetch(healthRequest)
+        await new Promise((resolve) => setTimeout(resolve, Math.max(0, dueAt - Date.now() + 40)))
       }
-      const [healthResponse, alarmRan] = await Promise.all([health, alarm])
+
+      let observed: {
+        marker?: LegacyAlarmMarker
+        observation?: JobRow
+        bootstrap: JobRow[]
+        alarm: number | null
+      } | undefined
+      const deadline = Date.now() + 10_000
+      while (Date.now() < deadline) {
+        observed = await runInDurableObject(conversation, async (_instance, runtime) => ({
+          marker: await runtime.storage.get<LegacyAlarmMarker>("lifecycleLegacyAlarmMigration"),
+          observation: jobs(runtime.storage).find((job) => job.id === "turn:observe"),
+          bootstrap: jobs(runtime.storage).filter((job) => job.id === "legacy:bootstrap"),
+          alarm: await runtime.storage.getAlarm(),
+        }))
+        if (observed.marker?.consumed && observed.observation) break
+        await new Promise((resolve) => setTimeout(resolve, 15))
+      }
+      // For fetch-after-due, wait for the native alarm handoff before issuing
+      // the passive request. No test helper deletes or invokes the alarm.
+      const healthResponse = order === "fetch-after-due" ? await healthRequest() : undefined
 
       const result = await runInDurableObject(conversation, async (_instance, runtime) => {
         await waitForNoClaims(runtime.storage)
         return {
-          healthStatus: healthResponse.status,
-          alarmRan,
-          beforeRace,
+          healthStatus: healthResponse?.status ?? 200,
+          observed,
           marker: await runtime.storage.get<LegacyAlarmMarker>("lifecycleLegacyAlarmMigration"),
           observation: jobs(runtime.storage).find((job) => job.id === "turn:observe"),
           bootstrap: jobs(runtime.storage).filter((job) => job.id === "legacy:bootstrap"),
@@ -360,13 +381,12 @@ describe("Conversation Lifecycle startup recovery", () => {
         }
       })
 
-      // A past alarm may be captured or delivered automatically before these
-      // public events launch. Record either pre-race state; the independent
-      // alarm helper can therefore report that no alarm remains to deliver.
-      expect(result.beforeRace.marker === undefined ||
-        (result.beforeRace.marker.dueAt !== null && result.beforeRace.marker.dueAt >= dueAt)).toBe(true)
-      expect(result.beforeRace.alarm === null || result.beforeRace.alarm <= Date.now()).toBe(true)
-      expect(typeof result.alarmRan).toBe("boolean")
+      expect(result.observed?.marker?.dueAt).toBeGreaterThanOrEqual(dueAt)
+      expect(result.observed?.marker?.dueAt).toBeLessThanOrEqual(Date.now())
+      expect(result.observed?.marker).toMatchObject({ scheduled: false, consumed: true })
+      expect(result.observed?.observation).toMatchObject({ id: "turn:observe", fn: "turnObserve", capability: "conversation-jobs" })
+      expect(result.observed?.bootstrap).toEqual([])
+      expect(result.observed?.alarm).toBeTypeOf("number")
       expect(result.healthStatus).toBe(200)
       expect(result.marker).toMatchObject({ version: 1, scheduled: false, consumed: true })
       expect(result.marker?.dueAt).toBeGreaterThanOrEqual(dueAt)
@@ -378,5 +398,6 @@ describe("Conversation Lifecycle startup recovery", () => {
       expect(result.authority.holds).toHaveLength(1)
       expect(result.authority.rows).toHaveLength(1)
     },
+    10_000,
   )
 })

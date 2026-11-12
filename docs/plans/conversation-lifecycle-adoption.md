@@ -444,3 +444,8 @@ prove these contracts; the review is not runtime qualification.
   Native dispatch has not yet been shown to permit that gap. Platform-scheduled
   delivery is being checked directly; native smoke was skipped by the failed
   prerequisite. Do not interpret the local pass as final release verification.
+- The startup fixture now uses platform-scheduled alarms before/after a public
+  passive fetch, with eviction and no helper deletion/invocation. All five
+  startup tests pass, preserving the observation job, deadline and held usage.
+  The helper-only race did not establish a production failure; no additional
+  migration protocol was added. CI will rerun with the corrected fixture.
