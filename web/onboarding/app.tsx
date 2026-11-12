@@ -266,7 +266,7 @@ export function OnboardingApp() {
         await loadIntegrations(activeToken)
         await refresh(activeToken)
         await loadModels(activeToken)
-        if (state === "completed") {
+        if (state === "complete" || state === "completed") {
           setMessage(`${integration.name} connected.`)
           setError("")
         } else {
@@ -471,7 +471,7 @@ export function OnboardingApp() {
           number="01"
           accent="ultramarine"
           title="Connect a model provider"
-          description="OpenCode stores the credential in this workspace; every conversation uses it."
+          description="Use a dedicated provider API key for shared Slack access. You can also sign in for this setup session."
           status={
             providerConnected
               ? { label: "connected", tone: "success" }

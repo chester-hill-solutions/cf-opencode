@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { SELF } from "cloudflare:test"
+import { env, runInDurableObject, SELF } from "cloudflare:test"
+import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
 
 const BASE = "https://harness.test"
 const API = { authorization: "Bearer test-token" }
@@ -112,6 +113,13 @@ describe("worker surface", () => {
     expect(await res.text()).toBe("ok")
   })
 
+  it("returns 400 for a signed malformed Slack event instead of throwing", async () => {
+    const body = "{not-json"
+    const res = await SELF.fetch(`${BASE}/slack/events`, { method: "POST", headers: await signed(body), body })
+    expect(res.status).toBe(400)
+    expect(await res.text()).toBe("invalid json")
+  })
+
   it("serves an SSE stream", async () => {
     const res = await SELF.fetch(`${BASE}/api/conversations/demo/events`, { headers: API })
     expect(res.status).toBe(200)
@@ -160,6 +168,104 @@ describe("worker surface", () => {
     })
     expect(res.status).toBe(400)
     expect(await res.json()).toMatchObject({ error: "empty message" })
+  })
+
+  it("rejects consumed invalid JSON before recording conversations or changing settings", async () => {
+    const key = `invalid-json-${crypto.randomUUID()}`
+    const malformed = await SELF.fetch(`${BASE}/api/conversations/${key}/messages`, {
+      method: "POST", headers: { ...API, "content-type": "application/json" }, body: "{",
+    })
+    const nullBody = await SELF.fetch(`${BASE}/api/conversations/${key}/messages`, {
+      method: "POST", headers: { ...API, "content-type": "application/json" }, body: "null",
+    })
+    const arrayBody = await SELF.fetch(`${BASE}/api/conversations/${key}/permissions/req-1`, {
+      method: "POST", headers: { ...API, "content-type": "application/json" }, body: "[]",
+    })
+    const badField = await SELF.fetch(`${BASE}/api/conversations/${key}/messages`, {
+      method: "POST", headers: { ...API, "content-type": "application/json" }, body: JSON.stringify({ text: "hi", user: 7 }),
+    })
+    const badIdempotencyKey = await SELF.fetch(`${BASE}/api/conversations/${key}/messages`, {
+      method: "POST", headers: { ...API, "content-type": "application/json" }, body: JSON.stringify({ text: "hi", idempotencyKey: "bad key" }),
+    })
+    const numberText = await SELF.fetch(`${BASE}/api/conversations/${key}/messages`, {
+      method: "POST", headers: { ...API, "content-type": "application/json" }, body: JSON.stringify({ text: 123 }),
+    })
+    const blankText = await SELF.fetch(`${BASE}/api/conversations/${key}/messages`, {
+      method: "POST", headers: { ...API, "content-type": "application/json" }, body: JSON.stringify({ text: "  " }),
+    })
+    const missingText = await SELF.fetch(`${BASE}/api/conversations/${key}/messages`, {
+      method: "POST", headers: { ...API, "content-type": "application/json" }, body: JSON.stringify({}),
+    })
+    expect([malformed.status, nullBody.status, arrayBody.status, badField.status, badIdempotencyKey.status, numberText.status, blankText.status, missingText.status]).toEqual([400, 400, 400, 400, 400, 400, 400, 400])
+    expect(await numberText.json()).toMatchObject({ error: "empty message" })
+    expect(await blankText.json()).toMatchObject({ error: "empty message" })
+    expect(await missingText.json()).toMatchObject({ error: "text is required" })
+    const conversations = await SELF.fetch(`${BASE}/api/conversations`, { headers: API })
+    expect((await conversations.json() as { conversations: Array<{ key: string }> }).conversations.map((item) => item.key)).not.toContain(key)
+
+    const beforeResponse = await SELF.fetch(`${BASE}/api/settings`, { headers: API })
+    const before = await beforeResponse.json() as { version: number }
+    for (const body of ["{", "null", "[]", JSON.stringify({ model: "bad" })]) {
+      const invalidSettings = await SELF.fetch(`${BASE}/api/settings`, {
+        method: "PUT", headers: { ...API, "content-type": "application/json" }, body,
+      })
+      expect(invalidSettings.status).toBe(400)
+    }
+    const afterResponse = await SELF.fetch(`${BASE}/api/settings`, { headers: API })
+    const after = await afterResponse.json() as { version: number }
+    expect(after.version).toBe(before.version)
+
+    const invalidIntegration = await SELF.fetch(`${BASE}/api/onboarding/opencode/integrations/provider/connect/key`, {
+      method: "POST", headers: { ...API, "content-type": "application/json" }, body: "[]",
+    })
+    expect(invalidIntegration.status).toBe(400)
+  })
+
+  it("rejects invalid integration bodies before transport and forwards valid JSON unchanged", async () => {
+    const transportLog: { calls: number; integrationBodies: string[] } = {
+      calls: 0,
+      integrationBodies: [],
+    }
+    const stub = env.CONVERSATION.getByName("onboarding")
+    await runInDurableObject(stub, async (instance) => {
+      instance.transport = (port) => ({
+        async fetch(input) {
+          const request = input instanceof Request ? input : new Request(input)
+          const path = new URL(request.url).pathname
+          transportLog.calls++
+          if (port === 4001 && path === "/status") {
+            return Response.json({ initialized: true })
+          }
+          if (port === 4001 && path === "/configure") return Response.json({ ok: true })
+          if (port === 4001 && path === "/start") return Response.json(accountingPolicyStart)
+          if (port !== 4001 && path === "/api/config") return Response.json(accountingPolicyConfig)
+          if (path.startsWith("/integrations/")) {
+            transportLog.integrationBodies.push(await request.text())
+          }
+          return Response.json({ ok: true })
+        },
+      })
+    })
+
+    for (const body of ["{", "null", "[]"]) {
+      const response = await SELF.fetch(`${BASE}/api/onboarding/opencode/integrations/provider/connect/key`, {
+        method: "POST",
+        headers: { ...API, "content-type": "application/json" },
+        body,
+      })
+      expect(response.status).toBe(400)
+    }
+    expect(transportLog.calls).toBe(0)
+
+    const originalBody = '{"apiKey":"secret-value","providerExtension":{"region":"test","flag":true}}'
+    const validResponse = await SELF.fetch(`${BASE}/api/onboarding/opencode/integrations/provider/connect/key`, {
+      method: "POST",
+      headers: { ...API, "content-type": "application/json" },
+      body: originalBody,
+    })
+    expect(validResponse.status).toBe(200)
+    expect(transportLog.integrationBodies).toEqual([originalBody])
+    expect(transportLog.calls).toBeGreaterThan(0)
   })
 
   it("does not expose control-plane routes through the onboarding proxy", async () => {

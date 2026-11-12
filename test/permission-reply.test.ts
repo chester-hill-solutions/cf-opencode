@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
+import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
 
 /** The approval path must reach OpenCode and only then clear the request. */
 
@@ -13,9 +14,13 @@ function fakeContainer(replies: Array<Record<string, unknown>>) {
 
       if (port === 4001) {
         if (url.pathname === "/status") return json({ initialized: true })
-        if (url.pathname === "/configure" || url.pathname === "/start") return json({ ok: true })
+        if (url.pathname === "/configure") return json({ ok: true })
+
+        if (url.pathname === "/start") return json(accountingPolicyStart)
         return json({ error: "not found" }, 404)
       }
+
+      if (url.pathname === "/api/config") return json(accountingPolicyConfig)
 
       if (url.pathname === "/api/session") return json({ data: { id: "ses_1" } })
       if (url.pathname === "/api/session/ses_1/model") return new Response(null, { status: 204 })

@@ -1,0 +1,61 @@
+# Slack app manifest for the Aboiteau worker (cf-opencode).
+#
+# Create it at https://api.slack.com/apps -> "Create New App" ->
+# "From an app manifest", pick the workspace, paste this file, then
+# "Install to Workspace".
+#
+# Use a separate app if the original opencode-slack Socket Mode bot must remain
+# active. Reusing an existing app replaces its Socket Mode connection; the two
+# transports cannot run simultaneously on the same app.
+#
+# Current installation (2026-11-11): Team Nate's existing OpenCode app was reused
+# with operator approval because the workspace has reached its app limit. Its
+# display name remains OpenCode; see docs/runbook.md for configuration/evidence.
+#
+# Before verifying either callback, configure the Worker's Slack secrets. Enable
+# the App Home Messages tab and allow users to send messages there for DM input.
+#
+# The two request URLs below point at production. Change the host if you deploy
+# the Worker somewhere else.
+
+display_information:
+  name: Aboiteau
+  description: Run OpenCode conversations from Slack
+  background_color: "#1f2430"
+
+features:
+  bot_user:
+    display_name: Aboiteau
+    always_online: false
+
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read # receive @mentions
+      - chat:write # post replies, queue notices, approval buttons
+      - channels:history # read thread context for a follow-up
+      - channels:read # conversations.members for approval checks
+      - groups:history # same, private channels
+      - groups:read # same, private channels
+      - im:history # DM messages
+      - im:read # conversations.members in a DM
+      # Not needed by the Worker: reactions:write, files:write, users:read.
+      # The container-side plugin does uploads; the Worker only posts text.
+
+settings:
+  event_subscriptions:
+    request_url: https://cf-opencode.chester-hill-solutions.workers.dev/slack/events
+    bot_events:
+      - app_mention
+      - message.im
+      # Thread follow-ups require channel message delivery. The Worker ignores
+      # unrelated channel traffic and only accepts engaged threads, until !leave.
+      # Deploy that routing gate before enabling these on an older Worker.
+      - message.channels
+      - message.groups
+  interactivity:
+    is_enabled: true
+    request_url: https://cf-opencode.chester-hill-solutions.workers.dev/slack/interactivity
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

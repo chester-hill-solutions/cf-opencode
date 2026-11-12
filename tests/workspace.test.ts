@@ -81,4 +81,31 @@ describe("workspaceFingerprint", () => {
 
     expect(staged).not.toBe(unstaged)
   })
+
+  test("changes when an ignored file is edited", async () => {
+    const dir = newRepo()
+    writeFileSync(join(dir, "file.txt"), "one")
+    writeFileSync(join(dir, ".gitignore"), "ignored.bin\n")
+    git(dir, ["add", "."])
+    git(dir, ["commit", "-qm", "init"])
+
+    writeFileSync(join(dir, "ignored.bin"), "draft")
+    const firstEdit = await workspaceFingerprint(dir)
+    writeFileSync(join(dir, "ignored.bin"), "final")
+    const secondEdit = await workspaceFingerprint(dir)
+
+    expect(secondEdit).not.toBe(firstEdit)
+  })
+
+  test("changes when a non-git workspace file is edited", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cf-opencode-fingerprint-nogit-"))
+    dirs.push(dir)
+    writeFileSync(join(dir, "a.txt"), "one")
+    const baseline = await workspaceFingerprint(dir)
+    expect(await workspaceFingerprint(dir)).toBe(baseline)
+
+    writeFileSync(join(dir, "a.txt"), "two, with a longer body")
+    const edited = await workspaceFingerprint(dir)
+    expect(edited).not.toBe(baseline)
+  })
 })

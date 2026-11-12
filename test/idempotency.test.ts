@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
+import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
 
 /**
  * A prompt may be sent at most once per message. Two failure modes used to
@@ -22,10 +23,14 @@ function fakeContainer() {
 
       if (port === 4001) {
         if (url.pathname === "/status") return json({ initialized: true })
-        if (url.pathname === "/configure" || url.pathname === "/start") return json({ ok: true })
+        if (url.pathname === "/configure") return json({ ok: true })
+
+        if (url.pathname === "/start") return json(accountingPolicyStart)
         if (url.pathname === "/checkpoint") return new Response(null, { status: 204 })
         return json({ error: "not found" }, 404)
       }
+
+      if (url.pathname === "/api/config") return json(accountingPolicyConfig)
 
       if (url.pathname === "/api/session") return json({ data: { id: "ses_1" } })
       if (url.pathname === "/api/session/ses_1/model") return new Response(null, { status: 204 })

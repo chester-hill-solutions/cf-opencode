@@ -9,7 +9,9 @@
   "vars": {
     "WORKSPACE_REPO": "https://github.com/chester-hill-solutions/opencode-slack",
     "OPENCODE_MODEL": "opencode/deepseek-v4.1-flash",
-    "POLL_SECONDS": "2"
+    "POLL_SECONDS": "2",
+    "EVENTED_CANARY_KEY": "event-retention-canary-test",
+    "EVENTED_FRESH_CONVERSATIONS": "false"
   },
   "durable_objects": {
     "bindings": [

@@ -41,6 +41,15 @@ export interface QueuedMessage {
   lastError?: string
 }
 
+/** Durable reference to the one Settings-owned hold for this conversation. */
+export interface BudgetReservation {
+  reservationID: string
+  /** UTC day assigned by Settings when the hold was first granted. */
+  date?: string
+  /** True once the provider request may have been sent. */
+  dispatched: boolean
+}
+
 export interface CheckpointPart {
   key: string
   size: number
@@ -68,6 +77,12 @@ export interface ConversationState {
   /** Last assistant message id before the current prompt; the turn boundary. */
   turnBaseline?: string
   sessionID?: string
+  /** A model choice local to this conversation, preserved across cold starts. */
+  modelOverride?: string
+  /** Channel threads accept follow-ups after a mention, until !leave. */
+  slackEngaged?: boolean
+  /** Questions already announced for the active session. */
+  announcedForms?: string[]
   transport?: Transport
   slack?: SlackTarget
   /** Last assistant text broadcast to SSE, used to avoid duplicates. */
@@ -80,6 +95,8 @@ export interface ConversationState {
   settingsVersion?: number
   /** One pending admission when the container could not start. */
   queued?: QueuedMessage
+  /** Owned Settings hold for the current turn, if one has been acquired. */
+  budgetReservation?: BudgetReservation
   /** Fingerprint of the workspace at the last successful checkpoint. */
   checkpointFingerprint?: string
   /** Fingerprint of the state root at the last successful checkpoint. */
@@ -98,12 +115,20 @@ export interface ConversationState {
   checkpointSize?: number
   /** The terminal error of the last turn, kept for status output. */
   lastTurnError?: string
-  /** Today's spend for this conversation, as reported by OpenCode. */
+  /** Legacy cumulative spend snapshot; durable usage sources supersede it. */
   usage?: { date: string; costUSD: number; input: number; output: number }
-  /** Today's deduplicated auxiliary spend (title/compaction). */
+  /** Legacy auxiliary accumulator; durable usage sources supersede it. */
   usageAux?: { date: string; costUSD: number; input: number; output: number; seen: string[] }
+  /** Highest acknowledged durable session log sequence for this session. */
+  usageCursor?: { sessionID: string; seq: number }
+  /** Latest acknowledged billable step for terminal settlement proof. */
+  usageTerminal?: { sessionID: string; assistantMessageID: string; seq: number }
+  /** Latest durable execution fences observed while replaying this session. */
+  usageExecution?: { sessionID: string; startedSeq: number; terminalSeq: number; latestStepSeq: number }
   /** Why the last usage refresh failed, for operators. */
   usageError?: string
+  /** Why terminal settlement is paused while usage or hold release is unacknowledged. */
+  settlementError?: string
   /** Slack event ids already handled (dedupe). */
   seen: string[]
   /** Pending permission requests: requestID -> sessionID. */
@@ -122,6 +147,8 @@ export interface KeyValueStorage {
 
 const SEEN_LIMIT = 200
 const EVENT_LIMIT = 200
+/** Dedupe tombstones live this long before an event id may be re-processed. */
+const TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1000
 
 export class ConversationStore {
   /**
@@ -178,6 +205,7 @@ export class ConversationStore {
 
   /** Claim an event for processing; false when it was already claimed. */
   async claimEvent(eventID: string): Promise<boolean> {
+    if (await this.isTombstoned(eventID)) return false
     return this.transact((state) => {
       if (state.seen.includes(eventID)) return { result: false }
       return {
@@ -185,6 +213,38 @@ export class ConversationStore {
         result: true,
       }
     })
+  }
+
+  /** Persist a tombstone so an event id stays blocked beyond the SEEN_LIMIT window. */
+  async markTombstone(eventID: string): Promise<void> {
+    await this.serial(async () => {
+      const now = Date.now()
+      const date = new Date(now).toISOString().slice(0, 10)
+      const key = `tombstones:${date}`
+      const store = (await this.storage.get<Record<string, number>>(key)) ?? {}
+      store[eventID] = now
+      // Purge tombstones older than the TTL so the map does not grow forever.
+      const cutoff = now - TOMBSTONE_TTL_MS
+      for (const [id, ts] of Object.entries(store)) {
+        if (Number(ts) <= cutoff) delete store[id]
+      }
+      await this.storage.put(key, store)
+    })
+  }
+
+  /** Check whether an event id is blocked by a persistent tombstone. */
+  private async isTombstoned(eventID: string): Promise<boolean> {
+    const now = Date.now()
+    const today = new Date(now)
+    const dates = [today, new Date(now - 24 * 60 * 60 * 1000)]
+    for (const date of dates) {
+      const store = await this.storage.get<Record<string, number>>(`tombstones:${date.toISOString().slice(0, 10)}`)
+      const ts = store?.[eventID]
+      if (typeof ts === "number" && Number.isFinite(ts) && now >= ts && now - ts < TOMBSTONE_TTL_MS) {
+        return true
+      }
+    }
+    return false
   }
 
   /** Release a claim after a failed admission so a redelivery can be processed. */
@@ -210,6 +270,102 @@ export class ConversationStore {
     return this.transact((state) => {
       const next = { ...state, ...patch }
       return { next, result: next }
+    })
+  }
+
+  /**
+   * Persist a proposal before contacting Settings. Retries reuse the current
+   * ID, while a possibly dispatched reservation is never replaced.
+   */
+  async ensureBudgetReservation(proposedID: string): Promise<BudgetReservation> {
+    return this.transact((state) => {
+      if (state.budgetReservation) return { result: state.budgetReservation }
+      const reservation = { reservationID: proposedID, dispatched: false }
+      return { next: { ...state, budgetReservation: reservation }, result: reservation }
+    })
+  }
+
+  /** Attach Settings' origin day without replacing another or dispatched hold. */
+  async setBudgetReservationDate(reservationID: string, date: string): Promise<boolean> {
+    return this.transact((state) => {
+      const reservation = state.budgetReservation
+      if (!reservation || reservation.reservationID !== reservationID || reservation.dispatched !== false) {
+        return { result: false }
+      }
+      if (reservation.date === date) return { result: true }
+      return {
+        next: { ...state, budgetReservation: { ...reservation, date } },
+        result: true,
+      }
+    })
+  }
+
+  /** Mark the matching durable hold as potentially dispatched before sending. */
+  async markBudgetReservationDispatched(
+    reservationID: string,
+    date: string,
+    turnBaseline: string | undefined,
+    fromQueue = false,
+  ): Promise<boolean> {
+    return this.transact((state) => {
+      const reservation = state.budgetReservation
+      if (!reservation || reservation.reservationID !== reservationID || reservation.date !== date) {
+        return { result: false }
+      }
+      if (reservation.dispatched) return { result: false }
+      return {
+        next: {
+          ...state,
+          phase: "admitting",
+          budgetReservation: { ...reservation, dispatched: true },
+          runStartedAt: Date.now(),
+          turnBaseline,
+          ...(fromQueue ? { queued: undefined } : {}),
+        },
+        result: true,
+      }
+    })
+  }
+
+  /** Clear only the same reference after an acknowledged Settings release. */
+  async clearBudgetReservation(reservationID: string, date: string): Promise<boolean> {
+    return this.transact((state) => {
+      const reservation = state.budgetReservation
+      if (!reservation || reservation.reservationID !== reservationID || reservation.date !== date) {
+        return { result: false }
+      }
+      return { next: { ...state, budgetReservation: undefined }, result: true }
+    })
+  }
+
+  /** Forget a proposal only after Settings definitively denied creation. */
+  async clearDeniedBudgetProposal(reservationID: string): Promise<boolean> {
+    return this.transact((state) => {
+      const reservation = state.budgetReservation
+      if (!reservation || reservation.reservationID !== reservationID || reservation.dispatched !== false) {
+        return { result: false }
+      }
+      return { next: { ...state, budgetReservation: undefined }, result: true }
+    })
+  }
+
+  /** Clear only the exact captured proposal, and only while dispatch is disproven. */
+  async clearUndispatchedBudgetProposal(captured: BudgetReservation): Promise<boolean> {
+    return this.transact((state) => {
+      const reservation = state.budgetReservation
+      if (!reservation || reservation.dispatched !== false || captured.dispatched !== false ||
+        reservation.reservationID !== captured.reservationID || reservation.date !== captured.date ||
+        state.queued || ((state.phase ?? "idle") !== "idle" && state.phase !== "admitting")) {
+        return { result: false }
+      }
+      return {
+        next: {
+          ...state,
+          budgetReservation: undefined,
+          ...(state.phase === "admitting" ? { phase: "idle" as const } : {}),
+        },
+        result: true,
+      }
     })
   }
 

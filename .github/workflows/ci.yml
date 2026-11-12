@@ -15,6 +15,7 @@ jobs:
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
+      - run: bun install --cwd runtime/opencode --frozen-lockfile
       - run: bun run check:config
       - run: bun run typecheck
       - run: bun run build:ui

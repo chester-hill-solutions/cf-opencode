@@ -162,6 +162,52 @@ describe("ConversationStore", () => {
     expect((await store.get()).seen).toEqual(["evt_dup"])
   })
 
+  test("keeps a tombstone across UTC midnight after the seen window evicts it", async () => {
+    const originalNow = Date.now
+    let now = Date.UTC(2026, 0, 1, 23, 59)
+    Date.now = () => now
+    try {
+      const store = new ConversationStore(fakeStorage())
+      await store.markTombstone("cmd_before_midnight")
+      for (let i = 0; i < 250; i++) await store.claimEvent(`other_${i}`)
+      expect((await store.get()).seen).not.toContain("cmd_before_midnight")
+
+      now = Date.UTC(2026, 0, 2, 0, 1)
+      expect(await store.claimEvent("cmd_before_midnight")).toBe(false)
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
+  test("expires tombstones at 24 hours", async () => {
+    const originalNow = Date.now
+    const markedAt = Date.UTC(2026, 0, 1, 23, 59)
+    let now = markedAt
+    Date.now = () => now
+    try {
+      const store = new ConversationStore(fakeStorage())
+      await store.markTombstone("cmd_expiring")
+      now = markedAt + 24 * 60 * 60 * 1000
+      expect(await store.claimEvent("cmd_expiring")).toBe(true)
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
+  test("serializes concurrent tombstone updates without losing either id", async () => {
+    const originalNow = Date.now
+    Date.now = () => Date.UTC(2026, 4, 3, 10)
+    try {
+      const store = new ConversationStore(fakeStorage())
+      await Promise.all([store.markTombstone("cmd_a"), store.markTombstone("cmd_b")])
+      for (let i = 0; i < 250; i++) await store.claimEvent(`noise_${i}`)
+      expect(await store.claimEvent("cmd_a")).toBe(false)
+      expect(await store.claimEvent("cmd_b")).toBe(false)
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
   test("keeps every pending permission recorded concurrently", async () => {
     const store = new ConversationStore(fakeStorage())
     await Promise.all([

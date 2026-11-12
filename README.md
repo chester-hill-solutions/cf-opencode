@@ -74,6 +74,35 @@ Optional. Set `SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN` and `SLACK_BOT_USER_ID`,
 
 Without the Slack secrets the Slack routes return 503 and the harness is HTTP-only.
 
+Slack controls are handled directly, before any model prompt or budget admission:
+
+| Command | Action |
+|---|---|
+| `!help` | Show the available controls |
+| `!status` | Show this conversation's session, model/startup state and pending work |
+| `!model` | List live enabled models and the current choice |
+| `!model provider/model` | Change this conversation's model, preserving history; `#variant` is supported |
+| `!sessions` / `!session` | List recent sessions in this conversation's workspace |
+| `!sessions 2` / `!sessions ses_…` | Continue a listed or verified older session |
+| `!new` | Start a fresh session on the next message; keep workspace and history |
+| `!stop` | Interrupt running work and clear queued follow-ups; reconcile usage normally |
+| `!leave` | Stop following the current channel thread until mentioned again |
+| `!answer` / `!answer <value>` | Show or answer the waiting question; multiple fields accept `key=value` pairs |
+| `!cancel` | Skip the waiting question |
+| `!setup` / `!connect` | Open provider/account setup; never paste credentials into Slack |
+| `!usage` | Show reported workspace spend, reserved amounts and the daily budget |
+
+Unknown `!` commands return help instead of being sent to a model. Model changes
+and session switches wait for unfinished work and usage settlement. Selecting a
+model does not connect its provider or increase that provider's quota.
+
+DMs are continuous conversations. In channels, mention the bot to engage a thread.
+With `message.channels`/`message.groups` subscriptions enabled, replies in that
+thread continue its session; unrelated channel traffic is ignored. Question cards
+offer buttons for simple choices and text commands for more complex answers.
+See the [Slack usability plan](docs/plans/slack-usability.md) for implementation
+and rollout evidence, and the [runbook](docs/runbook.md) for the live connection.
+
 ## Permissions
 
 "Smart allow" rules are written into the container's OpenCode config (`entrypoint.sh`):
@@ -144,9 +173,11 @@ Non-production branches upload Worker code only (no image rollout). Use a stagin
 ## Local development
 
 ```sh
+bun install --frozen-lockfile
+bun install --cwd runtime/opencode --frozen-lockfile
 scripts/container-dev.sh build   # Apple `container` (no Docker)
 scripts/container-dev.sh run     # :4000 opencode, :4001 control, :9000 local S3
-bun test
+bun run test
 bun run typecheck
 bun run check:config   # prod/test Wrangler config drift guard
 ```

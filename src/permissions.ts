@@ -57,8 +57,11 @@ export const DENY_COMMANDS = [
 ] as const
 
 /**
- * Build the complete rule list for the container config. Order matters: the
- * catch-all asks and hard-coded denials come last so they win.
+ * Build the complete rule list for the container config. Order matters because
+ * OpenCode uses the last matching rule: broad catch-all asks come first so
+ * the specific allow/ask exceptions below them win, and hard denials come
+ * last. Putting a catch-all after the allow list would have made every shell
+ * command ask (and every edit ask) regardless of the list.
  *
  * `DENY_COMMANDS` and the credential/SSRF denials are appended regardless of
  * settings. An operator may add denials but cannot remove these: a settings
@@ -89,14 +92,18 @@ export function buildPermissionRules(
     "*~*",
   ]
   return [
+    // Broad baselines first; the specific exceptions below must follow them.
+    // `read /** ask` makes the outside-workspace default explicit instead of
+    // relying on the upstream pass-through, matching the edit baseline.
+    { action: "shell", resource: "*", effect: "ask" },
+    { action: "edit", resource: "/**", effect: "ask" },
+    { action: "read", resource: "/**", effect: "ask" },
     { action: "read", resource: `${workspace}/**`, effect: "allow" },
     { action: "edit", resource: `${workspace}/**`, effect: "allow" },
     { action: "webfetch", resource: "*", effect: "allow" },
     { action: "websearch", resource: "*", effect: "allow" },
     ...(lists.allow ?? []).map((resource) => ({ action: "shell", resource, effect: "allow" as const })),
-    { action: "shell", resource: "*", effect: "ask" },
     ...(lists.ask ?? []).map((resource) => ({ action: "shell", resource, effect: "ask" as const })),
-    { action: "edit", resource: "/**", effect: "ask" },
     ...shellDenies.map((resource) => ({ action: "shell", resource, effect: "deny" as const })),
     // Harness state holds the OpenCode config and provider credentials.
     ...stateShellDenies.map((resource) => ({ action: "shell", resource, effect: "deny" as const })),

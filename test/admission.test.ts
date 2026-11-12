@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
+import { usageLogResponse } from "./helpers/usage-log"
+import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
 
 /**
  * Two messages arriving together must admit exactly one turn and queue the
@@ -20,10 +22,14 @@ function fakeContainer() {
 
       if (port === 4001) {
         if (url.pathname === "/status") return json({ initialized: true })
-        if (url.pathname === "/configure" || url.pathname === "/start") return json({ ok: true })
+        if (url.pathname === "/configure") return json({ ok: true })
+
+        if (url.pathname === "/start") return json(accountingPolicyStart)
         if (url.pathname === "/checkpoint") return new Response(null, { status: 204 })
         return json({ error: "not found" }, 404)
       }
+
+      if (url.pathname === "/api/config") return json(accountingPolicyConfig)
 
       if (url.pathname === "/api/session") return json({ data: { id: "ses_1" } })
       if (url.pathname === "/api/session/ses_1/model") return new Response(null, { status: 204 })
@@ -33,6 +39,7 @@ function fakeContainer() {
         return json({ data: {} })
       }
       if (url.pathname === "/api/session/ses_1/context") {
+        const now = Date.now()
         return json({
           data: prompted
             ? [
@@ -42,8 +49,9 @@ function fakeContainer() {
                       {
                         id: "a1",
                         type: "assistant",
-                        time: { created: 1, completed: 2 },
+                        time: { created: now - 1, completed: now },
                         finish: "stop",
+                        cost: 0,
                         content: [{ type: "text", text: "done" }],
                       },
                     ]
@@ -51,6 +59,12 @@ function fakeContainer() {
               ]
             : [],
         })
+      }
+      if (url.pathname === "/api/experimental/session/ses_1/log") {
+        const now = Date.now()
+        return usageLogResponse(input, "ses_1", answered
+          ? [{ id: "a1", type: "assistant", cost: 0, time: { created: now - 1, completed: now } }]
+          : [])
       }
       if (url.pathname === "/api/session/ses_1/permission") return json({ data: [] })
       if (url.pathname === "/api/event") return new Response("", { status: 200 })

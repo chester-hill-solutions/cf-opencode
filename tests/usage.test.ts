@@ -1,28 +1,50 @@
 import { describe, expect, test } from "bun:test"
-import { AUX_SEEN_LIMIT, auxAfterEvent, emptyAux, sumUsage } from "../src/usage"
+import { durableUsageEvent } from "../src/usage"
 
-describe("usage arithmetic", () => {
-  test("sums step and auxiliary totals", () => {
-    expect(
-      sumUsage(
-        { date: "2026-11-08", costUSD: 1.25, input: 100, output: 10 },
-        { date: "2026-11-08", costUSD: 0.5, input: 10, output: 2 },
-      ),
-    ).toEqual({ date: "2026-11-08", costUSD: 1.75, input: 110, output: 12 })
+const event = (overrides: Record<string, unknown> = {}) => ({
+  id: "evt-1",
+  type: "session.step.ended",
+  created: Date.UTC(2026, 10, 11),
+  durable: { seq: 4 },
+  data: {
+    sessionID: "ses_1",
+    assistantMessageID: "msg_1",
+    cost: 0,
+    tokens: { input: 0, output: 0 },
+  },
+  ...overrides,
+})
+
+describe("durable usage events", () => {
+  test("converts real durable usage, preserving explicit zero totals", () => {
+    expect(durableUsageEvent(event(), "ses_1")).toEqual({
+      sourceID: "evt-1",
+      sessionID: "ses_1",
+      date: "2026-11-11",
+      costUSD: 0,
+      input: 0,
+      output: 0,
+      seq: 4,
+      assistantMessageID: "msg_1",
+    })
   })
 
-  test("counts an auxiliary event once by id", () => {
-    const first = auxAfterEvent(emptyAux("2026-11-08"), "evt_1", 0.5, 10, 2)
-    expect(first).toMatchObject({ costUSD: 0.5, input: 10, output: 2, seen: ["evt_1"] })
-    expect(auxAfterEvent(first!, "evt_1", 0.5, 10, 2)).toBeUndefined()
+  test("ignores cumulative usage snapshots", () => {
+    expect(durableUsageEvent({ type: "session.usage.updated" }, "ses_1")).toBeUndefined()
   })
 
-  test("bounds the dedupe list", () => {
-    let aux = emptyAux("2026-11-08")
-    for (let i = 0; i < AUX_SEEN_LIMIT + 10; i++) {
-      aux = auxAfterEvent(aux, `evt_${i}`, 0, 1, 0)!
-    }
-    expect(aux.seen).toHaveLength(AUX_SEEN_LIMIT)
-    expect(aux.seen.at(-1)).toBe(`evt_${AUX_SEEN_LIMIT + 9}`)
+  test("returns undefined for nonusage durable rows", () => {
+    expect(durableUsageEvent({
+      type: "session.execution.succeeded",
+      durable: { seq: 2 },
+      data: { sessionID: "ses_1" },
+    }, "ses_1")).toBeUndefined()
+  })
+
+  test("rejects malformed identity, sequence, or totals", () => {
+    expect(() => durableUsageEvent(event({ id: "" }), "ses_1")).toThrow()
+    expect(() => durableUsageEvent(event({ durable: { seq: 0 } }), "ses_1")).toThrow()
+    expect(() => durableUsageEvent(event({ data: { ...event().data, cost: Number.NaN } }), "ses_1")).toThrow()
+    expect(() => durableUsageEvent(event(), "ses_other")).toThrow()
   })
 })

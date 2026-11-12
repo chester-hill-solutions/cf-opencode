@@ -44,6 +44,10 @@ import {
 } from "node:fs"
 import { relative } from "node:path"
 import { buildPermissionRules, type PermissionLists } from "./src/permissions"
+import {
+  ACCOUNTING_POLICY_CONTENT,
+  ACCOUNTING_POLICY_ID,
+} from "./src/accounting-policy"
 import { bearerAuthorized } from "./src/control-auth"
 import { assertSafeArchiveMembers, linkStaysInside, safeRelativeLink } from "./src/tar"
 
@@ -69,6 +73,8 @@ const AGENT_UID = Number(process.env.AGENT_UID ?? 1001)
 const AGENT_GID = Number(process.env.AGENT_GID ?? 1001)
 
 let opencode: ReturnType<typeof spawn> | undefined
+let opencodeGeneration: string | undefined
+let opencodeEventPersistence = false
 let stow: ReturnType<typeof spawn> | undefined
 let opencodePassword = ""
 
@@ -187,19 +193,17 @@ async function startStow(): Promise<void> {
 
 async function startOpencode(): Promise<void> {
   if (opencode && opencode.exitCode === null) return
-  if (opencode) opencode = undefined
+  if (opencode) {
+    opencode = undefined
+    opencodeGeneration = undefined
+    opencodeEventPersistence = false
+  }
   // OpenCode v2 requires a password. Use the configured one if present so the
   // Worker and container can share it; otherwise generate a per-start secret.
   opencodePassword = process.env.OPENCODE_PASSWORD ?? randomBytes(32).toString("base64url")
+  opencodeGeneration = randomBytes(24).toString("base64url")
   opencode = spawn(
-    asAgentCommand([
-      "opencode",
-      "serve",
-      "--hostname",
-      "127.0.0.1",
-      "--port",
-      String(OPENCODE_PORT),
-    ]),
+    asAgentCommand(["bun", "/app/runtime/opencode/server.ts"]),
     {
       cwd: WORKSPACE,
       env: buildOpencodeEnv(process.env, opencodePassword),
@@ -208,6 +212,7 @@ async function startOpencode(): Promise<void> {
     },
   )
   await waitFor(`http://127.0.0.1:${OPENCODE_PORT}/api/info`, 300, basicAuth(opencodePassword))
+  opencodeEventPersistence = true
 }
 
 /**
@@ -226,8 +231,13 @@ export function buildOpencodeEnv(
     XDG_DATA_HOME: source.XDG_DATA_HOME ?? `${STATE_ROOT}/data`,
     XDG_CONFIG_HOME: source.XDG_CONFIG_HOME ?? `${STATE_ROOT}/config`,
     XDG_CACHE_HOME: source.XDG_CACHE_HOME ?? `${STATE_ROOT}/cache`,
+    XDG_STATE_HOME: source.XDG_STATE_HOME ?? `${source.HOME ?? STATE_ROOT}/.local/state`,
+    OPENCODE_PORT: String(OPENCODE_PORT),
     OPENCODE_PASSWORD: password,
     OPENCODE_SERVER_PASSWORD: password,
+    // Fixed by the harness so project config cannot re-enable detached billing.
+    // Caller-provided OPENCODE_CONFIG_CONTENT is intentionally not forwarded.
+    OPENCODE_CONFIG_CONTENT: ACCOUNTING_POLICY_CONTENT,
     S3_ENDPOINT: `http://127.0.0.1:${STOW_PORT}`,
     S3_ACCESS_KEY_ID: STOW_ACCESS_KEY,
     S3_SECRET_ACCESS_KEY: STOW_SECRET_KEY,
@@ -269,7 +279,10 @@ function stateFiles(root = STATE_ROOT, base = root, out: string[] = []): string[
 /**
  * Workspace identity for checkpoint dedupe. Status names alone are not enough:
  * editing an already-modified file leaves them unchanged, which would skip the
- * checkpoint and silently lose the edit. Hash the diff and untracked contents.
+ * checkpoint and silently lose the edit. Hash the diff and untracked plus
+ * ignored contents — the archive includes ignored files, so an ignored-only
+ * edit must not be skipped either. Non-Git workspaces have no diff to hash,
+ * so their fingerprint covers every archived path with size and mtime.
  */
 export async function workspaceFingerprint(workspace = WORKSPACE): Promise<string> {
   if (existsSync(`${workspace}/.git`)) {
@@ -277,17 +290,49 @@ export async function workspaceFingerprint(workspace = WORKSPACE): Promise<strin
     const status = await runCapture(["git", "-C", workspace, "status", "--porcelain"])
     const diff = await runCapture(["git", "-C", workspace, "diff", "HEAD", "--binary", "--no-color"])
     const untracked = await runCapture(["git", "-C", workspace, "ls-files", "--others", "--exclude-standard", "-z"])
+    const ignored = await runCapture(["git", "-C", workspace, "ls-files", "--others", "--ignored", "--exclude-standard", "-z"])
+    const paths = new Set([...untracked.split("\0").filter(Boolean), ...ignored.split("\0").filter(Boolean)])
     const files: string[] = []
-    for (const path of untracked.split("\0").filter(Boolean).sort()) {
+    for (const path of [...paths].sort()) {
       // Derived harness data: the source diff already covers workspace edits.
-      if (path.startsWith(".stow/") || path.startsWith("node_modules/")) continue
+      // tar excludes node_modules and .stow at any depth, so match that here.
+      // Listing node_modules is cheap: the filter runs before any hash.
+      const parts = path.split("/")
+      if (parts.includes(".stow") || parts.includes("node_modules")) continue
       const hash = await runCapture(["git", "-C", workspace, "hash-object", "--", path])
       files.push(`${path}:${hash.trim()}`)
     }
     return createHash("sha256").update(`${head}\n${status}\n${diff}\n${files.join("\n")}`).digest("hex")
   }
-  const entries = existsSync(workspace) ? readdirSync(workspace).sort().join(",") : ""
-  return createHash("sha256").update(`nogit:${entries}`).digest("hex")
+  const entries = existsSync(workspace) ? workspaceFileEntries(workspace) : []
+  const hash = createHash("sha256")
+  for (const file of entries) {
+    let stat
+    try {
+      stat = statSync(file)
+    } catch {
+      continue
+    }
+    hash.update(`${relative(workspace, file)}\0${stat.size}\0${stat.mtimeMs}\n`)
+  }
+  return hash.digest("hex")
+}
+
+/** Every archived path under a non-Git workspace, minus the tar excludes. */
+function workspaceFileEntries(root: string, base = root, out: string[] = []): string[] {
+  let entries
+  try {
+    entries = readdirSync(base, { withFileTypes: true })
+  } catch {
+    return out
+  }
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (entry.name === "node_modules" || entry.name === ".stow") continue
+    const path = `${base}/${entry.name}`
+    if (entry.isDirectory()) workspaceFileEntries(root, path, out)
+    else out.push(path)
+  }
+  return out
 }
 
 /**
@@ -337,6 +382,25 @@ async function assertWorkspaceLinks(root = WORKSPACE): Promise<void> {
     if (!linkStaysInside(root, target)) {
       throw new Error(
         `workspace symlink escapes the workspace: ${link} -> ${target || "(unresolved)"}`,
+      )
+    }
+  }
+}
+
+/**
+ * A state symlink that resolves outside the state root lets OpenCode, running
+ * as the agent, read or overwrite files through a path that never names the
+ * state root. Same containment rule as the workspace: links that stay inside
+ * are allowed.
+ */
+async function assertStateLinks(root = STATE_ROOT): Promise<void> {
+  if (!existsSync(root)) return
+  const listing = await runCapture(["find", root, "-type", "l", "-print0"])
+  for (const link of listing.split("\0").filter(Boolean)) {
+    const target = (await runCapture(["readlink", "-f", "--", link])).trim()
+    if (!linkStaysInside(root, target)) {
+      throw new Error(
+        `state symlink escapes the state root: ${link} -> ${target || "(unresolved)"}`,
       )
     }
   }
@@ -604,13 +668,21 @@ if (import.meta.main) Bun.serve({
       }
       await startStow()
       await startOpencode()
+      if (!opencode || opencode.exitCode !== null || !opencodeGeneration) {
+        return Response.json({ error: "OpenCode exited before accounting policy verification" }, { status: 503 })
+      }
       // Mark the container initialized only after both processes are up, so a
       // failed start is retried instead of being treated as an empty workspace.
       mkdirSync(STATE_ROOT, { recursive: true })
       writeFileSync(MARKER, new Date().toISOString())
       // The OpenCode password never leaves this process; the DO uses the
       // token-authenticated /opencode/* proxy instead.
-      return Response.json({ ok: true })
+      return Response.json({
+        ok: true,
+        accountingPolicy: ACCOUNTING_POLICY_ID,
+        opencodeGeneration,
+        ...(opencodeEventPersistence ? { eventPersistence: true } : {}),
+      })
     }
 
     if (url.pathname === "/restore" && request.method === "POST") {
@@ -682,6 +754,14 @@ if (import.meta.main) Bun.serve({
           return Response.json({ error: "restore failed" }, { status: 500 })
         }
         fixStatePermissions()
+        try {
+          await assertStateLinks()
+        } catch (error) {
+          return Response.json(
+            { error: error instanceof Error ? error.message : String(error) },
+            { status: 500 },
+          )
+        }
       }
       // A split restore is only complete once the state part is restored (or
       // the caller says there is no state part), so a failure in between keeps
@@ -809,6 +889,14 @@ if (import.meta.main) Bun.serve({
       rmSync(tmp, { force: true })
       if (code !== 0) return Response.json({ error: "seed failed" }, { status: 500 })
       fixStatePermissions()
+      try {
+        await assertStateLinks()
+      } catch (error) {
+        return Response.json(
+          { error: error instanceof Error ? error.message : String(error) },
+          { status: 500 },
+        )
+      }
       return Response.json({ ok: true })
     }
 

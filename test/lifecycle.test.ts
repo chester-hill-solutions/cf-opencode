@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
+import { usageLogResponse } from "./helpers/usage-log"
+import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
 
 /**
  * Lifecycle regression: the persisted phase must follow admission → running →
@@ -7,6 +9,7 @@ import { env, runInDurableObject } from "cloudflare:test"
  */
 
 function fakeContainer() {
+  let prompted = false
   return (port: number) => ({
     async fetch(input: Request | string | URL): Promise<Response> {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url)
@@ -16,25 +19,38 @@ function fakeContainer() {
       if (port === 4001) {
         if (url.pathname === "/status") return json({ initialized: true })
         if (url.pathname === "/configure") return json({ ok: true })
-        if (url.pathname === "/start") return json({ ok: true })
+        if (url.pathname === "/start") return json(accountingPolicyStart)
         if (url.pathname === "/checkpoint") return new Response(null, { status: 204 })
         return json({ error: "not found" }, 404)
       }
 
       if (url.pathname === "/health") return json({ ok: true })
+      if (url.pathname === "/api/config") return json(accountingPolicyConfig)
       if (url.pathname === "/api/session") return json({ data: { id: "ses_1" } })
       if (url.pathname === "/api/session/ses_1/model") return new Response(null, { status: 204 })
-      if (url.pathname === "/api/session/ses_1/prompt") return json({ data: {} })
+      if (url.pathname === "/api/session/ses_1/prompt") {
+        prompted = true
+        return json({ data: {} })
+      }
       if (url.pathname === "/api/session/ses_1/context") {
+        const now = Date.now()
         return json({
-          data: [
+          data: prompted ? [
             {
               type: "assistant",
-              time: { completed: 1 },
+              id: "a_done",
+              time: { completed: now },
+              cost: 0,
               content: [{ type: "text", text: "done" }],
             },
-          ],
+          ] : [],
         })
+      }
+      if (url.pathname === "/api/experimental/session/ses_1/log") {
+        const now = Date.now()
+        return usageLogResponse(input, "ses_1", prompted
+          ? [{ id: "a_done", type: "assistant", cost: 0, time: { completed: now } }]
+          : [])
       }
       if (url.pathname === "/api/session/ses_1/permission") return json({ data: [] })
       if (url.pathname === "/api/event") {

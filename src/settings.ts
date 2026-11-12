@@ -143,7 +143,7 @@ export function validateSettings(
   input: unknown,
   base: HarnessSettings,
 ): { ok: true; value: HarnessSettings } | { ok: false; error: string } {
-  if (!input || typeof input !== "object") return { ok: false, error: "body must be an object" }
+  if (!input || typeof input !== "object" || Array.isArray(input)) return { ok: false, error: "body must be an object" }
   const body = input as Record<string, unknown>
 
   const workspaceRepo = body.workspaceRepo ?? base.workspaceRepo

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
+import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
 
 /**
  * A stored session id is a cache of OpenCode's own database. After a reset or a
@@ -21,12 +22,15 @@ function fakeContainer() {
 
       if (port === 4001) {
         if (url.pathname === "/status") return json({ initialized: true })
-        if (url.pathname === "/configure" || url.pathname === "/start") return json({ ok: true })
+        if (url.pathname === "/configure") return json({ ok: true })
+
+        if (url.pathname === "/start") return json(accountingPolicyStart)
         if (url.pathname === "/checkpoint") return new Response(null, { status: 204 })
         return json({ error: "not found" }, 404)
       }
 
       // The old session is gone from this OpenCode database.
+      if (url.pathname === "/api/config") return json(accountingPolicyConfig)
       if (url.pathname === "/api/session/ses_old") return json({ error: "not found" }, 404)
       if (url.pathname === "/api/session/ses_old/prompt") {
         prompts.old++

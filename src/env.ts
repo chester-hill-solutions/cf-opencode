@@ -9,6 +9,10 @@ export interface Env {
   WORKSPACE_REPO: string
   OPENCODE_MODEL: string
   POLL_SECONDS: string
+  /** Exact DO key allowed to select the isolated event-retention canary image. */
+  EVENTED_CANARY_KEY?: string
+  /** Opt in only never-started conversations to the persistent-event image. */
+  EVENTED_FRESH_CONVERSATIONS?: string
   CHECKPOINTS: R2Bucket
   /** Optional D1 database holding tenants, agents and channel bindings. */
   TENANCY?: import("./tenancy").TenancyDatabase

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
+import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
 
 /**
  * The Durable Object never receives or stores the OpenCode password. The
@@ -23,11 +24,12 @@ describe("opencode auth boundary", () => {
             if (url.pathname === "/status") return json({ initialized: true })
             if (url.pathname === "/configure") return json({ ok: true })
             // A current control server returns no secret from /start.
-            if (url.pathname === "/start") return json({ ok: true })
+            if (url.pathname === "/start") return json(accountingPolicyStart)
             return json({ error: "not found" }, 404)
           }
 
           seen.push(request.headers.get("authorization"))
+          if (url.pathname === "/api/config") return json(accountingPolicyConfig)
           if (url.pathname === "/api/session") return json({ data: { id: "ses_1" } })
           if (url.pathname === "/api/session/ses_1/model") return new Response(null, { status: 204 })
           if (url.pathname === "/api/session/ses_1/prompt") return json({ data: {} })

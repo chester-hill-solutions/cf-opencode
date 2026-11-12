@@ -1,8 +1,10 @@
 import { DurableObject } from "cloudflare:workers"
+import { ClientError, type CredentialEntry } from "@opencode/client"
 import { makeClient, portFetch, type ContainerPort } from "./opencode"
 import { opencodeViaControl } from "./opencode-proxy"
 import {
   ConversationStore,
+  type BudgetReservation,
   type CheckpointManifest,
   type ConversationPhase,
   type ConversationState,
@@ -20,7 +22,7 @@ import {
   failureKey,
   isSettled,
   latestAssistantReply,
-  toMillis,
+  turnMessages,
   turnFailure,
   type MessageInfo,
   type TurnFailure,
@@ -34,7 +36,7 @@ import { logEvent } from "./log"
 import { withSpan } from "./telemetry"
 import type { HarnessSettings } from "./settings"
 import { staleAction } from "./lifecycle"
-import { budgetExceeded, nextBudgetReset } from "./budget"
+import { nextBudgetReset } from "./budget"
 import { CAPACITY_RETRY_MS, isCapacityRejection } from "./queue"
 import { GITHUB_TOKEN_KEY, workspaceID } from "./vault"
 import { accountStateKey, LEGACY_ACCOUNT_STATE_KEY, parseConversationKey } from "./tenancy"
@@ -46,7 +48,40 @@ import {
 } from "./archive-crypto"
 import { deriveWorkspaceKey } from "@chester-hill-solutions/vault/core"
 import { plaintextArchivesAllowed } from "./archive-policy"
-import { auxAfterEvent, emptyAux, emptyUsage, sumUsage, type UsageTotals } from "./usage"
+import { durableUsageEvent } from "./usage"
+import { ACCOUNTING_POLICY_ID, AccountingPolicyError, assertAccountingPolicy } from "./accounting-policy"
+import { classifyRecovery, recoverySnapshotID, type RecoveryAuthority, type RecoveryHold, type RecoveryRetirement } from "./recovery"
+import { handleSlackCommand } from "./slack-commands"
+import { hasConnectedProvider } from "./onboarding"
+import { parseSlackCommand } from "./slack-command-format"
+import { answerHint, describeForm, formButtons, parseFormAnswer, visibleFields, type Form, type FormAnswer } from "./slack-forms"
+
+type UnknownRecord = Record<string, unknown>
+
+interface UsageCutoverReceipt {
+  cutoverID: string
+  sessionID: string
+  throughSeq: number
+  expectedSnapshotID: string
+  openingBalances: unknown
+  createdAt: number
+  historicalUsageUnreconciled: true
+}
+
+interface UsageCutoverLedger {
+  conversationID: string
+  rows: UnknownRecord[]
+  legacyRows: UnknownRecord[]
+  holds: RecoveryHold[]
+  blockers: unknown[]
+  receipt?: UsageCutoverReceipt
+  snapshotID: string
+  retirement?: RecoveryRetirement
+}
+
+function isRecord(value: unknown): value is UnknownRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
 
 /** The fields of a pending permission the harness forwards. */
 interface PermissionSummary {
@@ -85,7 +120,17 @@ export interface MessageRequest {
 export interface SlackEventRequest {
   eventID?: string
   replyTs?: string
+  appUrl?: string
   event: NonNullable<SlackEventEnvelope["event"]>
+}
+
+export interface SlackFormRequest {
+  sessionID: string
+  formID: string
+  channel: string
+  cancel?: boolean
+  field?: string
+  value?: string | number | boolean
 }
 
 export interface PermissionRequest {
@@ -94,12 +139,23 @@ export interface PermissionRequest {
   sessionID?: string
 }
 
+export type BudgetReservationResult =
+  | { kind: "granted"; reservation: BudgetReservation }
+  | { kind: "denied"; message: string; spentUSD: number; reservedUSD: number; budgetUSD: number }
+  | { kind: "conflict"; message: string }
+  | { kind: "already-dispatched"; message: string; reservation: BudgetReservation }
+  | { kind: "unavailable"; message: string }
+
 /**
  * One Durable Object per conversation. Transport-neutral: every event is
  * emitted to SSE subscribers, and delivered to Slack when a Slack target is set.
  */
 export class Conversation extends DurableObject<Env> {
   private readonly store: ConversationStore
+  /** Serialize durable usage replays (settlement may race the alarm pump). */
+  private usageTail: Promise<void> = Promise.resolve()
+  /** Serialize checkpoint publication through pruning within this instance. */
+  private checkpointTail: Promise<void> = Promise.resolve()
   private readonly subscribers = new Set<ReadableStreamDefaultController<Uint8Array>>()
   private heartbeat: ReturnType<typeof setInterval> | undefined
   private streaming = false
@@ -108,6 +164,8 @@ export class Conversation extends DurableObject<Env> {
   /** This instance has verified the container for the current spec. */
   private ready = false
   private opencodePort?: ContainerPort
+  /** Control-server identity proving which foreground accounting runtime is serving. */
+  private opencodeGeneration?: string
   /** Bearer token the container control server requires. */
   private controlTokenValue?: string
   /** Event names seen on the warm stream, for diagnostics. */
@@ -118,12 +176,23 @@ export class Conversation extends DurableObject<Env> {
   private startMode: "image" | "snapshot" | "none" = "none"
   /** An admission is in flight in this instance; alarms must not reset it. */
   private admitting = false
+  /** Fences admissions and polling while an operator recovery action is in flight. */
+  private recoveryAction = false
   /** This instance holds a container lease from the Settings DO. */
   private leaseHeld = false
   /** The inactivity timeout was applied to the current container. */
   private inactivitySet = false
   /** Conversation key, sent by the Worker; admin traffic skips the cap. */
   private key?: string
+  /** Onboarding credential epoch copied into this legacy conversation instance. */
+  private providerSyncAt?: number
+  /** Source onboarding work must finish before its runtime can be restarted. */
+  private onboardingOperations = 0
+  /** Durable binding for the single opt-in runtime canary; all others default to base. */
+  private containerImageVariant?: "base" | "evented"
+  /** Persistent native event capability, attested for one exact runtime generation. */
+  private eventPersistence?: boolean
+  private eventPersistenceGeneration?: string
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
@@ -136,10 +205,51 @@ export class Conversation extends DurableObject<Env> {
     if (url.pathname === "/message") return this.onMessage((await request.json()) as MessageRequest)
     if (url.pathname === "/slack") return this.onSlackEvent((await request.json()) as SlackEventRequest)
     if (url.pathname === "/permission") return this.onPermission((await request.json()) as PermissionRequest)
+    if (url.pathname === "/form" && request.method === "POST") return this.onSlackForm((await request.json()) as SlackFormRequest)
     if (url.pathname === "/events") return this.onEvents(request)
     if (url.pathname === "/context") return this.onContext()
+    if (url.pathname === "/accounting/cutover" && request.method === "GET") return this.previewAccountingCutover()
+    if (url.pathname === "/accounting/cutover" && request.method === "POST") {
+      let parsed: unknown
+      try {
+        parsed = await request.json()
+      } catch {
+        return Response.json({ error: "valid JSON is required" }, { status: 400 })
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) ||
+        typeof (parsed as Record<string, unknown>).expectedPlanID !== "string" ||
+        !/^[a-f0-9]{64}$/.test((parsed as Record<string, string>).expectedPlanID)) {
+        return Response.json({ error: "expectedPlanID must be a SHA-256 plan id" }, { status: 400 })
+      }
+      return this.applyAccountingCutover((parsed as { expectedPlanID: string }).expectedPlanID)
+    }
+    if (url.pathname === "/recovery" && request.method === "GET") return this.inspectRecovery()
+    if (url.pathname === "/recovery" && request.method === "POST") {
+      let parsed: unknown
+      try {
+        parsed = await request.json()
+      } catch {
+        return Response.json({ error: "valid JSON is required" }, { status: 400 })
+      }
+      if (!isRecord(parsed) || Object.keys(parsed).some((key) => key !== "action" && key !== "expectedSnapshotID") ||
+        (parsed.action !== "retry" && parsed.action !== "cancel_before_dispatch") ||
+        typeof parsed.expectedSnapshotID !== "string" || !/^[a-f0-9]{64}$/.test(parsed.expectedSnapshotID)) {
+        return Response.json({ error: "action and SHA-256 expectedSnapshotID are required" }, { status: 400 })
+      }
+      return this.actOnRecovery(parsed.action, parsed.expectedSnapshotID)
+    }
     if (url.pathname === "/state") return Response.json(await this.store.get())
     if (url.pathname === "/health") return Response.json({ ok: true })
+    if (url.pathname === "/provider-credentials") return this.onProviderCredentials(request)
+    if (url.pathname === "/provider-status") {
+      if (this.key !== ONBOARDING_KEY || request.method !== "GET") return Response.json({ error: "forbidden" }, { status: 403 })
+      try {
+        const providers = await this.withClient((client) => client.integration.list(), false)
+        return Response.json({ connected: hasConnectedProvider(providers.data) })
+      } catch {
+        return Response.json({ error: "provider status unavailable", retryable: true }, { status: 503 })
+      }
+    }
     if (url.pathname.startsWith("/onboarding")) return this.onOnboarding(url.pathname, request)
     if (url.pathname === "/reset" && request.method === "POST") return this.onReset()
     if (url.pathname === "/recycle" && request.method === "POST") return this.onRecycle()
@@ -160,6 +270,9 @@ export class Conversation extends DurableObject<Env> {
         client.session.context({ sessionID: state.sessionID as string }),
       ).catch((error) => ({ error: errorMessage(error) }))
       return Response.json({ messages })
+    }
+    if (url.pathname === "/debug/providers" && request.method === "GET") {
+      return this.onDebugProviders()
     }
     if (url.pathname === "/debug/snapshot/invalidate" && request.method === "POST") {
       // Ops/test seam: poison the stored handle so the next start must fall
@@ -203,15 +316,6 @@ export class Conversation extends DurableObject<Env> {
 
     const prompt = input.user ? `${input.user}: ${text}` : text
 
-    const spent = await this.budgetBlocked()
-    if (spent !== undefined) {
-      await releaseClaim()
-      return Response.json(
-        { ok: false, error: "daily budget reached", spentUSD: spent },
-        { status: 429 },
-      )
-    }
-
     if (!(await this.claimAdmission())) {
       const queued = await this.enqueue(prompt, undefined)
       if (!queued) {
@@ -225,8 +329,6 @@ export class Conversation extends DurableObject<Env> {
     try {
       sessionID = await this.ensureSession(text, input.transport ?? "http", input.slack)
       baseline = await this.turnBaseline(sessionID)
-      // Once this call returns, the prompt has been accepted by OpenCode.
-      await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
     } catch (err) {
       this.admitting = false
       void this.count("admission.failed")
@@ -239,9 +341,70 @@ export class Conversation extends DurableObject<Env> {
       }
       return Response.json({ ok: true, queued: true, error: errorMessage(err) }, { status: 202 })
     }
+
+    const reservation = await this.acquireBudgetReservation()
+    if (reservation.kind === "denied") {
+      this.admitting = false
+      await this.store.advance("idle")
+      await releaseClaim()
+      return Response.json(
+        {
+          ok: false,
+          error: reservation.message,
+          spentUSD: reservation.spentUSD,
+          reservedUSD: reservation.reservedUSD,
+          budgetUSD: reservation.budgetUSD,
+        },
+        { status: 429 },
+      )
+    }
+    if (reservation.kind === "conflict" || reservation.kind === "unavailable") {
+      this.admitting = false
+      await this.store.advance("idle")
+      await releaseClaim()
+      return Response.json(
+        { ok: false, error: reservation.message, reservation: reservation.kind },
+        { status: 503 },
+      )
+    }
+    if (reservation.kind === "already-dispatched") {
+      await this.resumeDispatchedTurn()
+      return Response.json(
+        { ok: false, error: reservation.message, reservation: reservation.kind },
+        { status: 503 },
+      )
+    }
+    if (!(await this.markBudgetReservationDispatched(reservation.reservation, baseline))) {
+      this.admitting = false
+      await this.store.advance("idle")
+      await releaseClaim()
+      return Response.json(
+        { ok: false, error: "could not persist budget dispatch state", reservation: "unavailable" },
+        { status: 503 },
+      )
+    }
+    try {
+      // Once the durable dispatched marker is written, any transport error is
+      // ambiguous: keep the hold and never turn it into queueable work.
+      await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
+    } catch (err) {
+      await this.recordAcceptedTurn(baseline)
+      if (idempotencyKey) await this.store.markTombstone(`msg:${idempotencyKey}`).catch(() => {})
+      await this.deliver({
+        type: "error",
+        message: `prompt dispatch outcome is unknown; reservation retained: ${errorMessage(err)}`,
+      }).catch(() => {})
+      return Response.json(
+        { ok: false, error: "prompt dispatch outcome is unknown; reservation retained" },
+        { status: 502 },
+      )
+    }
     // The prompt is accepted; a bookkeeping or stream failure must not
     // re-enqueue it, or the model would be charged twice for one message.
     await this.recordAcceptedTurn(baseline)
+    if (idempotencyKey) {
+      await this.store.markTombstone(`msg:${idempotencyKey}`).catch(() => {})
+    }
     const settings = await this.settings().catch(() => undefined)
     if (settings?.streaming) this.ctx.waitUntil(this.startStream(sessionID))
     return Response.json({ ok: true, sessionID })
@@ -262,9 +425,89 @@ export class Conversation extends DurableObject<Env> {
     }
   }
 
+  /** Resume polling a persisted ambiguous dispatch without resetting its turn metadata. */
+  private async resumeDispatchedTurn(): Promise<void> {
+    this.admitting = false
+    if (!(await this.store.advance("running"))) {
+      await this.store.patch({ phase: "running" }).catch(() => {})
+    }
+    await this.ctx.storage.setAlarm(Date.now() + POLL_MS).catch(() => {})
+  }
+
   private async settings(): Promise<HarnessSettings> {
     const res = await this.env.SETTINGS.getByName("global").fetch("https://settings/get")
     return (await res.json()) as HarnessSettings
+  }
+
+  /** Internal-only source for a new legacy conversation's provider credentials. */
+  private async onProviderCredentials(request: Request): Promise<Response> {
+    if (this.key !== ONBOARDING_KEY) return Response.json({ error: "forbidden" }, { status: 403 })
+    if (request.method !== "GET") return Response.json({ error: "method not allowed" }, { status: 405 })
+    try {
+      const credentials = await this.withClient((client) => client.credential.list(), false)
+      return Response.json(credentials.filter((credential) => credential.active && credential.value.type === "key"))
+    } catch {
+      return Response.json({ error: "provider credentials unavailable" }, { status: 503 })
+    }
+  }
+
+  /** Read-only, secret-free provider diagnostics for the current session location. */
+  private async onDebugProviders(): Promise<Response> {
+    const state = await this.store.get()
+    if (!state.sessionID) {
+      return Response.json({ session: null, integrations: [], providers: [], models: [] })
+    }
+    // Diagnostics must never cold-start, configure, sync credentials, or recycle a container.
+    if (!this.ready || !this.opencodePort || !this.opencodeGeneration || (this.ctx.container && !this.ctx.container.running)) {
+      return Response.json({ error: "provider diagnostics unavailable" }, { status: 503 })
+    }
+    try {
+      const client = makeClient(portFetch(this.opencodePort))
+      const session = await client.session.get({ sessionID: state.sessionID })
+      const location = { directory: session.location.directory }
+      const [integrations, providers, models] = await Promise.all([
+        client.integration.list({ location }),
+        client.provider.list({ location }),
+        client.model.list({ location }),
+      ])
+      const result = {
+        session: {
+          id: session.id,
+          location,
+          ...(session.model
+            ? {
+                model: {
+                  providerID: session.model.providerID,
+                  id: session.model.id,
+                  ...(session.model.variant === undefined ? {} : { variant: session.model.variant }),
+                },
+              }
+            : {}),
+        },
+        integrations: integrations.data.map((integration) => ({
+          id: integration.id,
+          connections: integration.connections.map((connection, index) => ({
+            type: connection.type,
+            ...(connection.type === "credential" ? { id: connection.id, method: connection.method } : {}),
+            ...(index === 0 ? { selected: true } : {}),
+          })),
+        })),
+        providers: providers.data.map((provider) => ({
+          id: provider.id,
+          activation: provider.activation,
+          ...(provider.integrationID ? { integrationID: provider.integrationID } : {}),
+        })),
+        models: models.data.map((model) => ({
+          providerID: model.providerID,
+          id: model.id,
+          enabled: model.enabled,
+          type: model.type ?? "chat",
+        })),
+      }
+      return Response.json(result)
+    } catch {
+      return Response.json({ error: "provider diagnostics unavailable" }, { status: 503 })
+    }
   }
 
   /** Decrypt one stored credential through the Settings DO. */
@@ -288,48 +531,88 @@ export class Conversation extends DurableObject<Env> {
    * server, so the Worker only forwards the authenticated request.
    */
   private async onOnboarding(pathname: string, request: Request): Promise<Response> {
-    const path = pathname.slice("/onboarding".length) || "/"
+    const blocksSettingsRestart = this.key === ONBOARDING_KEY
+    if (blocksSettingsRestart) this.onboardingOperations++
     try {
-      await this.ensureReady()
-      const control = await this.port(CONTROL_PORT)
-      const body =
-        request.method === "GET" || request.method === "HEAD" ? undefined : await request.text()
-      const res = await control.fetch(`http://container${path}`, {
-        method: request.method,
-        ...(body === undefined ? {} : { body }),
-        signal: AbortSignal.timeout(120_000),
-      })
-      // The state snapshot pauses OpenCode; the next call must start it again.
-      if (path === "/state-checkpoint" && res.ok) {
-        this.ready = false
-        this.opencodePort = undefined
+      const path = pathname.slice("/onboarding".length) || "/"
+      try {
+        // Return provider/model catalogues through the same authenticated SDK
+        // path used elsewhere in the harness. Forwarding the control server's
+        // special integration response can cross two Workers with stale
+        // compression metadata and lose its body at the service-binding edge.
+        if (request.method === "GET" && path === "/integrations") {
+          const integrations = await this.withClient((client) => client.integration.list(), false)
+          return Response.json(integrations)
+        }
+        if (request.method === "GET" && path === "/models") {
+          const models = await this.withClient(
+            (client) => client.model.list({ location: { directory: "/workspace" } }),
+            false,
+          )
+          return Response.json(models)
+        }
+        await this.ensureReady()
+        const control = await this.port(CONTROL_PORT)
+        const body =
+          request.method === "GET" || request.method === "HEAD" ? undefined : await request.text()
+        const res = await control.fetch(`http://container${path}`, {
+          method: request.method,
+          ...(body === undefined ? {} : { body }),
+          signal: AbortSignal.timeout(120_000),
+        })
+        let responseBody: BodyInit | null = res.body
+        // The state snapshot pauses OpenCode; the next call must start it again.
+        if (path === "/state-checkpoint" && res.ok) {
+          this.ready = false
+          this.opencodePort = undefined
+          // This endpoint is a streamed account archive. Finish consuming it
+          // before dropping the onboarding operation fence; a settings-driven
+          // restart must not interrupt the archive stream.
+          responseBody = await res.arrayBuffer()
+        }
+        // fetch has already decoded the body. Keeping the upstream encoding here
+        // makes a second service-binding consumer try to decompress it again.
+        const headers = new Headers(res.headers)
+        headers.delete("content-encoding")
+        headers.delete("content-length")
+        return new Response(responseBody, { status: res.status, headers })
+      } catch (error) {
+        // A cold start can outlast the port wait. Report it so the wizard can
+        // retry instead of surfacing an opaque Worker exception.
+        return Response.json(
+          { error: errorMessage(error), retryable: true },
+          { status: 503 },
+        )
       }
-      return new Response(res.body, { status: res.status, headers: res.headers })
-    } catch (error) {
-      // A cold start can outlast the port wait. Report it so the wizard can
-      // retry instead of surfacing an opaque Worker exception.
-      return Response.json(
-        { error: errorMessage(error), retryable: true },
-        { status: 503 },
-      )
+    } finally {
+      if (blocksSettingsRestart) this.onboardingOperations--
     }
   }
 
   /** Hard reset: drop the container and this conversation's stored state. */
   private async onReset(): Promise<Response> {
-    try {
-      await this.ctx.container?.destroy()
-    } catch {
-      /* already stopped */
-    }
-    await this.releaseLease()
-    this.ready = false
-    this.opencodePort = undefined
-    // A reset must not leave a checkpoint that the next cold start would
-    // restore over the freshly cleared conversation.
-    await this.deleteCheckpoints()
-    await this.ctx.storage.deleteAll()
-    return Response.json({ ok: true })
+    return this.withAdmissionLock(async () => {
+      const blocked = await this.blockLifecycleDuringActiveTurn()
+      if (blocked) return blocked
+      return this.withUsageLifecycle(async () => {
+        try {
+          await this.ctx.container?.destroy()
+        } catch {
+          /* already stopped */
+        }
+        await this.releaseLease()
+        this.ready = false
+        this.opencodePort = undefined
+        this.opencodeGeneration = undefined
+        this.eventPersistence = undefined
+        this.eventPersistenceGeneration = undefined
+        // A reset must not leave a checkpoint that the next cold start would
+        // restore over the freshly cleared conversation.
+        await this.deleteCheckpoints()
+        await this.ctx.storage.deleteAll()
+        return Response.json({ ok: true })
+      })
+    })
   }
 
   /** Remove every archived workspace for this conversation, including legacy keys. */
@@ -349,44 +632,97 @@ export class Conversation extends DurableObject<Env> {
    * kept: this is what a long-lived conversation needs after an image deploy.
    */
   private async onRecycle(): Promise<Response> {
-    // Capture a snapshot before stopping so the next start is fast. The R2
-    // archive is the portable source of truth, so make sure it is current
-    // before the image snapshot can be invalidated. A failed checkpoint must
-    // stop the recycle: an image change makes the snapshot stale, so the next
-    // start would restore an older archive and lose the latest turn.
-    const saved = await this.checkpoint()
-    if (!saved) {
-      return Response.json(
-        { ok: false, error: "checkpoint failed; not recycling" },
-        { status: 503 },
-      )
-    }
-    await this.captureSnapshot()
-    try {
-      await this.ctx.container?.destroy()
-    } catch {
-      /* already stopped */
-    }
-    await this.releaseLease()
-    this.ready = false
-    this.opencodePort = undefined
-    return Response.json({ ok: true })
+    return this.withAdmissionLock(async () => {
+      const blocked = await this.blockLifecycleDuringActiveTurn()
+      if (blocked) return blocked
+
+      // R2 checkpoints are portable across image versions. Capturing the old
+      // rootfs here would pin the next start to its retired control server.
+      // Keep the old runtime intact unless its current state is checkpointed.
+      const saved = await this.checkpoint()
+      if (!saved) {
+        return Response.json(
+          { ok: false, error: "checkpoint failed; not recycling" },
+          { status: 503 },
+        )
+      }
+      await this.clearSnapshot()
+      try {
+        await this.ctx.container?.destroy()
+      } catch {
+        /* already stopped */
+      }
+      await this.releaseLease()
+      this.ready = false
+      this.opencodePort = undefined
+      this.opencodeGeneration = undefined
+      this.eventPersistence = undefined
+      this.eventPersistenceGeneration = undefined
+      this.inactivitySet = false
+      return Response.json({ ok: true })
+    })
   }
 
   /** Remove the workspace archives and this conversation's stored state. */
   private async onDelete(): Promise<Response> {
-    try {
-      await this.ctx.container?.destroy()
-    } catch {
-      /* already stopped */
+    return this.withAdmissionLock(async () => {
+      const blocked = await this.blockLifecycleDuringActiveTurn()
+      if (blocked) return blocked
+      return this.withUsageLifecycle(async () => {
+        try {
+          await this.ctx.container?.destroy()
+        } catch {
+          /* already stopped */
+        }
+        await this.releaseLease()
+        this.ready = false
+        this.opencodePort = undefined
+        this.opencodeGeneration = undefined
+        this.eventPersistence = undefined
+        this.eventPersistenceGeneration = undefined
+        await this.deleteCheckpoints()
+        await this.ctx.storage.deleteAll()
+        logEvent("conversation.deleted")
+        return Response.json({ ok: true })
+      })
+    })
+  }
+
+  /** Do not destroy state or archives while a turn or owned hold is unresolved. */
+  private async blockLifecycleDuringActiveTurn(): Promise<Response | undefined> {
+    const state = await this.store.get()
+    const phase = state.phase ?? "idle"
+    const active = phase === "admitting" || phase === "running" || phase === "settling" || phase === "queued"
+    if (state.budgetReservation || active) {
+      return Response.json(
+        { ok: false, error: "conversation has unresolved work; wait for it to settle before reset or delete" },
+        { status: 409 },
+      )
     }
-    await this.releaseLease()
-    this.ready = false
-    this.opencodePort = undefined
-    await this.deleteCheckpoints()
-    await this.ctx.storage.deleteAll()
-    logEvent("conversation.deleted")
-    return Response.json({ ok: true })
+    return undefined
+  }
+
+  /** Keep the usage queue locked through cleanup so a late replay cannot resurrect state. */
+  private withUsageLifecycle(cleanup: () => Promise<Response>): Promise<Response> {
+    return this.enqueueUsageReplay(async () => {
+      try {
+        const state = await this.store.get()
+        if (state.sessionID) {
+          await this.replayUsageLog(state.sessionID)
+          const refreshed = await this.store.get()
+          const execution = refreshed.usageExecution
+          if (execution?.sessionID === state.sessionID &&
+            (execution.startedSeq > execution.terminalSeq || execution.latestStepSeq > execution.terminalSeq)) {
+            throw new Error("provider execution is not terminal; lifecycle cleanup is unsafe")
+          }
+        }
+      } catch (error) {
+        const message = errorMessage(error)
+        await this.store.patch({ usageError: message }).catch(() => {})
+        return Response.json({ ok: false, error: `usage replay failed: ${message}`, retryable: true }, { status: 503 })
+      }
+      return cleanup()
+    })
   }
 
   /** Increment a harness counter; counting must never fail a turn. */
@@ -426,9 +762,13 @@ export class Conversation extends DurableObject<Env> {
   protected startOptions(): ContainerStartupOptions {
     const images = (this.ctx.container as unknown as { images?: Record<string, string> } | undefined)
       ?.images
+    const eventedCanary = this.containerImageVariant === "evented" || this.isEventedCanary()
+    const image = eventedCanary ? images?.evented : images?.base
+    if (eventedCanary && !image) throw new Error("evented canary image is not configured")
+    if (!eventedCanary && !image) throw new Error("base container image is not configured")
     return {
       enableInternet: true,
-      image: images?.base,
+      image,
       // `basic` has no exact equivalent on this policy; standard-1 is the
       // closest size with enough memory for OpenCode plus stow.
       instance: "standard-1",
@@ -438,7 +778,132 @@ export class Conversation extends DurableObject<Env> {
 
   /** A snapshot to restore instead of a fresh start, when supported. */
   protected async snapshotHandle(): Promise<ContainerSnapshot | undefined> {
+    const binding = await this.ctx.storage.get<unknown>("containerImageVariant")
+    if (binding === "evented" || this.containerImageVariant === "evented" || this.isEventedCanary()) return undefined
     return this.ctx.storage.get<ContainerSnapshot>("snapshot")
+  }
+
+  /** Only one explicitly configured canary conversation may start the evented image. */
+  private isEventedCanary(): boolean {
+    const canaryKey = this.env.EVENTED_CANARY_KEY?.trim()
+    return Boolean(canaryKey && this.key === canaryKey)
+  }
+
+  private canRouteFreshConversationsToEvented(): boolean {
+    return this.env.EVENTED_FRESH_CONVERSATIONS === "true"
+  }
+
+  /**
+   * Opt-in image routing for a conversation with no prior runtime/session
+   * history. Only command/dedupe bookkeeping from never-started conversations
+   * is tolerated; any other durable key keeps the conversation on the base image.
+   */
+  private async isFreshUnstartedConversation(container: NonNullable<typeof this.ctx.container>): Promise<boolean> {
+    if (container.running) return false
+    const stored = await this.ctx.storage.list()
+    for (const key of stored.keys()) {
+      if (key === "state") continue
+      const match = /^tombstones:(\d{4}-\d{2}-\d{2})$/.exec(key)
+      if (!match) return false
+      const date = match[1]!
+      try {
+        if (new Date(`${date}T00:00:00.000Z`).toISOString().slice(0, 10) !== date) return false
+      } catch {
+        return false
+      }
+    }
+
+    const value = await this.ctx.storage.get<unknown>("state")
+    if (value === undefined) return true
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false
+    const state = value as Record<string, unknown>
+    const allowed = new Set([
+      "phase", "seen", "pending", "slackEngaged", "modelOverride",
+      "transport", "slack", "announcedForms",
+    ])
+    if (Object.entries(state).some(([key, field]) => field !== undefined && !allowed.has(key))) return false
+    if (state.phase !== undefined && state.phase !== "idle" && state.phase !== "admitting") return false
+    if (state.seen !== undefined &&
+      (!Array.isArray(state.seen) || !state.seen.every((id) => typeof id === "string"))) return false
+    if (state.pending !== undefined &&
+      (!state.pending || typeof state.pending !== "object" || Array.isArray(state.pending) ||
+        Object.keys(state.pending).length !== 0)) return false
+    if (state.slackEngaged !== undefined && typeof state.slackEngaged !== "boolean") return false
+    if (state.modelOverride !== undefined && typeof state.modelOverride !== "string") return false
+    if (state.transport !== undefined && state.transport !== "http" && state.transport !== "slack") return false
+    if (state.slack !== undefined) {
+      if (!state.slack || typeof state.slack !== "object" || Array.isArray(state.slack)) return false
+      const target = state.slack as Record<string, unknown>
+      if (Object.keys(target).some((key) => key !== "channel" && key !== "replyTs") ||
+        typeof target.channel !== "string" || !target.channel ||
+        (target.replyTs !== undefined && typeof target.replyTs !== "string")) return false
+    }
+    if (state.announcedForms !== undefined &&
+      (!Array.isArray(state.announcedForms) || state.announcedForms.length !== 0)) return false
+    return true
+  }
+
+  /** Bind the canary image only on a fresh conversation immediately before first start. */
+  private async prepareContainerImageVariant(container: NonNullable<typeof this.ctx.container>): Promise<void> {
+    const stored = await this.ctx.storage.get<unknown>("containerImageVariant")
+    if (stored !== undefined) {
+      if (stored !== "evented") throw new Error("unknown container image binding; refusing to fall back")
+      this.containerImageVariant = "evented"
+      this.startOptions()
+      return
+    }
+
+    const explicitlySelected = this.isEventedCanary()
+    if (!explicitlySelected && !this.canRouteFreshConversationsToEvented()) {
+      this.containerImageVariant = "base"
+      this.startOptions()
+      return
+    }
+    if (!explicitlySelected && !(await this.isFreshUnstartedConversation(container))) {
+      this.containerImageVariant = "base"
+      this.startOptions()
+      return
+    }
+    this.containerImageVariant = "evented"
+    // Resolve the named image before any durable write. Persist the binding
+    // only after strict freshness validation, but before token/lease creation,
+    // so a capacity retry cannot accidentally retarget this conversation.
+    this.startOptions()
+    if (explicitlySelected) await this.assertFreshEventedCanary()
+    await this.ctx.storage.put("containerImageVariant", "evented")
+  }
+
+  private async assertFreshEventedCanary(): Promise<void> {
+    const keys = await this.ctx.storage.list()
+    // A binding can only be written after this check, so any existing token or
+    // other key is evidence this is not a genuinely fresh conversation.
+    if ([...keys.keys()].some((key) => key !== "state")) {
+      throw new Error("evented canary requires a fresh conversation with no history or holds")
+    }
+    const state = await this.ctx.storage.get<ConversationState>("state")
+    if (!state) return
+    const allowedKeys = new Set(["phase", "seen", "pending", "slackEngaged"])
+    if (Object.keys(state).some((key) => !allowedKeys.has(key)) ||
+      state.phase !== "admitting" ||
+      (state.seen?.length ?? 0) > 1 ||
+      Object.keys(state.pending ?? {}).length > 0 ||
+      (state.slackEngaged !== undefined && state.slackEngaged !== true)) {
+      throw new Error("evented canary requires a fresh conversation with no history or holds")
+    }
+  }
+
+  private async loadContainerImageVariant(container?: NonNullable<typeof this.ctx.container>): Promise<void> {
+    const stored = await this.ctx.storage.get<unknown>("containerImageVariant")
+    if (stored !== undefined) {
+      if (stored !== "evented") throw new Error("unknown container image binding; refusing to fall back")
+      if (!container?.images?.evented) throw new Error("evented canary image is not configured")
+      this.containerImageVariant = "evented"
+      return
+    }
+    if (this.isEventedCanary() && container?.running) {
+      throw new Error("running evented canary container has no durable image binding")
+    }
+    this.containerImageVariant = undefined
   }
 
   /** Drop a snapshot that cannot be used (image change, corruption). */
@@ -511,11 +976,19 @@ export class Conversation extends DurableObject<Env> {
   private async startContainer(): Promise<boolean> {
     const container = this.ctx.container
     if (!container) throw new Error("no container bound")
-    // The token must exist before the container process starts, because it is
-    // passed in the container environment.
-    await this.controlToken()
-    await this.acquireLease()
+    const imageBinding = await this.ctx.storage.get<unknown>("containerImageVariant")
+    if (imageBinding !== undefined && imageBinding !== "evented") {
+      throw new Error("unknown container image binding; refusing to fall back")
+    }
+    if (imageBinding === "evented") this.containerImageVariant = "evented"
+    // Resolve and durably bind the selected image before token creation or
+    // lease acquisition. A canary capacity retry then reuses this binding.
+    await this.prepareContainerImageVariant(container)
     try {
+      // The token must exist before the container process starts, because it is
+      // passed in the container environment.
+      await this.controlToken()
+      await this.acquireLease()
       return await this.startBoundContainer(container)
     } catch (error) {
       // A failed start must not hold a slot for the lease's full lifetime.
@@ -527,10 +1000,12 @@ export class Conversation extends DurableObject<Env> {
   /** Start a bound container from the snapshot when possible, else the image. */
   private async startBoundContainer(container: NonNullable<typeof this.ctx.container>): Promise<boolean> {
     return withSpan("container.start", async (span) => {
+      await this.prepareContainerImageVariant(container)
+      const options = this.startOptions()
       const snapshot = await this.snapshotHandle()
       if (snapshot) {
       try {
-        container.start({ ...this.startOptions(), image: undefined, containerSnapshot: snapshot } as ContainerStartupOptions)
+        container.start({ ...options, image: undefined, containerSnapshot: snapshot } as ContainerStartupOptions)
         this.startMode = "snapshot"
         this.applyInactivity(container)
         span.setAttribute("container.start_mode", "snapshot")
@@ -544,7 +1019,7 @@ export class Conversation extends DurableObject<Env> {
         await this.clearSnapshot()
       }
       }
-      container.start(this.startOptions())
+      container.start(options)
       this.startMode = "image"
       this.applyInactivity(container)
       span.setAttribute("container.start_mode", "image")
@@ -572,7 +1047,7 @@ export class Conversation extends DurableObject<Env> {
   private claimAdmission(): Promise<boolean> {
     return this.withAdmissionLock(async () => {
       const state = await this.store.get()
-      if (state.queued || this.isBusy(state.phase)) return false
+      if (this.recoveryAction || state.queued || this.isBusy(state.phase)) return false
       await this.store.advance("admitting")
       this.admitting = true
       return true
@@ -581,27 +1056,173 @@ export class Conversation extends DurableObject<Env> {
 
   // -------------------------------------------------------------- Slack adapter
 
+  private async handleSlackControl(text: string, input: SlackEventRequest, target: SlackTarget): Promise<void> {
+    await handleSlackCommand(text, {
+      getState: () => this.store.get(),
+      getDefaultModel: async () => (await this.settings()).model,
+      getModels: async () => (await this.withClient((client) => client.model.list({ location: { directory: "/workspace" } }), false)).data,
+      getSession: (sessionID) => this.withClient((client) => client.session.get({ sessionID }), false),
+      listSessions: async () => (await this.withClient((client) => client.session.list({ limit: 100, order: "desc" }), false)).data,
+      switchModel: (ref) => this.changeSlackModel(ref),
+      selectSession: (sessionID) => this.changeSlackSession(sessionID, target),
+      newSession: () => this.changeSlackSession(undefined, target),
+      stop: () => this.stopSlackWork(),
+      leave: async () => {
+        if (input.event.channel_type === "im") return "This is a DM; use `!new` for a fresh session or `!stop` to interrupt work."
+        await this.store.patch({ slackEngaged: false })
+        return "Stopped following this thread. Mention me to re-engage; use `!stop` to interrupt current work."
+      },
+      listForms: (sessionID) => this.pendingForms(sessionID),
+      answerForm: (sessionID, formID, answer) => this.replyToForm(sessionID, formID, answer),
+      cancelForm: (sessionID, formID) => this.replyToForm(sessionID, formID),
+      usageText: async () => {
+        const response = await this.env.SETTINGS.getByName("global").fetch("https://settings/usage/today")
+        if (!response.ok) throw new Error("Usage is temporarily unavailable")
+        const usage = await response.json() as { date: string; costUSD: number; reservedUSD: number; input: number; output: number }
+        const settings = await this.settings()
+        return `*Workspace usage — ${usage.date} (UTC)*\nReported spend: $${usage.costUSD.toFixed(4)}\nReserved: $${usage.reservedUSD.toFixed(4)}\nTokens: ${usage.input} in / ${usage.output} out\nDaily budget: ${settings.dailyBudgetUSD > 0 ? `$${settings.dailyBudgetUSD.toFixed(2)}` : "unlimited"}\nProvider quota and billing may differ from reported usage.`
+      },
+      reply: (message) => this.postChunked(target.channel, message, target.replyTs),
+      setupUrl: input.appUrl ? `${new URL(input.appUrl).origin}/onboarding/` : "the web app's /onboarding/ page",
+    })
+  }
+
+  /** Model/session changes share the admission lock, so a prompt cannot race them. */
+  private async requireSlackIdle(): Promise<ConversationState> {
+    const state = await this.store.get()
+    if (this.admitting || this.pumping || this.recoveryAction || this.isBusy(state.phase) || state.queued || state.budgetReservation) {
+      throw new Error("This conversation has unfinished work. Use `!stop`, then wait for settlement; `!status` shows any retained usage hold.")
+    }
+    return state
+  }
+
+  private async changeSlackModel(ref: string): Promise<void> {
+    await this.withAdmissionLock(async () => {
+      const state = await this.requireSlackIdle()
+      const model = parseModelRef(ref)
+      if (!model) throw new Error("Use a provider/model reference from `!model`.")
+      if (state.sessionID) await this.withClient((client) => client.session.switchModel({ sessionID: state.sessionID!, model }), false)
+      await this.store.patch({ modelOverride: ref })
+    })
+  }
+
+  /** Change only the session mapping; archives, sources and historical sessions survive. */
+  private async changeSlackSession(sessionID: string | undefined, target: SlackTarget): Promise<void> {
+    await this.withAdmissionLock(async () => {
+      const current = await this.requireSlackIdle()
+      let selectedModel = current.modelOverride
+      if (sessionID) {
+        const detail = await this.withClient((client) => client.session.get({ sessionID }), false)
+        if (detail.id !== sessionID || detail.parentID || detail.location?.directory !== "/workspace") {
+          throw new Error("That session does not belong to this conversation's workspace.")
+        }
+        selectedModel = detail.model ? `${detail.model.providerID}/${detail.model.id}${detail.model.variant ? `#${detail.model.variant}` : ""}` : undefined
+      }
+      const response = await this.withUsageLifecycle(async () => {
+        await this.store.patch({
+          sessionID, modelOverride: selectedModel, transport: "slack", slack: target,
+          turnBaseline: undefined, runStartedAt: undefined, pending: {}, announcedForms: [],
+          lastReply: undefined, lastSlackReply: undefined, reportedError: undefined, lastTurnError: undefined,
+          usage: undefined, usageAux: undefined, usageCursor: undefined, usageTerminal: undefined,
+          usageExecution: undefined, usageError: undefined, settlementError: undefined,
+        })
+        return Response.json({ ok: true })
+      })
+      if (!response.ok) {
+        const body = await response.json() as { error?: string }
+        throw new Error(body.error ?? "Cannot change sessions while usage is unresolved.")
+      }
+    })
+  }
+
+  private async stopSlackWork(): Promise<string> {
+    return this.withAdmissionLock(async () => {
+      const state = await this.store.get()
+      if (this.admitting || state.phase === "admitting") return "A message is being admitted. Retry `!stop` once startup finishes."
+      if (state.queued && !state.budgetReservation && state.phase === "queued") {
+        await this.store.patch({ queued: undefined, phase: "idle" })
+        return "Stopped the queued message before dispatch."
+      }
+      if (!state.sessionID) return "No session mapped here yet."
+      if (!this.isBusy(state.phase) && !state.budgetReservation) return "This session is already idle."
+      await this.withClient((client) => client.session.interrupt({ sessionID: state.sessionID!, resume: false }), false)
+      // Interrupting proves neither zero spend nor successful settlement. The
+      // normal log/context reconciliation retains and eventually releases holds.
+      await this.store.patch({ queued: undefined })
+      await this.ctx.storage.setAlarm(Date.now() + 1000)
+      return "Stop requested; queued follow-ups cleared. Usage settlement will finish before the next turn."
+    })
+  }
+
+  private async pendingForms(sessionID: string): Promise<Form[]> {
+    const rows = await this.withClient((client) => client.session.form.list({ sessionID }), false)
+    const pending: Form[] = []
+    for (const row of rows) {
+      const form = await this.withClient((client) => client.session.form.get({ sessionID, formID: row.id }), false)
+      if (form.sessionID === sessionID && form.state.status === "pending") pending.push(form)
+    }
+    return pending
+  }
+
+  private async replyToForm(sessionID: string, formID: string, answer?: FormAnswer): Promise<void> {
+    await this.withAdmissionLock(async () => {
+      if ((await this.store.get()).sessionID !== sessionID) throw new Error("This question belongs to an older session.")
+      const form = await this.withClient((client) => client.session.form.get({ sessionID, formID }), false)
+      if (form.sessionID !== sessionID || form.state.status !== "pending") throw new Error("This question is no longer waiting for an answer.")
+      if (answer) await this.withClient((client) => client.session.form.reply({ sessionID, formID, answer }), false)
+      else await this.withClient((client) => client.session.form.cancel({ sessionID, formID, message: "Cancelled from Slack" }), false)
+      await this.ctx.storage.setAlarm(Date.now() + 1000)
+    })
+  }
+
+  private async onSlackForm(input: SlackFormRequest): Promise<Response> {
+    try {
+      if (!input || typeof input.sessionID !== "string" || typeof input.formID !== "string") return Response.json({ error: "invalid question" }, { status: 400 })
+      const state = await this.store.get()
+      if (state.sessionID !== input.sessionID || !state.slack || state.slack.channel !== input.channel) return Response.json({ error: "stale question or wrong channel" }, { status: 409 })
+      if (input.cancel === true) await this.replyToForm(input.sessionID, input.formID)
+      else {
+        const form = (await this.pendingForms(input.sessionID)).find((candidate) => candidate.id === input.formID)
+        const fields = form && visibleFields(form)
+        if (!form || fields?.length !== 1 || fields[0]?.key !== input.field ||
+          !["string", "boolean", "number"].includes(typeof input.value)) return Response.json({ error: "invalid question answer" }, { status: 400 })
+        const parsed = parseFormAnswer(form, String(input.value))
+        if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 })
+        await this.replyToForm(input.sessionID, input.formID, parsed.answer)
+      }
+      return Response.json({ ok: true })
+    } catch (error) {
+      return Response.json({ error: errorMessage(error) }, { status: 409 })
+    }
+  }
+
   private async onSlackEvent(input: SlackEventRequest): Promise<Response> {
     const event = input.event
     if (!event.channel || !event.ts) return Response.json({ ok: true })
     if (event.bot_id || event.subtype) return Response.json({ ok: true })
     if (!event.text) return Response.json({ ok: true })
-    if (input.eventID && !(await this.store.claimEvent(input.eventID))) return Response.json({ ok: true })
-
     const text = this.stripMention(event.text)
     if (!text) return Response.json({ ok: true })
-
+    const isDm = event.channel_type === "im"
+    const state = await this.store.get()
+    // Channel message subscriptions exist only to carry replies in engaged
+    // threads. A regular channel message must never become a model turn.
+    if (!isDm && event.type !== "app_mention" &&
+      (!event.thread_ts || !state.slackEngaged)) return Response.json({ ok: true })
+    if (input.eventID && !(await this.store.claimEvent(input.eventID))) return Response.json({ ok: true })
+    if (!isDm && event.type === "app_mention") await this.store.patch({ slackEngaged: true })
     const target: SlackTarget = { channel: event.channel, ...(input.replyTs ? { replyTs: input.replyTs } : {}) }
 
-    // The daily budget is a ceiling for every transport, not just HTTP.
-    const spent = await this.budgetBlocked()
-    if (spent !== undefined) {
-      await this.postChunked(
-        target.channel,
-        `⚠️ Daily budget reached (spent $${spent.toFixed(2)}). Raise the budget in settings or wait for the daily reset.`,
-        target.replyTs,
-      ).catch(() => {})
-      return Response.json({ ok: true })
+    // Management commands must bypass prompt admission, provider quota and
+    // budgets, including unknown commands and failures in their handlers.
+    if (parseSlackCommand(text)) {
+      // A reply can fail after a command has already changed the model/session.
+      // Preserve at-most-once execution even if delivery or the DO then fails.
+      // A user can issue a new command, but a Slack retry cannot repeat an old
+      // mutation against a newer session or a differently ordered session list.
+      if (input.eventID) await this.store.markTombstone(input.eventID)
+      await this.handleSlackControl(text, input, target)
+      return Response.json({ ok: true, command: true })
     }
 
     let prompt = text
@@ -610,26 +1231,41 @@ export class Conversation extends DurableObject<Env> {
     let accepted = false
     try {
       prompt = await this.buildPrompt(event.channel, event.ts, event.thread_ts, text)
-      if (!(await this.claimAdmission())) {
-        const queued = await this.enqueue(prompt, target)
-        accepted = queued
-        if (!queued) {
-          await this.postChunked(
-            target.channel,
-            "⚠️ Container busy and a message is already queued.",
-            target.replyTs,
-          ).catch(() => {})
-        }
-        return Response.json({ ok: true, queued })
+    } catch (err) {
+      logEvent("admission.failed", { transport: "slack", stage: "context" })
+      const queued = await this.enqueue(prompt, target)
+      accepted = queued
+      if (!queued) {
+        await this.postChunked(
+          target.channel,
+          `⚠️ Container busy and a message is already queued: ${errorMessage(err)}`,
+          target.replyTs,
+        ).catch(() => {})
       }
+      if (!accepted && input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
+      return Response.json({ ok: true, queued })
+    }
+
+    if (!(await this.claimAdmission())) {
+      const queued = await this.enqueue(prompt, target)
+      accepted = queued
+      if (!queued) {
+        await this.postChunked(
+          target.channel,
+          "⚠️ Container busy and a message is already queued.",
+          target.replyTs,
+        ).catch(() => {})
+      }
+      if (!accepted && input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
+      return Response.json({ ok: true, queued })
+    }
+
+    try {
       sessionID = await this.ensureSession(text, "slack", target)
       baseline = await this.turnBaseline(sessionID)
-      // Once this call returns, the prompt has been accepted by OpenCode.
-      await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
-      accepted = true
     } catch (err) {
       this.admitting = false
-      logEvent("admission.failed", { transport: "slack" })
+      logEvent("admission.failed", { transport: "slack", stage: "readiness" })
       const queued = await this.enqueue(prompt, target)
       accepted = queued
       if (!queued) {
@@ -640,14 +1276,73 @@ export class Conversation extends DurableObject<Env> {
           target.replyTs,
         ).catch(() => {})
       }
-      return Response.json({ ok: true, queued })
-    } finally {
-      // Only a message we could not accept is released for a Slack redelivery.
       if (!accepted && input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
+      return Response.json({ ok: true, queued })
     }
+
+    const reservation = await this.acquireBudgetReservation()
+    if (reservation.kind === "denied") {
+      this.admitting = false
+      await this.store.advance("idle")
+      await this.postChunked(
+        target.channel,
+        `⚠️ ${reservation.message}. Raise the budget in settings or wait for the daily reset.`,
+        target.replyTs,
+      ).catch(() => {})
+      if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
+      return Response.json({ ok: true })
+    }
+    if (reservation.kind === "conflict" || reservation.kind === "unavailable") {
+      this.admitting = false
+      await this.store.advance("idle")
+      await this.postChunked(
+        target.channel,
+        `⚠️ ${reservation.message}. No prompt was sent; please try again shortly.`,
+        target.replyTs,
+      ).catch(() => {})
+      if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
+      return Response.json({ ok: true })
+    }
+    if (reservation.kind === "already-dispatched") {
+      await this.resumeDispatchedTurn()
+      await this.postChunked(
+        target.channel,
+        "⚠️ A previous prompt has an unresolved dispatch result. This message was not sent; please retry after it settles.",
+        target.replyTs,
+      ).catch(() => {})
+      if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
+      return Response.json({ ok: true })
+    }
+    if (!(await this.markBudgetReservationDispatched(reservation.reservation, baseline))) {
+      this.admitting = false
+      await this.store.advance("idle")
+      await this.postChunked(
+        target.channel,
+        "⚠️ Could not persist dispatch state. No prompt was sent; please retry shortly.",
+        target.replyTs,
+      ).catch(() => {})
+      if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
+      return Response.json({ ok: true })
+    }
+    try {
+      await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
+    } catch (err) {
+      await this.recordAcceptedTurn(baseline)
+      if (input.eventID) await this.store.markTombstone(input.eventID).catch(() => {})
+      await this.deliver({
+        type: "error",
+        message: `prompt dispatch outcome is unknown; reservation retained: ${errorMessage(err)}`,
+      }).catch(() => {})
+      return Response.json({ ok: true })
+    }
+    accepted = true
 
     // The prompt is accepted; bookkeeping and stream failures must not re-send it.
     await this.recordAcceptedTurn(baseline)
+    if (input.eventID) {
+      // Mark event as processed so it stays blocked beyond the 200-event window
+      await this.store.markTombstone(input.eventID).catch(() => {})
+    }
     const settings = await this.settings().catch(() => undefined)
     if (settings?.streaming) this.ctx.waitUntil(this.startStream(sessionID))
     return Response.json({ ok: true, sessionID })
@@ -786,8 +1481,21 @@ export class Conversation extends DurableObject<Env> {
   // ------------------------------------------------------------------- prompt
 
   private async ensureSession(text: string, transport: Transport, slack?: SlackTarget): Promise<string> {
+    await this.ensureReady()
+    if (this.eventPersistence !== true || !this.opencodeGeneration ||
+      this.eventPersistenceGeneration !== this.opencodeGeneration) {
+      throw new AccountingPolicyError("runtime cannot retain usage events; upgrade pending")
+    }
     const state = await this.store.get()
     if (state.sessionID && (await this.sessionUsable(state.sessionID))) {
+      // Drain the durable log before admission. The verified foreground policy
+      // disables title generation and background compaction, so settled
+      // sessions have no permitted auxiliary writer after their terminal fence.
+      await this.refreshUsageFromLog(state.sessionID)
+      // The durable choice is authoritative even if a cold start restored an
+      // archive captured before !model. Switching models makes no model call.
+      const override = parseModelRef(state.modelOverride ?? (await this.settings()).model)
+      if (override) await this.withClient((client) => client.session.switchModel({ sessionID: state.sessionID!, model: override }))
       if (slack && (state.slack?.channel !== slack.channel || state.slack?.replyTs !== slack.replyTs)) {
         await this.store.patch({ slack })
       }
@@ -810,7 +1518,7 @@ export class Conversation extends DurableObject<Env> {
     if (!sessionID) throw new Error("session.create returned no id")
 
     const settings = await this.settings()
-    const model = parseModelRef(settings.model)
+    const model = parseModelRef(state.modelOverride ?? settings.model)
     if (model) {
       await this.withClient((client) => client.session.switchModel({ sessionID, model }))
     }
@@ -823,11 +1531,16 @@ export class Conversation extends DurableObject<Env> {
       ...(state.sessionID
         ? {
             pending: {},
+            announcedForms: [],
             turnBaseline: undefined,
             lastReply: undefined,
             lastSlackReply: undefined,
             reportedError: undefined,
             usage: undefined,
+            usageAux: undefined,
+            usageCursor: undefined,
+            usageTerminal: undefined,
+            usageExecution: undefined,
             usageError: undefined,
           }
         : {}),
@@ -858,26 +1571,31 @@ export class Conversation extends DurableObject<Env> {
    * to the next turn, even before OpenCode has recorded the new user message.
    */
   private async turnBaseline(sessionID: string): Promise<string | undefined> {
-    try {
-      const messages = (await this.withClient((client) =>
-        client.session.context({ sessionID }),
-      )) as MessageInfo[]
-      for (let i = messages.length - 1; i >= 0; i--) {
-        const message = messages[i]
-        if (message?.type === "assistant" && message.id) return message.id
-      }
-    } catch {
-      /* no baseline: fall back to last-user scoping */
+    const messages = (await this.withClient((client) =>
+      client.session.context({ sessionID }),
+    )) as MessageInfo[]
+    if (!Array.isArray(messages)) throw new Error("session context is unreadable while establishing turn baseline")
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i]
+      if (message?.type === "assistant" && message.id) return message.id
     }
     return undefined
   }
 
   private async startRun(turnBaseline?: string): Promise<void> {
     this.admitting = false
+    const current = await this.store.get()
+    const dispatchedAt = current.budgetReservation?.dispatched === true &&
+      typeof current.runStartedAt === "number" && Number.isFinite(current.runStartedAt) && current.runStartedAt > 0
+      ? current.runStartedAt
+      : Date.now()
     await this.store.patch({
       lastReply: undefined,
       lastSlackReply: undefined,
-      runStartedAt: Date.now(),
+      // The durable dispatch marker is written before the provider request.
+      // Preserve that time: an immediate provider error may be timestamped
+      // before the prompt HTTP call returns, and must still belong to this turn.
+      runStartedAt: dispatchedAt,
       turnBaseline,
     })
     if (!(await this.store.advance("running"))) {
@@ -954,7 +1672,7 @@ export class Conversation extends DurableObject<Env> {
       const parse = createSseParser((message) => {
         // OpenCode's stream may name frames `message` and put the type in the
         // JSON payload, so prefer the payload's `type` when present.
-        let parsed: { type?: string } | undefined
+        let parsed: { type?: string; data?: { sessionID?: string } } | undefined
         if (message.data) {
           try {
             parsed = JSON.parse(message.data) as { type?: string }
@@ -968,11 +1686,15 @@ export class Conversation extends DurableObject<Env> {
         if (name === "session.execution.succeeded") void this.pumpOnce()
         if (name === "session.execution.failed") void this.pumpOnce()
         if (name === "session.execution.interrupted") void this.pumpOnce()
-        if (name === "session.usage.updated" && message.data) {
-          this.ctx.waitUntil(this.recordUsage(message.data, "replace"))
-        }
-        if (name === "session.usage.recorded" && message.data) {
-          this.ctx.waitUntil(this.recordUsage(message.data, "add"))
+        if (name === "form.created" || name === "form.replied" || name === "form.cancelled") void this.pumpOnce()
+        if (
+          (name === "session.step.ended" || name === "session.step.failed" ||
+            name === "session.usage.recorded" || name === "session.usage.updated") &&
+          parsed?.data?.sessionID === sessionID
+        ) {
+          // Warm events only trigger the same durable replay path; their
+          // cumulative snapshots are never sent directly to Settings.
+          this.ctx.waitUntil(this.refreshUsageFromLog(sessionID).catch(() => {}))
         }
       })
       for (;;) {
@@ -992,7 +1714,7 @@ export class Conversation extends DurableObject<Env> {
 
   /** One poll: deliver new assistant text, permissions, settle + checkpoint. */
   private async pumpOnce(): Promise<boolean> {
-    if (this.pumping) return false
+    if (this.pumping || this.recoveryAction) return false
     this.pumping = true
     try {
       const state = await this.store.get()
@@ -1010,11 +1732,12 @@ export class Conversation extends DurableObject<Env> {
 
       const sessionID = state.sessionID
       // Context and permissions are independent: fetch them in one round-trip window.
-      const [messages, pending] = await Promise.all([
+      const [messages, pending, questions] = await Promise.all([
         this.withClient((client) => client.session.context({ sessionID })) as Promise<MessageInfo[]>,
         this.withClient((client) => client.permission.list({ sessionID })).catch(
           () => [] as PermissionSummary[],
         ),
+        state.slack ? this.pendingForms(sessionID).catch(() => [] as Form[]) : Promise.resolve([] as Form[]),
       ])
       const reply = latestAssistantReply(messages, state.turnBaseline)
       const settled = isSettled(messages, state.turnBaseline)
@@ -1031,6 +1754,7 @@ export class Conversation extends DurableObject<Env> {
       }
 
       await this.pollPermissions(sessionID, pending)
+      await this.pollQuestions(sessionID, questions)
 
       if (settled || failure) {
         await this.finishTurn(state, reply, failure, messages)
@@ -1080,10 +1804,53 @@ export class Conversation extends DurableObject<Env> {
       ...(failure ? { error: failure.message.slice(0, 200) } : {}),
       queued: Boolean(state.queued),
     })
-    // Usage must not depend on the warm event stream: a deployment with
-    // streaming off still has to feed the daily ledger. The context carries
-    // each step's cost, and the report is absolute per conversation per day.
-    if (messages) await this.recordContextUsage(messages).catch(() => {})
+    if (state.budgetReservation?.dispatched) {
+      const currentTurn = messages ? turnMessages(messages, state.turnBaseline) : []
+      const terminalAssistant = currentTurn.filter((message) => message.type === "assistant").at(-1)
+      const hasTerminalUsage = Boolean(
+        messages && isSettled(messages, state.turnBaseline) &&
+          terminalAssistant && typeof terminalAssistant.cost === "number" &&
+          Number.isFinite(terminalAssistant.cost) && terminalAssistant.cost >= 0,
+      )
+      if (!hasTerminalUsage) {
+        // A terminal runtime error remains visible, but it does not prove the
+        // provider did no work. Keep the hold until current-turn usage exists.
+        if (failure) {
+          const key = failureKey(failure)
+          if (key !== state.reportedError) {
+            await this.deliver({ type: "error", message: failure.message })
+            await this.store.patch({ reportedError: key, lastTurnError: failure.message })
+          }
+        }
+        await this.pauseSettlement("terminal current-turn assistant usage is unavailable; reservation retained")
+        return
+      }
+    }
+    // A terminal context report must be acknowledged before releasing the
+    // exact hold acquired for this turn. A timeout has no terminal context and
+    // cannot prove that provider usage was zero.
+    if (messages) {
+      try {
+        await this.recordContextUsage(messages)
+      } catch (error) {
+        await this.pauseSettlement(`usage report failed: ${errorMessage(error)}`)
+        return
+      }
+    } else if (state.budgetReservation) {
+      await this.pauseSettlement("terminal usage context is unavailable; reservation retained")
+      return
+    }
+    if (state.budgetReservation) {
+      if (failure?.message === "turn timed out") {
+        await this.pauseSettlement("turn timed out without terminal usage context; reservation retained")
+        return
+      }
+      if (!(await this.releaseBudgetReservation(state.budgetReservation))) {
+        await this.pauseSettlement("reservation release was not acknowledged; reservation retained")
+        return
+      }
+      await this.store.patch({ settlementError: undefined })
+    }
     if (failure) {
       const key = failureKey(failure)
       if (key !== state.reportedError) {
@@ -1107,103 +1874,882 @@ export class Conversation extends DurableObject<Env> {
     await this.store.advance("idle")
   }
 
-  /**
-   * Record spend reported by OpenCode. `session.usage.updated` carries the
-   * session's cumulative step totals (replace). `session.usage.recorded`
-   * describes one auxiliary call (title/compaction) and is added once, deduped
-   * by event id. The ledger entry is the sum of both.
-   */
-  private async recordUsage(raw: string, mode: "replace" | "add"): Promise<void> {
-    try {
-      const parsed = JSON.parse(raw) as {
-        id?: string
-        data?: { cost?: number; tokens?: { input?: number; output?: number }; source?: string }
-        cost?: number
-        tokens?: { input?: number; output?: number }
-      }
-      const payload = parsed.data ?? parsed
-      const cost = Number(payload.cost ?? 0) || 0
-      const input = Number(payload.tokens?.input ?? 0) || 0
-      const output = Number(payload.tokens?.output ?? 0) || 0
-      if (cost === 0 && input === 0 && output === 0) return
-      const date = new Date().toISOString().slice(0, 10)
-      const state = await this.store.get()
-      const aux = state.usageAux?.date === date ? state.usageAux : emptyAux(date)
+  /** Keep terminal work visible and retry without promoting queued work. */
+  private async pauseSettlement(message: string): Promise<void> {
+    const current = await this.store.get()
+    if (current.settlementError !== message) {
+      await this.store.patch({ settlementError: message })
+      await this.deliver({ type: "error", message: `Settlement paused: ${message}` }).catch(() => {})
+    }
+    await this.ctx.storage.setAlarm(Date.now() + POLL_MS).catch(() => {})
+  }
 
-      if (mode === "replace") {
-        const step = { date, costUSD: cost, input, output }
-        await this.store.patch({ usage: step, usageError: undefined })
-        await this.reportUsage(sumUsage(step, aux))
-        return
+  private async usageCutoverLedger(reservationID?: string): Promise<UsageCutoverLedger> {
+    const query = new URLSearchParams({ conversationID: this.ctx.id.toString() })
+    if (reservationID) query.set("reservationID", reservationID)
+    const response = await this.env.SETTINGS.getByName("global").fetch(
+      `https://settings/usage/cutover?${query.toString()}`,
+    )
+    if (!response.ok) throw new Error(`usage cutover status was rejected: ${response.status}`)
+    const value: unknown = await response.json()
+    if (!isRecord(value) || value.conversationID !== this.ctx.id.toString() ||
+      typeof value.snapshotID !== "string" || !/^[a-f0-9]{64}$/.test(value.snapshotID) || !Array.isArray(value.rows) ||
+      !Array.isArray(value.legacyRows) || !Array.isArray(value.holds) || !Array.isArray(value.blockers) ||
+      !value.rows.every(isRecord) || !value.legacyRows.every(isRecord)) {
+      throw new Error("usage cutover status is unreadable")
+    }
+    const holds: RecoveryHold[] = value.holds.map((hold): RecoveryHold => {
+      if (!isRecord(hold) || typeof hold.key !== "string" ||
+        (hold.kind !== "reservation" && hold.kind !== "legacy-reservation") ||
+        !(typeof hold.conversationID === "string" || hold.conversationID === null) ||
+        !(typeof hold.reservationID === "string" || hold.reservationID === null) ||
+        !(typeof hold.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(hold.date) || hold.date === null) ||
+        !(typeof hold.costUSD === "number" && Number.isFinite(hold.costUSD) && hold.costUSD >= 0 || hold.costUSD === null) ||
+        (hold.updatedAt !== undefined &&
+          !(typeof hold.updatedAt === "number" && Number.isFinite(hold.updatedAt) || hold.updatedAt === null)) ||
+        (hold.invalidFields !== undefined && (!Array.isArray(hold.invalidFields) ||
+          !hold.invalidFields.every((field) => typeof field === "string"))) ||
+        (hold.kind === "legacy-reservation" && typeof hold.reserved !== "boolean")) {
+        throw new Error("usage cutover hold inventory is unreadable")
       }
-
-      const nextAux = auxAfterEvent(aux, parsed.id, cost, input, output)
-      if (!nextAux) return
-      const step = state.usage?.date === date ? state.usage : emptyUsage(date)
-      await this.store.patch({ usageAux: nextAux, usageError: undefined })
-      await this.reportUsage(sumUsage(step, nextAux))
-    } catch (error) {
-      await this.store.patch({ usageError: errorMessage(error) }).catch(() => {})
+      const invalidFields = Array.isArray(hold.invalidFields) ? [...hold.invalidFields as string[]] : []
+      if (hold.kind === "reservation") {
+        if (typeof hold.conversationID !== "string") invalidFields.push("conversationID")
+        if (typeof hold.reservationID !== "string") invalidFields.push("reservationID")
+        if (typeof hold.date !== "string") invalidFields.push("date")
+        if (typeof hold.costUSD !== "number") invalidFields.push("costUSD")
+      }
+      return {
+        kind: hold.kind,
+        ...(typeof hold.conversationID === "string" ? { conversationID: hold.conversationID } : {}),
+        ...(typeof hold.reservationID === "string" ? { reservationID: hold.reservationID } : {}),
+        ...(typeof hold.date === "string" ? { date: hold.date } : {}),
+        ...(typeof hold.costUSD === "number" ? { costUSD: hold.costUSD } : {}),
+        ...(invalidFields.length ? { invalidFields } : {}),
+      }
+    })
+    let retirement: RecoveryRetirement | undefined
+    if (value.retirement !== undefined) {
+      const raw = value.retirement
+      if (!isRecord(raw) || typeof raw.conversationID !== "string" ||
+        typeof raw.reservationID !== "string" ||
+        (raw.date !== undefined && (typeof raw.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(raw.date))) ||
+        (raw.reason !== "released" && raw.reason !== "cancelled_before_dispatch") ||
+        typeof raw.retiredAt !== "number" || !Number.isFinite(raw.retiredAt) ||
+        (raw.released !== undefined && typeof raw.released !== "boolean")) {
+        throw new Error("usage reservation retirement is unreadable")
+      }
+      retirement = {
+        conversationID: raw.conversationID,
+        reservationID: raw.reservationID,
+        ...(typeof raw.date === "string" ? { date: raw.date } : {}),
+        reason: raw.reason,
+        retiredAt: raw.retiredAt,
+        ...(typeof raw.released === "boolean" ? { released: raw.released } : {}),
+      }
+    }
+    let receipt: UsageCutoverReceipt | undefined
+    if (value.receipt !== undefined) {
+      const raw = value.receipt
+      if (!isRecord(raw) || typeof raw.cutoverID !== "string" || typeof raw.sessionID !== "string" ||
+        !Number.isSafeInteger(raw.throughSeq) || (raw.throughSeq as number) < 0 ||
+        typeof raw.expectedSnapshotID !== "string" || typeof raw.createdAt !== "number" ||
+        raw.historicalUsageUnreconciled !== true) {
+        throw new Error("usage cutover receipt is unreadable")
+      }
+      receipt = raw as unknown as UsageCutoverReceipt
+    }
+    return {
+      conversationID: value.conversationID,
+      rows: value.rows,
+      legacyRows: value.legacyRows,
+      holds,
+      blockers: value.blockers,
+      ...(receipt ? { receipt } : {}),
+      snapshotID: value.snapshotID,
+      ...(retirement ? { retirement } : {}),
     }
   }
 
-  /**
-   * Record today's step spend for this conversation from the message context.
-   * This is the streaming-independent path: it runs at settle time and writes
-   * an absolute per-conversation entry, so a retry or a later poll overwrites
-   * instead of double counting. Auxiliary spend is added on top so a settle
-   * does not drop title/compaction costs.
-   */
-  private async recordContextUsage(messages: MessageInfo[]): Promise<void> {
-    const date = new Date().toISOString().slice(0, 10)
-    const startOfDay = Date.parse(`${date}T00:00:00.000Z`)
-    let costUSD = 0
-    let input = 0
-    let output = 0
-    for (const message of messages) {
-      if (message.type !== "assistant") continue
-      const created = message.time?.created
-      if (typeof created === "number" && toMillis(created) < startOfDay) continue
-      costUSD += Number(message.cost ?? 0) || 0
-      input += Number(message.tokens?.input ?? 0) || 0
-      output += Number(message.tokens?.output ?? 0) || 0
-    }
-    if (costUSD === 0 && input === 0 && output === 0) return
+  private async recoveryStatus(): Promise<UnknownRecord> {
     const state = await this.store.get()
-    const step = { date, costUSD, input, output }
-    const aux = state.usageAux?.date === date ? state.usageAux : emptyAux(date)
-    await this.store.patch({ usage: step, usageError: undefined })
-    await this.reportUsage(sumUsage(step, aux))
+    const localReservation = isRecord(state.budgetReservation) &&
+      typeof state.budgetReservation.reservationID === "string"
+      ? state.budgetReservation.reservationID
+      : undefined
+    let ledger: UsageCutoverLedger | undefined
+    let authority: RecoveryAuthority | undefined
+    let authorityError: string | undefined
+    try {
+      ledger = await this.usageCutoverLedger(localReservation)
+      authority = {
+        conversationID: ledger.conversationID,
+        snapshotID: ledger.snapshotID,
+        holds: ledger.holds,
+        legacyRows: ledger.legacyRows,
+        ...(ledger.retirement ? { retirement: ledger.retirement } : {}),
+      }
+    } catch (error) {
+      authorityError = errorMessage(error)
+    }
+    const live = { admitting: this.admitting, pumping: this.pumping }
+    const classification = classifyRecovery({
+      conversationID: this.ctx.id.toString(), state, authority, live,
+    })
+    const snapshotID = await recoverySnapshotID({
+      conversationID: this.ctx.id.toString(), state, authority, live,
+    })
+    return {
+      conversationID: this.ctx.id.toString(),
+      snapshotID,
+      kind: classification.kind,
+      blockers: classification.blockers,
+      actions: classification.actions,
+      local: {
+        sessionID: state.sessionID ?? null,
+        phase: state.phase ?? "idle",
+        reservation: state.budgetReservation ?? null,
+        queued: state.queued ? {
+          present: true,
+          attempts: state.queued.attempts,
+          nextAttemptAt: state.queued.nextAttemptAt ?? null,
+          lastError: state.queued.lastError ?? null,
+        } : null,
+        usageCursor: state.usageCursor ?? null,
+        usageTerminal: state.usageTerminal ?? null,
+        usageExecution: state.usageExecution ?? null,
+        cachedEvidence: "last_observed_not_fresh_provider_proof",
+        usageError: state.usageError ?? null,
+        settlementError: state.settlementError ?? null,
+        lastTurnError: state.lastTurnError ?? null,
+      },
+      live,
+      authority: ledger ? {
+        conversationID: ledger.conversationID,
+        snapshotID: ledger.snapshotID,
+        holds: ledger.holds,
+        legacyRows: ledger.legacyRows,
+        blockers: ledger.blockers,
+        retirement: ledger.retirement ?? null,
+      } : null,
+      ...(authorityError ? { authorityError } : {}),
+    }
   }
 
-  /** Write an absolute per-conversation/day ledger entry. */
-  private async reportUsage(usage: UsageTotals): Promise<void> {
-    await this.env.SETTINGS.getByName("global").fetch("https://settings/usage", {
-      method: "POST",
-      body: JSON.stringify({ conversationID: this.ctx.id.toString(), ...usage }),
+  private async inspectRecovery(): Promise<Response> {
+    try {
+      return Response.json(await this.recoveryStatus())
+    } catch (error) {
+      return Response.json({ error: errorMessage(error), retryable: true }, { status: 503 })
+    }
+  }
+
+  private async actOnRecovery(
+    action: "retry" | "cancel_before_dispatch",
+    expectedSnapshotID: string,
+  ): Promise<Response> {
+    return this.withAdmissionLock(async () => {
+      const act = async (): Promise<Response> => {
+        if (this.admitting || this.pumping || this.recoveryAction) {
+          return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
+        }
+        const status = await this.recoveryStatus()
+        if (status.snapshotID !== expectedSnapshotID) {
+          return Response.json({ error: "recovery snapshot changed", recovery: status }, { status: 409 })
+        }
+        if (!Array.isArray(status.actions) || !status.actions.includes(action)) {
+          return Response.json({ error: "recovery action is blocked", recovery: status }, { status: 409 })
+        }
+        const current = await this.store.get()
+        const reservation = current.budgetReservation
+        if (!reservation) return Response.json({ error: "local reservation is unavailable" }, { status: 409 })
+        if (action === "retry") {
+          if (reservation.dispatched !== true) {
+            return Response.json({ error: "retry requires a dispatched reservation" }, { status: 409 })
+          }
+          try {
+            this.recoveryAction = true
+            await this.ctx.storage.setAlarm(Date.now())
+            return Response.json({ ok: true, scheduled: true }, { status: 202 })
+          } catch (error) {
+            return Response.json({ error: errorMessage(error), retryable: true }, { status: 503 })
+          } finally {
+            this.recoveryAction = false
+          }
+        }
+
+        {
+          if (this.admitting || this.pumping || this.recoveryAction) {
+            return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
+          }
+          this.recoveryAction = true
+          try {
+            const refreshed = await this.recoveryStatus()
+            if (refreshed.snapshotID !== expectedSnapshotID ||
+              !Array.isArray(refreshed.actions) || !refreshed.actions.includes(action)) {
+              return Response.json({ error: "recovery snapshot changed or action is blocked", recovery: refreshed }, { status: 409 })
+            }
+            const captured = current.budgetReservation
+            if (!captured || captured.dispatched !== false) {
+              return Response.json({ error: "cancellation requires a strictly undispatched proposal" }, { status: 409 })
+            }
+            const refreshedAuthority = isRecord(refreshed.authority) ? refreshed.authority : undefined
+            if (!refreshedAuthority || typeof refreshedAuthority.snapshotID !== "string" ||
+              !/^[a-f0-9]{64}$/.test(refreshedAuthority.snapshotID)) {
+              return Response.json({ error: "Settings authority snapshot is unavailable" }, { status: 503 })
+            }
+            const retirement = isRecord(refreshedAuthority.retirement) ? refreshedAuthority.retirement : undefined
+            if (retirement?.conversationID === this.ctx.id.toString() &&
+              retirement.reservationID === captured.reservationID &&
+              (retirement.reason === "cancelled_before_dispatch" || retirement.reason === "released")) {
+              const cleared = await this.store.clearUndispatchedBudgetProposal(captured)
+              return cleared
+                ? Response.json({ ok: true, cancelled: true, retirement })
+                : Response.json({ error: "local proposal changed after cancellation was recorded" }, { status: 409 })
+            }
+            const response = await this.env.SETTINGS.getByName("global").fetch("https://settings/usage/cancel", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                conversationID: this.ctx.id.toString(),
+                reservationID: captured.reservationID,
+                expectedSnapshotID: refreshedAuthority.snapshotID,
+              }),
+            })
+            const result: unknown = await response.json().catch(() => undefined)
+            if (!response.ok) {
+              return Response.json(isRecord(result) ? result : { error: `Settings cancellation rejected: ${response.status}` }, {
+                status: response.status,
+              })
+            }
+            if (!isRecord(result) || result.ok !== true || typeof result.released !== "boolean" ||
+              !isRecord(result.retirement) ||
+              result.retirement.conversationID !== this.ctx.id.toString() ||
+              result.retirement.reservationID !== captured.reservationID ||
+              (result.retirement.reason !== "cancelled_before_dispatch" && result.retirement.reason !== "released") ||
+              typeof result.retirement.retiredAt !== "number" || !Number.isFinite(result.retirement.retiredAt) ||
+              (result.retirement.date !== undefined && (typeof result.retirement.date !== "string" ||
+                !/^\d{4}-\d{2}-\d{2}$/.test(result.retirement.date))) ||
+              (captured.date !== undefined && typeof result.retirement.date === "string" &&
+                result.retirement.date !== captured.date)) {
+              return Response.json({ error: "Settings returned an invalid cancellation receipt" }, { status: 502 })
+            }
+            const cleared = await this.store.clearUndispatchedBudgetProposal(captured)
+            if (!cleared) return Response.json({ error: "local proposal changed after cancellation was recorded" }, { status: 409 })
+            return Response.json({ ok: true, cancelled: true, retirement: result.retirement })
+          } catch (error) {
+            return Response.json({ error: errorMessage(error), retryable: true }, { status: 503 })
+          } finally {
+            this.recoveryAction = false
+          }
+        }
+      }
+      return action === "cancel_before_dispatch" ? this.enqueueUsageReplay(act) : act()
     })
   }
 
-  /** Spend so far today, or undefined when the budget is disabled or unreadable. */
-  private async budgetBlocked(): Promise<number | undefined> {
-    const settings = await this.settings().catch(() => undefined)
-    const budget = settings?.dailyBudgetUSD ?? 0
-    if (!Number.isFinite(budget) || budget <= 0) return undefined
+  /** Read-only preview over local lifecycle, provider runtime, durable log, and Settings ledger. */
+  private async previewAccountingCutoverData(): Promise<UnknownRecord> {
+    const state = await this.store.get()
+    const blockers: string[] = []
+    const sessionID = state.sessionID
+    if (!sessionID) blockers.push("current_session_missing")
+    if ((state.phase ?? "idle") !== "idle") blockers.push("conversation_not_idle")
+    if (state.queued) blockers.push("queued_message_present")
+    if (state.budgetReservation) blockers.push("budget_reservation_present")
+
+    let ledger: UsageCutoverLedger | undefined
     try {
-      const response = await this.env.SETTINGS.getByName("global").fetch("https://settings/usage/today")
-      if (!response.ok) return undefined
-      const usage = (await response.json()) as { costUSD?: number }
-      const spent = Number(usage.costUSD ?? 0)
-      return budgetExceeded(spent, budget) ? spent : undefined
-    } catch {
-      return undefined
+      ledger = await this.usageCutoverLedger()
+    } catch (error) {
+      blockers.push("settings_ledger_unavailable")
     }
+    if (ledger?.holds.length) blockers.push("budget_holds_present")
+    if (ledger?.blockers.length) blockers.push("settings_ledger_invalid")
+    if (ledger?.receipt) blockers.push("cutover_already_applied")
+
+    let runtimeGeneration: string | undefined
+    let watermark: number | undefined
+    let runtimeStatus: UnknownRecord | undefined
+    let logState: UnknownRecord | undefined
+    if (sessionID) {
+      try {
+        await this.ensureReady()
+        const control = await this.port(CONTROL_PORT)
+        const proofResponse = await control.fetch("http://container/start", {
+          method: "POST",
+          signal: AbortSignal.timeout(120_000),
+        })
+        if (!proofResponse.ok) throw new Error("runtime proof could not be refreshed")
+        const proof = await proofResponse.json().catch(() => undefined) as {
+          ok?: unknown
+          accountingPolicy?: unknown
+          opencodeGeneration?: unknown
+          eventPersistence?: unknown
+        } | undefined
+        if (proof?.ok !== true || proof.accountingPolicy !== ACCOUNTING_POLICY_ID ||
+          typeof proof.opencodeGeneration !== "string" || !proof.opencodeGeneration) {
+          throw new Error("runtime generation proof is unavailable")
+        }
+        runtimeGeneration = proof.opencodeGeneration
+        this.opencodeGeneration = runtimeGeneration
+        this.eventPersistence = proof.eventPersistence === true
+        this.eventPersistenceGeneration = runtimeGeneration
+        const apiPort = await this.port(OPENCODE_PORT)
+        const client = makeClient(portFetch(apiPort))
+        assertAccountingPolicy(await client.config.get())
+        const inspected = await (async () => {
+          const session = await client.session.get({ sessionID })
+          let latestSeq = 0
+          let latestStartedSeq = 0
+          let latestExecutionTerminalSeq = 0
+          let latestStepSeq = 0
+          let synced = false
+          let markerSeq: number | undefined
+          const log = await client.experimental.session.log({ sessionID, after: 0, follow: false })
+          for await (const item of log) {
+            if (!item || typeof item !== "object") throw new Error("durable session log is unreadable")
+            const raw = item as unknown as UnknownRecord
+            if (raw.type === "log.synced") {
+              if (synced || raw.aggregateID !== sessionID) throw new Error("durable log sync marker is invalid")
+              if (raw.seq !== undefined && (typeof raw.seq !== "number" ||
+                !Number.isSafeInteger(raw.seq) || raw.seq < latestSeq)) {
+                throw new Error("durable log watermark is invalid")
+              }
+              if (raw.seq === undefined && latestSeq !== 0) throw new Error("durable log watermark is missing")
+              markerSeq = raw.seq as number | undefined
+              synced = true
+              continue
+            }
+            if (synced) throw new Error("durable session log has rows after log.synced")
+            const durable = isRecord(raw.durable) ? raw.durable : undefined
+            const data = isRecord(raw.data) ? raw.data : undefined
+            const seq = durable?.seq
+            if (typeof raw.id !== "string" || raw.id.length === 0 ||
+              typeof raw.created !== "number" || !Number.isFinite(raw.created) || raw.created <= 0 ||
+              typeof seq !== "number" || !Number.isSafeInteger(seq) || seq <= latestSeq ||
+              durable?.aggregateID !== sessionID ||
+              (data?.sessionID !== undefined && data.sessionID !== sessionID)) {
+              throw new Error("durable session log row is invalid")
+            }
+            if ((raw.type === "session.execution.started" || raw.type === "session.execution.succeeded" ||
+              raw.type === "session.execution.failed" || raw.type === "session.execution.interrupted") &&
+              data?.sessionID !== sessionID) {
+              throw new Error("durable execution fence has no matching session id")
+            }
+            if (raw.type === "session.execution.started") latestStartedSeq = seq
+            if (raw.type === "session.execution.succeeded" || raw.type === "session.execution.failed" ||
+              raw.type === "session.execution.interrupted") latestExecutionTerminalSeq = seq
+            if (raw.type === "session.step.ended" || raw.type === "session.step.failed") {
+              latestStepSeq = seq
+            }
+            latestSeq = seq
+          }
+          if (!synced) throw new Error("durable session log ended without log.synced")
+          const busyTime = session.time.busy
+          const idleTime = session.time.idle
+          const timingBusy = busyTime !== undefined &&
+            (typeof idleTime !== "number" || busyTime > idleTime)
+          const executionBusy = latestStartedSeq > latestExecutionTerminalSeq
+          const missingStepTerminal = latestStepSeq > latestExecutionTerminalSeq
+          return {
+            sessionExists: true,
+            timingBusy,
+            executionBusy,
+            missingStepTerminal,
+            throughSeq: markerSeq ?? latestSeq,
+            latestStartedSeq,
+            latestExecutionTerminalSeq,
+            latestStepSeq,
+          }
+        })()
+        runtimeStatus = {
+          accountingPolicy: ACCOUNTING_POLICY_ID,
+          generation: runtimeGeneration,
+          sessionExists: inspected.sessionExists,
+          timeBusy: inspected.timingBusy,
+        }
+        logState = {
+          latestStartedSeq: inspected.latestStartedSeq,
+          latestExecutionTerminalSeq: inspected.latestExecutionTerminalSeq,
+          latestStepSeq: inspected.latestStepSeq,
+        }
+        watermark = inspected.throughSeq
+        if (state.usageCursor?.sessionID === sessionID && state.usageCursor.seq > inspected.throughSeq) {
+          blockers.push("provider_log_behind_local_cursor")
+        }
+        if (inspected.timingBusy || inspected.executionBusy) blockers.push("provider_session_busy")
+        if (inspected.missingStepTerminal) blockers.push("terminal_execution_missing_after_last_step")
+      } catch (error) {
+        blockers.push("foreground_runtime_or_log_unavailable")
+      }
+    }
+
+    const sortRows = (rows: UnknownRecord[] | undefined) => (rows ?? [])
+      .map((row) => ({
+        date: row.date,
+        costUSD: row.costUSD,
+        input: row.input,
+        output: row.output,
+        sourced: row.sourced,
+        legacyOpening: row.legacyOpening,
+        cutoverID: row.cutoverID,
+      }))
+      .sort((left, right) => String(left.date).localeCompare(String(right.date)))
+    const snapshot: UnknownRecord = {
+      conversationID: this.ctx.id.toString(),
+      local: {
+        sessionID: sessionID ?? null,
+        phase: state.phase ?? "idle",
+        hasQueue: Boolean(state.queued),
+        reservation: state.budgetReservation
+          ? { reservationID: state.budgetReservation.reservationID, date: state.budgetReservation.date, dispatched: state.budgetReservation.dispatched }
+          : null,
+        usageCursor: state.usageCursor ?? null,
+        usageTerminal: state.usageTerminal ?? null,
+        usageExecution: state.usageExecution ?? null,
+      },
+      runtime: { policy: ACCOUNTING_POLICY_ID, generation: runtimeGeneration ?? null, status: runtimeStatus ?? null },
+      log: { throughSeq: watermark ?? null, execution: logState ?? null },
+      ledger: ledger ? {
+        snapshotID: ledger.snapshotID,
+        rows: sortRows(ledger.rows),
+        legacyRows: sortRows(ledger.legacyRows),
+        holds: ledger.holds,
+        receipt: ledger.receipt ?? null,
+      } : null,
+    }
+    const bytes = new TextEncoder().encode(JSON.stringify(snapshot))
+    const digest = await crypto.subtle.digest("SHA-256", bytes)
+    const planID = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")
+    return {
+      planID,
+      canApply: blockers.length === 0,
+      blockers: [...new Set(blockers)],
+      conversationID: this.ctx.id.toString(),
+      sessionID: sessionID ?? null,
+      accountingPolicy: ACCOUNTING_POLICY_ID,
+      opencodeGeneration: runtimeGeneration ?? null,
+      throughSeq: watermark ?? null,
+      ledger: ledger ?? null,
+      historicalUsageUnreconciled: true,
+      snapshot,
+    }
+  }
+
+  private async previewAccountingCutover(): Promise<Response> {
+    try {
+      return Response.json(await this.previewAccountingCutoverData())
+    } catch (error) {
+      return Response.json({ error: errorMessage(error) }, { status: 503 })
+    }
+  }
+
+  private async applyAccountingCutover(expectedPlanID: string): Promise<Response> {
+    return this.withAdmissionLock(async () => this.enqueueUsageReplay(async () => {
+      try {
+        const ledger = await this.usageCutoverLedger()
+        if (ledger.receipt?.cutoverID === expectedPlanID) {
+          return Response.json({ ok: true, recovered: true, receipt: ledger.receipt })
+        }
+        if (ledger.receipt) {
+          return Response.json({ error: "a different usage cutover has already been applied", receipt: ledger.receipt }, { status: 409 })
+        }
+        const plan = await this.previewAccountingCutoverData()
+        if (plan.canApply !== true) return Response.json({ error: "usage cutover is blocked", plan }, { status: 409 })
+        if (plan.planID !== expectedPlanID) return Response.json({ error: "usage cutover plan changed", plan }, { status: 409 })
+        const response = await this.env.SETTINGS.getByName("global").fetch("https://settings/usage/cutover", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            conversationID: this.ctx.id.toString(),
+            cutoverID: expectedPlanID,
+            expectedSnapshotID: ledger.snapshotID,
+            sessionID: plan.sessionID,
+            throughSeq: plan.throughSeq,
+          }),
+        })
+        const body = await response.json().catch(() => ({})) as UnknownRecord
+        return Response.json(body, { status: response.status })
+      } catch (error) {
+        return Response.json({ error: errorMessage(error) }, { status: 503 })
+      }
+    }))
+  }
+
+  /** Replay durable actuals; only acknowledged reports may advance the cursor. */
+  private recordContextUsage(messages: MessageInfo[]): Promise<void> {
+    const task = async () => {
+      try {
+        if (!Array.isArray(messages)) throw new Error("terminal usage context is unreadable")
+        const state = await this.store.get()
+        const terminal = turnMessages(messages, state.turnBaseline)
+          .filter((message) => message.type === "assistant")
+          .at(-1)
+        if (!state.sessionID || !terminal?.id) throw new Error("terminal assistant id is unavailable")
+        await this.replayUsageLog(state.sessionID, terminal.id)
+      } catch (error) {
+        await this.store.patch({ usageError: errorMessage(error) }).catch(() => {})
+        throw error
+      }
+    }
+    return this.enqueueUsageReplay(task)
+  }
+
+  /** Warm events and the next admission drain late auxiliary rows through the same cursor. */
+  private refreshUsageFromLog(sessionID: string): Promise<void> {
+    const task = async () => {
+      try {
+        const state = await this.store.get()
+        if (state.sessionID !== sessionID) return
+        await this.replayUsageLog(sessionID)
+      } catch (error) {
+      await this.store.patch({ usageError: errorMessage(error) }).catch(() => {})
+        throw error
+      }
+    }
+    return this.enqueueUsageReplay(task)
+  }
+
+  private enqueueUsageReplay<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.usageTail.then(task, task)
+    this.usageTail = run.then(() => undefined, () => undefined)
+    return run
+  }
+
+  private async replayUsageLog(sessionID: string, terminalMessageID?: string): Promise<void> {
+    const state = await this.store.get()
+    const ledger = await this.usageCutoverLedger()
+    const receipt = ledger.receipt
+    const sessionReceipt = receipt?.sessionID === sessionID ? receipt : undefined
+    const previousCursor = state.usageCursor?.sessionID === sessionID ? state.usageCursor.seq : 0
+    const storedExecution = state.usageExecution?.sessionID === sessionID ? state.usageExecution : undefined
+    const receiptBaseline = sessionReceipt && (!storedExecution || sessionReceipt.throughSeq > previousCursor)
+      ? sessionReceipt.throughSeq
+      : 0
+    const reconstructing = storedExecution === undefined || receiptBaseline > 0
+    const replayAfter = storedExecution
+      ? Math.max(previousCursor, sessionReceipt?.throughSeq ?? 0)
+      : receiptBaseline
+    const requiredWatermark = Math.max(previousCursor, sessionReceipt?.throughSeq ?? 0)
+    let execution = receiptBaseline > 0
+      ? { sessionID, startedSeq: 0, terminalSeq: receiptBaseline, latestStepSeq: 0 }
+      : storedExecution
+        ? { ...storedExecution }
+        : { sessionID, startedSeq: 0, terminalSeq: 0, latestStepSeq: 0 }
+    let reconstructedTerminal: ConversationState["usageTerminal"]
+    let synced = false
+    let logWatermark = replayAfter
+    const log = await this.withClient(async (client) =>
+      client.experimental.session.log({ sessionID, after: replayAfter, follow: false }),
+    )
+    let latestSeq = replayAfter
+    for await (const item of log) {
+      if (!item || typeof item !== "object") throw new Error("durable session log is unreadable")
+      if ((item as { type?: string }).type === "log.synced") {
+        const marker = item as { aggregateID?: string; seq?: number }
+        if (synced || marker.aggregateID !== sessionID ||
+          (marker.seq === undefined
+            ? latestSeq > 0 || requiredWatermark > 0
+            : typeof marker.seq !== "number" || !Number.isSafeInteger(marker.seq) ||
+              marker.seq < latestSeq || marker.seq < requiredWatermark)) {
+          throw new Error("durable session log sync marker is invalid")
+        }
+        if (marker.seq !== undefined) logWatermark = marker.seq
+        synced = true
+        continue
+      }
+      if (synced) throw new Error("durable session log has rows after log.synced")
+      const raw = item as Record<string, unknown>
+      const durable = raw.durable as Record<string, unknown> | undefined
+      const data = raw.data as Record<string, unknown> | undefined
+      const seq = durable?.seq
+      if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) {
+        throw new Error("durable event sequence is unreadable")
+      }
+      if (durable?.aggregateID !== sessionID ||
+        (data?.sessionID !== undefined && data.sessionID !== sessionID)) {
+        throw new Error("durable event session does not match")
+      }
+      if ((raw.type === "session.execution.started" || raw.type === "session.execution.succeeded" ||
+        raw.type === "session.execution.failed" || raw.type === "session.execution.interrupted") &&
+        (typeof raw.id !== "string" || raw.id.length === 0 || data?.sessionID !== sessionID)) {
+        throw new Error("durable execution fence is unreadable")
+      }
+      if (seq <= latestSeq) throw new Error("durable event sequence is out of order")
+
+      const usage = durableUsageEvent(raw, sessionID)
+      if (raw.type === "session.execution.started") execution.startedSeq = seq
+      if (raw.type === "session.execution.succeeded" || raw.type === "session.execution.failed" ||
+        raw.type === "session.execution.interrupted") execution.terminalSeq = seq
+      if (usage) {
+        const today = new Date().toISOString().slice(0, 10)
+        const usageDate = Date.parse(`${usage.date}T00:00:00.000Z`)
+        const todayStart = Date.parse(`${today}T00:00:00.000Z`)
+        if (usageDate > todayStart) throw new Error("durable usage event is in the future")
+        // OpenCode can retain log rows beyond Settings' 30 day accounting
+        // window. Those expired rows are the only events that may be skipped.
+        const expired = usageDate < todayStart - 30 * 24 * 60 * 60 * 1000
+        if (expired && terminalMessageID !== undefined &&
+          usage.assistantMessageID === terminalMessageID) {
+          throw new Error("terminal assistant usage is outside the accounting window")
+        }
+        if (!expired) await this.reportUsage(usage, receipt?.cutoverID)
+        if (raw.type === "session.step.ended" || raw.type === "session.step.failed") {
+          if (!usage.assistantMessageID) throw new Error("durable step has no assistant message id")
+          execution.latestStepSeq = seq
+          if (reconstructing) {
+            reconstructedTerminal = { sessionID, assistantMessageID: usage.assistantMessageID, seq }
+          }
+        }
+      }
+      // Advancing after each event is safe: usage reports are acknowledged
+      // first, and replaying from an earlier cursor is deduped centrally.
+      if (!reconstructing) {
+        await this.store.patch({
+          usageCursor: { sessionID, seq: Math.max(previousCursor, seq, sessionReceipt?.throughSeq ?? 0) },
+          usageExecution: execution,
+          ...(usage?.assistantMessageID && (raw.type === "session.step.ended" || raw.type === "session.step.failed")
+            ? { usageTerminal: { sessionID, assistantMessageID: usage.assistantMessageID, seq } }
+            : {}),
+          usageError: undefined,
+        })
+      }
+      latestSeq = seq
+    }
+    if (!synced) throw new Error("durable session log ended without log.synced")
+    if (logWatermark < requiredWatermark) throw new Error("durable log watermark fell behind the acknowledged cursor")
+    const acknowledgedCursor = Math.max(logWatermark, latestSeq, previousCursor, sessionReceipt?.throughSeq ?? 0)
+    const currentState = await this.store.get()
+    if (reconstructing || acknowledgedCursor > (currentState.usageCursor?.sessionID === sessionID
+      ? currentState.usageCursor.seq
+      : 0)) {
+      await this.store.patch({
+        usageCursor: { sessionID, seq: acknowledgedCursor },
+        usageExecution: execution,
+        ...(reconstructing ? { usageTerminal: reconstructedTerminal } : {}),
+        usageError: undefined,
+      })
+    }
+    if (!terminalMessageID) return
+    const latest = await this.store.get()
+    const terminal = latest.usageTerminal
+    const fences = latest.usageExecution
+    if (terminal?.sessionID !== sessionID || terminal.assistantMessageID !== terminalMessageID ||
+      terminal.seq !== fences?.latestStepSeq || fences.sessionID !== sessionID ||
+      fences.terminalSeq <= terminal.seq || fences.startedSeq > fences.terminalSeq) {
+      throw new Error("terminal assistant usage is not acknowledged in the durable log")
+    }
+  }
+
+  /** Append one durable event to Settings' deduplicated ledger. */
+  private async reportUsage(
+    usage: NonNullable<ReturnType<typeof durableUsageEvent>>,
+    cutoverID?: string,
+  ): Promise<void> {
+    const response = await this.env.SETTINGS.getByName("global").fetch("https://settings/usage", {
+      method: "POST",
+      body: JSON.stringify({ conversationID: this.ctx.id.toString(), ...usage, ...(cutoverID ? { cutoverID } : {}) }),
+    })
+    if (!response.ok) {
+      const detail = await response.json().catch(() => undefined) as { error?: unknown } | undefined
+      const reason = typeof detail?.error === "string" ? ` (${detail.error.slice(0, 160)})` : ""
+      throw new Error(`usage report was rejected: ${response.status}${reason}`)
+    }
+  }
+
+  /**
+   * Acquire this conversation's fixed admission hold after local admission and
+   * readiness checks. The proposed reference is durable before the Settings
+   * call, so an ambiguous response can be retried with the same owner ID.
+   */
+  async acquireBudgetReservation(): Promise<BudgetReservationResult> {
+    let proposed: BudgetReservation
+    try {
+      proposed = await this.store.ensureBudgetReservation(crypto.randomUUID())
+    } catch (error) {
+      return { kind: "unavailable", message: errorMessage(error) }
+    }
+    if (proposed.dispatched) {
+      return {
+        kind: "already-dispatched",
+        message: "this conversation already has a dispatched reservation",
+        reservation: proposed,
+      }
+    }
+
+    let response: Response
+    try {
+      response = await this.env.SETTINGS.getByName("global").fetch(
+        "https://settings/usage/reserve",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            conversationID: this.ctx.id.toString(),
+            reservationID: proposed.reservationID,
+            costUSD: 0.1,
+          }),
+        },
+      )
+    } catch (error) {
+      return { kind: "unavailable", message: errorMessage(error) }
+    }
+
+    let result: unknown
+    try {
+      result = await response.json()
+    } catch {
+      return { kind: "unavailable", message: "budget authority returned an unreadable response" }
+    }
+    const body = result && typeof result === "object" ? result as Record<string, unknown> : {}
+    if (response.status === 429) {
+      const spentUSD = finiteBudgetValue(body.spentUSD)
+      const reservedUSD = finiteBudgetValue(body.reservedUSD)
+      const budgetUSD = finiteBudgetValue(body.budgetUSD)
+      await this.store.clearDeniedBudgetProposal(proposed.reservationID).catch(() => false)
+      return {
+        kind: "denied",
+        message: `daily budget reached ($${spentUSD.toFixed(2)} spent + $${reservedUSD.toFixed(2)} reserved of $${budgetUSD.toFixed(2)})`,
+        spentUSD,
+        reservedUSD,
+        budgetUSD,
+      }
+    }
+    if (response.status === 409) {
+      if (body.code === "legacy_usage_requires_migration" || body.code === "reservation_retired") {
+        await this.store.clearDeniedBudgetProposal(proposed.reservationID).catch(() => false)
+      }
+      return {
+        kind: "conflict",
+        message: typeof body.error === "string" ? body.error : "budget reservation ownership conflict",
+      }
+    }
+    if (!response.ok) {
+      return {
+        kind: "unavailable",
+        message: typeof body.error === "string" ? body.error : `budget authority returned ${response.status}`,
+      }
+    }
+    if (
+      body.ok !== true ||
+      body.reservationID !== proposed.reservationID ||
+      typeof body.date !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(body.date)
+    ) {
+      return { kind: "unavailable", message: "budget authority returned an invalid reservation reference" }
+    }
+    const saved = await this.store.setBudgetReservationDate(proposed.reservationID, body.date).catch(() => false)
+    if (!saved) return { kind: "unavailable", message: "local reservation ownership changed" }
+    return {
+      kind: "granted",
+      reservation: { reservationID: proposed.reservationID, date: body.date, dispatched: false },
+    }
+  }
+
+  /** Persist dispatch ambiguity immediately before making a provider request. */
+  async markBudgetReservationDispatched(
+    reservation: BudgetReservation,
+    turnBaseline: string | undefined,
+    fromQueue = false,
+  ): Promise<boolean> {
+    if (!reservation.date) return false
+    try {
+      return await this.ctx.storage.transaction(async () => {
+        const marked = await this.store.markBudgetReservationDispatched(
+          reservation.reservationID,
+          reservation.date!,
+          turnBaseline,
+          fromQueue,
+        )
+        if (!marked) return false
+        // The alarm is part of the same storage transaction as the marker:
+        // a crash after commit can always recover an ambiguous prompt send.
+        await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
+        return true
+      })
+    } catch {
+      return false
+    }
+  }
+
+  /** Release a known hold; keep local ownership unless Settings acknowledges it. */
+  async releaseBudgetReservation(reservation: BudgetReservation): Promise<boolean> {
+    if (!reservation.date) return false
+    const current = await this.store.get().then((state) => state.budgetReservation).catch(() => undefined)
+    if (
+      !current ||
+      current.reservationID !== reservation.reservationID ||
+      current.date !== reservation.date
+    ) return false
+    let response: Response
+    try {
+      response = await this.env.SETTINGS.getByName("global").fetch(
+        "https://settings/usage/release",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            conversationID: this.ctx.id.toString(),
+            reservationID: reservation.reservationID,
+            date: reservation.date,
+          }),
+        },
+      )
+    } catch {
+      return false
+    }
+    if (!response.ok) return false
+    let result: unknown
+    try {
+      result = await response.json()
+    } catch {
+      return false
+    }
+    if (!isRecord(result) || result.ok !== true || typeof result.released !== "boolean" ||
+      !isRecord(result.retirement) || result.retirement.conversationID !== this.ctx.id.toString() ||
+      result.retirement.reservationID !== reservation.reservationID || result.retirement.reason !== "released" ||
+      typeof result.retirement.retiredAt !== "number" || !Number.isFinite(result.retirement.retiredAt) ||
+      (result.retirement.date !== undefined && typeof result.retirement.date !== "string") ||
+      (reservation.date !== undefined && typeof result.retirement.date === "string" &&
+        result.retirement.date !== reservation.date)) {
+      return false
+    }
+    return this.store.clearBudgetReservation(reservation.reservationID, reservation.date).catch(() => false)
   }
 
   /** Alarm fallback: poll while a stream is not covering the run. */
   async alarm(): Promise<void> {
     try {
+      if (this.recoveryAction) {
+        await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
+        return
+      }
       const before = await this.store.get()
+      const phase = before.phase ?? "idle"
+      if (before.budgetReservation?.dispatched && (this.admitting || this.pumping)) {
+        // A live provider request or poll owns this turn. Do not consume the
+        // persisted recovery alarm while it is still in flight.
+        await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
+        return
+      }
+      if (
+        !this.admitting &&
+        !this.pumping &&
+        before.budgetReservation?.dispatched &&
+        phase !== "running" &&
+        phase !== "settling"
+      ) {
+        await this.resumeDispatchedTurn()
+        if (await this.pumpOnce()) return
+        await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
+        return
+      }
+      if (phase === "settling") {
+        if (await this.pumpOnce()) return
+        await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
+        return
+      }
       const action = staleAction(before, Date.now(), this.pumping || this.admitting)
       if (action === "admission") {
         // The request that was admitting died with the previous DO instance.
@@ -1216,6 +2762,12 @@ export class Conversation extends DurableObject<Env> {
         })
         await this.store.advance("idle")
       } else if (action === "timeout") {
+        if (before.budgetReservation?.dispatched) {
+          await this.pauseSettlement("turn exceeded its time limit; dispatched reservation retained while context is checked")
+          if (await this.pumpOnce()) return
+          await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
+          return
+        }
         // No terminal message and no error: abandon the turn so the container
         // is not pinned forever.
         void this.count("turn.timedout")
@@ -1257,6 +2809,37 @@ export class Conversation extends DurableObject<Env> {
         action: request.action,
         resources: request.resources,
       })
+    }
+  }
+
+  private async pollQuestions(sessionID: string, forms: Form[]): Promise<void> {
+    if (!forms.length || !this.env.SLACK_BOT_TOKEN) return
+    const state = await this.store.get()
+    if (state.sessionID !== sessionID || !state.slack) return
+    const key = this.key ?? this.ctx.id.name ?? this.ctx.id.toString()
+    for (const form of forms) {
+      if (state.announcedForms?.includes(form.id)) continue
+      const text = `${describeForm(form)}\n${answerHint(form)}`
+      const common = { key, requestID: form.id, channel: state.slack.channel, sessionID }
+      const actions = formButtons(form).map((option) => ({
+        type: "button", text: { type: "plain_text", text: option.text },
+        ...(option.style ? { style: option.style } : {}), action_id: "form_answer",
+        value: JSON.stringify({ ...common, ...JSON.parse(option.value) }),
+      })).filter((action) => action.value.length <= 2000)
+      // Slack requires action_id to be unique inside an actions block. Each
+      // choice gets its own block while sharing the same authenticated handler.
+      const blocks: Record<string, unknown>[] = [
+        { type: "section", text: { type: "mrkdwn", text: text.slice(0, 2800) } },
+        ...actions.map((action) => ({ type: "actions", elements: [action] })),
+        { type: "actions", elements: [{ type: "button", text: { type: "plain_text", text: "Skip question" },
+          action_id: "form_cancel", value: JSON.stringify(common) }] },
+      ]
+      await this.slack("chat.postMessage", {
+        channel: state.slack.channel, text,
+        ...(state.slack.replyTs ? { thread_ts: state.slack.replyTs } : {}), blocks,
+      })
+      const current = await this.store.get()
+      if (current.sessionID === sessionID) await this.store.patch({ announcedForms: [...(current.announcedForms ?? []), form.id].slice(-100) })
     }
   }
 
@@ -1349,7 +2932,7 @@ export class Conversation extends DurableObject<Env> {
     throw new Error(`container port ${number} did not become ready`)
   }
 
-  private async withClient<T>(fn: (client: ReturnType<typeof makeClient>) => Promise<T>): Promise<T> {
+  private async withClient<T>(fn: (client: ReturnType<typeof makeClient>) => Promise<T>, recoverOnRejection = true): Promise<T> {
     try {
       const port = await this.ensureReady()
       const client = makeClient(portFetch(port))
@@ -1357,6 +2940,11 @@ export class Conversation extends DurableObject<Env> {
       this.consecutiveFailures = 0
       return result
     } catch (error) {
+      if (error instanceof AccountingPolicyError) throw error
+      // An invalid command/form or an unsupported optional endpoint does not
+      // prove the container is wedged. Never recycle live work for that. Real
+      // transport failures keep the existing recovery behavior.
+      if (!recoverOnRejection && !(error instanceof ClientError && error.reason === "Transport")) throw error
       // A cold start that outlasts the wait is slow, not wedged: do not count
       // it as a failure or recycle the container out from under itself.
       if (error instanceof Error && error.message.includes("did not become ready")) throw error
@@ -1389,6 +2977,7 @@ export class Conversation extends DurableObject<Env> {
   private async doEnsureReady(): Promise<ContainerPort> {
     if (this.leaseHeld) void this.acquireLease().catch(() => {})
     if (this.ctx.container?.running) this.applyInactivity(this.ctx.container)
+    await this.loadContainerImageVariant(this.ctx.container)
     const settings = await this.settings()
     const state = await this.store.get()
     const container = this.ctx.container
@@ -1399,22 +2988,47 @@ export class Conversation extends DurableObject<Env> {
     // should protect the container from a settings-driven restart.
     const busy =
       this.pumping ||
-      state.phase === "admitting" ||
+      (this.key === ONBOARDING_KEY && this.onboardingOperations > 0) ||
+      state.budgetReservation !== undefined ||
       state.phase === "running" ||
       state.phase === "settling"
+    const providerSyncAt = settings.onboarding.opencodeConnectedAt
+    const providerSyncEligible = Boolean(
+      providerSyncAt && this.key && this.key !== ONBOARDING_KEY && !parseConversationKey(this.key),
+    )
+    if (!providerSyncEligible) this.providerSyncAt = undefined
+    const providerSyncNeeded = providerSyncEligible && this.providerSyncAt !== providerSyncAt
+    let deferSettingsRestart = false
 
     // A settings change is applied between runs: destroying mid-run loses the turn.
     if (container && versionChanged && container.running && busy) {
-      return this.opencodePort ?? this.port(OPENCODE_PORT)
+      if (this.ready && this.opencodePort && this.opencodeGeneration) return this.opencodePort
+      // A restarted DO can lack the old port cache while an accepted prompt is
+      // still running. Verify the live runtime without reconfiguring or
+      // destroying it; the new settings apply after this turn settles.
+      deferSettingsRestart = true
     }
-    if (container && versionChanged && container.running) {
+    if (container && versionChanged && container.running && !deferSettingsRestart) {
+      // A settings-driven restart must carry forward the provider credentials
+      // and OpenCode database that live in the current container. Its prior
+      // checkpoint may predate an account connection, so never destroy before
+      // a fresh portable archive is safely stored.
+      const saved = await this.checkpoint()
+      if (!saved) throw new Error("settings changed but checkpoint failed; keeping the current container")
+      await this.clearSnapshot()
       await container.destroy()
+      await this.releaseLease()
       this.ready = false
       this.opencodePort = undefined
+      this.opencodeGeneration = undefined
+      this.eventPersistence = undefined
+      this.eventPersistenceGeneration = undefined
+      this.inactivitySet = false
     }
 
     // Fast path: this instance already verified the container for this spec.
-    if (this.ready && this.opencodePort && (!container || container.running) && !versionChanged) {
+    if (this.ready && this.opencodePort && this.opencodeGeneration &&
+      (!container || container.running) && !versionChanged && (!providerSyncNeeded || busy)) {
       return this.opencodePort
     }
 
@@ -1492,7 +3106,7 @@ export class Conversation extends DurableObject<Env> {
 
     // Configure after restore: /restore replaces /workspace, including the config.
     // A warm container on the same spec already has its config.
-    if (!status.initialized || versionChanged) {
+    if (!status.initialized || (versionChanged && !deferSettingsRestart)) {
       const githubToken = await this.secret(GITHUB_TOKEN_KEY)
       await control.fetch("http://container/configure", {
         method: "POST",
@@ -1507,22 +3121,81 @@ export class Conversation extends DurableObject<Env> {
       signal: AbortSignal.timeout(120_000),
     })
     if (!started.ok) throw new Error(`container start failed: ${await started.text()}`)
-    // The control server keeps the OpenCode password; /start returns no secret.
+    const proof = await started.json().catch(() => undefined) as {
+      ok?: unknown
+      accountingPolicy?: unknown
+      opencodeGeneration?: unknown
+      eventPersistence?: unknown
+    } | undefined
+    if (proof?.ok !== true || proof.accountingPolicy !== ACCOUNTING_POLICY_ID ||
+      typeof proof.opencodeGeneration !== "string" || !proof.opencodeGeneration) {
+      throw new AccountingPolicyError("container start returned no valid accounting runtime proof")
+    }
+    this.eventPersistence = proof.eventPersistence === true
+    this.eventPersistenceGeneration = proof.opencodeGeneration
+    if (this.containerImageVariant === "evented" && proof.eventPersistence !== true) {
+      throw new AccountingPolicyError("evented canary runtime did not confirm persistent events")
+    }
+    const runtimeChanged = this.opencodeGeneration !== proof.opencodeGeneration
+    // Verify effective OpenCode config through its local API before caching the
+    // port or allowing any call that could run a provider prompt.
+    const port = await this.port(OPENCODE_PORT)
+    const opencode = makeClient(portFetch(port))
+    assertAccountingPolicy(await opencode.config.get())
+    if (providerSyncEligible && providerSyncAt && runtimeChanged && busy) this.providerSyncAt = undefined
+    if (providerSyncEligible && providerSyncAt && !busy && (providerSyncNeeded || runtimeChanged)) {
+      await this.syncOnboardingCredentials(opencode)
+      this.providerSyncAt = providerSyncAt
+    }
     await this.store.increment("containerStarts")
 
-    if (state.settingsVersion !== settings.version) {
+    if (state.settingsVersion !== settings.version && !deferSettingsRestart) {
       await this.store.patch({ settingsVersion: settings.version })
     }
 
-    const port = await this.port(OPENCODE_PORT)
     logEvent("container.ready", { durationMs: Date.now() - startedAt })
+    this.opencodeGeneration = proof.opencodeGeneration
     this.opencodePort = port
     this.ready = true
     return port
   }
 
+  /** Copy missing active legacy-account credentials; existing conversation values always win. */
+  private async syncOnboardingCredentials(target: ReturnType<typeof makeClient>): Promise<void> {
+    try {
+      const sourceResponse = await this.env.CONVERSATION.getByName(ONBOARDING_KEY).fetch(
+        "https://conversation/provider-credentials",
+        { headers: { "x-conversation-key": ONBOARDING_KEY } },
+      )
+      if (!sourceResponse.ok) throw new Error("source unavailable")
+      const source = await sourceResponse.json() as unknown
+      if (!Array.isArray(source)) throw new Error("invalid source")
+      const sourceCredentials = (source as CredentialEntry[]).filter(
+        (credential) => credential?.active && credential.value.type === "key",
+      )
+      const local = await target.credential.list()
+      const activeIntegrations = new Set(
+        local.filter((credential) => credential.active).map((credential) => credential.integrationID),
+      )
+      for (const credential of sourceCredentials) {
+        if (!credential.integrationID || activeIntegrations.has(credential.integrationID)) continue
+        await target.credential.create({
+          id: credential.id,
+          integrationID: credential.integrationID,
+          label: credential.label,
+          value: credential.value,
+          activate: true,
+        })
+        activeIntegrations.add(credential.integrationID)
+      }
+    } catch {
+      throw new Error("provider setup sync failed; reconnect providers with !setup")
+    }
+  }
+
   /** Hold one admission when the container cannot start; drain it from the alarm. */
   private async enqueue(text: string, slack?: SlackTarget): Promise<boolean> {
+    if (this.recoveryAction) return false
     const nextAttemptAt = Date.now() + 5000
     const claimed = await this.store.enqueue({
       text,
@@ -1541,12 +3214,13 @@ export class Conversation extends DurableObject<Env> {
   }
 
   private async drainQueue(): Promise<boolean> {
+    if (this.admitting || this.pumping || this.recoveryAction) return false
     // Claim the queued work under the same lock as admissions, so a new
     // message cannot start while the queue is being drained.
     const queued = await this.withAdmissionLock(async () => {
       const state = await this.store.get()
       // The warm stream stays connected while idle; it must not block the queue.
-      if (!state.queued || this.pumping) return undefined
+      if (!state.queued || this.admitting || this.pumping || this.recoveryAction || state.budgetReservation?.dispatched) return undefined
       const phase = state.phase ?? "idle"
       if (phase === "running" || phase === "settling" || phase === "admitting") return undefined
       await this.store.advance("admitting")
@@ -1555,33 +3229,11 @@ export class Conversation extends DurableObject<Env> {
     })
     if (!queued) return false
 
-    // A queued message is still subject to the same ceiling as a live one.
-    // Keep it queued and retry after the ledger rolls over instead of dropping it.
-    const spent = await this.budgetBlocked()
-    if (spent !== undefined) {
-      this.admitting = false
-      const retryAt = nextBudgetReset(Date.now())
-      const notice = "daily budget reached"
-      if (queued.slack && queued.lastError !== notice) {
-        await this.postChunked(
-          queued.slack.channel,
-          `⚠️ Daily budget reached (spent $${spent.toFixed(2)}). I'll retry this queued message after the daily reset.`,
-          queued.slack.replyTs,
-        ).catch(() => {})
-      }
-      await this.store.patch({ queued: { ...queued, lastError: notice, nextAttemptAt: retryAt } })
-      await this.store.advance("queued")
-      await this.ctx.storage.setAlarm(retryAt)
-      return false
-    }
-
     let sessionID = ""
     let baseline: string | undefined
     try {
       sessionID = await this.ensureSession(queued.text, queued.slack ? "slack" : "http", queued.slack)
       baseline = await this.turnBaseline(sessionID)
-      // Once this call returns, the prompt has been accepted by OpenCode.
-      await this.withClient((client) => client.session.prompt({ sessionID, text: queued.text }))
     } catch (err) {
       this.admitting = false
       // Capacity pressure is temporary: keep the message queued until a lease
@@ -1628,9 +3280,86 @@ export class Conversation extends DurableObject<Env> {
       return false
     }
 
-    // The prompt is accepted. Clear the queue before recording the turn, so a
-    // bookkeeping failure cannot cause the same message to be prompted again.
-    await this.store.patch({ queued: undefined })
+    const reservation = await this.acquireBudgetReservation()
+    if (reservation.kind === "denied") {
+      this.admitting = false
+      const retryAt = nextBudgetReset(Date.now())
+      const notice = "daily budget reached"
+      if (queued.slack && queued.lastError !== notice) {
+        await this.postChunked(
+          queued.slack.channel,
+          `⚠️ ${reservation.message}. I'll retry this queued message after the daily reset.`,
+          queued.slack.replyTs,
+        ).catch(() => {})
+      }
+      await this.store.patch({ queued: { ...queued, lastError: notice, nextAttemptAt: retryAt } })
+      await this.store.advance("queued")
+      await this.ctx.storage.setAlarm(retryAt)
+      return false
+    }
+    if (reservation.kind === "conflict" || reservation.kind === "unavailable") {
+      this.admitting = false
+      const retryAt = Date.now() + 30_000
+      if (queued.slack && queued.lastError !== reservation.message) {
+        await this.postChunked(
+          queued.slack.channel,
+          `⚠️ Queued message is waiting for budget authority: ${reservation.message}.`,
+          queued.slack.replyTs,
+        ).catch(() => {})
+      }
+      await this.store.patch({
+        queued: { ...queued, lastError: reservation.message, nextAttemptAt: retryAt },
+      })
+      await this.store.advance("queued")
+      await this.ctx.storage.setAlarm(retryAt)
+      return false
+    }
+    if (reservation.kind === "already-dispatched") {
+      await this.resumeDispatchedTurn()
+      if (queued.slack) {
+        await this.postChunked(
+          queued.slack.channel,
+          "⚠️ The queued message is waiting for a previous prompt with an unresolved dispatch result.",
+          queued.slack.replyTs,
+        ).catch(() => {})
+      }
+      return false
+    }
+    if (!(await this.markBudgetReservationDispatched(reservation.reservation, baseline, true))) {
+      this.admitting = false
+      const retryAt = Date.now() + 30_000
+      await this.store.patch({
+        queued: { ...queued, lastError: "could not persist budget dispatch state", nextAttemptAt: retryAt },
+      })
+      await this.store.advance("queued")
+      await this.ctx.storage.setAlarm(retryAt)
+      return false
+    }
+    try {
+      // Once marked, request failure is ambiguous and this queue item must not
+      // be replayed or released as if dispatch definitely never happened.
+      await this.withClient((client) => client.session.prompt({ sessionID, text: queued.text }))
+    } catch (err) {
+      this.admitting = false
+      await this.recordAcceptedTurn(baseline)
+      void this.count("queue.dispatch_ambiguous")
+      logEvent("queue.dispatch_ambiguous", { error: errorMessage(err) })
+      await this.deliver({
+        type: "error",
+        message: `queued prompt dispatch outcome is unknown; reservation retained: ${errorMessage(err)}`,
+      }).catch(() => {})
+      if (queued.slack) {
+        await this.postChunked(
+          queued.slack.channel,
+          "⚠️ Queued prompt dispatch outcome is unknown; its reservation is retained and it will not be retried automatically.",
+          queued.slack.replyTs,
+        ).catch(() => {})
+      }
+      return false
+    }
+
+    // The dispatch marker already consumed this queued item atomically. A new
+    // follow-up may have been queued while the provider request was pending.
     void this.count("queue.drained")
     logEvent("queue.drained", { attempts: queued.attempts })
     await this.recordAcceptedTurn(baseline)
@@ -1652,46 +3381,76 @@ export class Conversation extends DurableObject<Env> {
     state: R2ObjectBody | null
     split: boolean
   } | null> {
-    const manifest = (await this.store.get()).checkpointManifest
+    const state = await this.store.get()
+    const manifest = state.checkpointManifest
     if (manifest?.workspace) {
       const workspace = await this.env.CHECKPOINTS.get(manifest.workspace.key)
-      if (workspace) {
-        const state = manifest.state
-          ? await this.env.CHECKPOINTS.get(manifest.state.key)
-          : null
-        return { workspace, state, split: true }
+      if (!workspace) {
+        logEvent("checkpoint.manifest.missing", { key: manifest.workspace.key })
+        throw new Error(`checkpoint manifest workspace is missing: ${manifest.workspace.key}`)
       }
-      logEvent("checkpoint.manifest.missing", { key: manifest.workspace.key })
+      const state = manifest.state ? await this.env.CHECKPOINTS.get(manifest.state.key) : null
+      if (manifest.state && !state) {
+        logEvent("checkpoint.manifest.missing", { key: manifest.state.key })
+        throw new Error(`checkpoint manifest state is missing: ${manifest.state.key}`)
+      }
+      return { workspace, state, split: true }
     }
-    const list = await this.env.CHECKPOINTS.list({ prefix: this.checkpointPrefix() })
-    const newest = list.objects
+    const objects = await this.checkpointObjects()
+    if (state.checkpointKey) {
+      const recorded = await this.env.CHECKPOINTS.get(state.checkpointKey)
+      if (!recorded) throw new Error(`recorded checkpoint is missing: ${state.checkpointKey}`)
+      return { workspace: recorded, state: null, split: false }
+    }
+    const newest = objects
       .map((object) => object.key)
-      // Do not mistake a split state archive for a legacy workspace archive.
-      .filter((key) => !/\/state-[^/]*\.tar\.gz$/.test(key))
+      .filter((key) => /^\d+\.tar\.gz$/.test(key.slice(this.checkpointPrefix().length)))
       .sort()
       .at(-1)
-    const legacy = await this.env.CHECKPOINTS.get(
-      newest ?? `workspaces/${this.ctx.id.toString()}.tar.gz`,
-    )
+    const legacy = newest
+      ? await this.env.CHECKPOINTS.get(newest)
+      : await this.env.CHECKPOINTS.get(`workspaces/${this.ctx.id.toString()}.tar.gz`)
     return legacy ? { workspace: legacy, state: null, split: false } : null
   }
 
   /** Drop old versions, keeping the most recent few of each part. */
+  private async checkpointObjects(): Promise<R2Object[]> {
+    const objects: R2Object[] = []
+    let cursor: string | undefined
+    do {
+      const page = await this.env.CHECKPOINTS.list({ prefix: this.checkpointPrefix(), cursor })
+      objects.push(...page.objects)
+      cursor = page.truncated ? page.cursor : undefined
+    } while (cursor)
+    return objects
+  }
+
   private async pruneCheckpoints(): Promise<void> {
-    const list = await this.env.CHECKPOINTS.list({ prefix: this.checkpointPrefix() })
-    const keys = list.objects
-      .map((object) => object.key)
-      // A split checkpoint pairs a workspace and a state object. Pruning by
-      // total count could delete one half of a pair; prune per part instead.
-      .sort()
-    const workspaceKeys = keys.filter((key) => /-workspace-/.test(key))
-    const stateKeys = keys.filter((key) => /-state-/.test(key))
-    const legacyKeys = keys.filter((key) => !/-(workspace|state)-/.test(key))
-    const stale = [
-      ...workspaceKeys.slice(0, Math.max(0, workspaceKeys.length - CHECKPOINT_KEEP)),
-      ...stateKeys.slice(0, Math.max(0, stateKeys.length - CHECKPOINT_KEEP)),
-      ...legacyKeys.slice(0, Math.max(0, legacyKeys.length - CHECKPOINT_KEEP)),
-    ]
+    const objects = await this.checkpointObjects()
+    const state = await this.store.get()
+    const manifest = state.checkpointManifest
+    const active = new Set([
+      state.checkpointKey,
+      manifest?.workspace.key,
+      manifest?.state?.key,
+    ].filter((key): key is string => Boolean(key)))
+    // Match only the actual split object basenames. Unknown names may belong
+    // to another format and must not be classified or deleted by substring.
+    const workspaceKeys: string[] = []
+    const stateKeys: string[] = []
+    for (const { key } of objects) {
+      const basename = key.slice(this.checkpointPrefix().length)
+      if (/^workspace-\d+\.tar\.gz$/.test(basename)) workspaceKeys.push(key)
+      else if (/^state-\d+\.tar\.gz$/.test(basename)) stateKeys.push(key)
+    }
+    workspaceKeys.sort()
+    stateKeys.sort()
+    const keep = (keys: string[]) => new Set([
+      ...keys.slice(Math.max(0, keys.length - CHECKPOINT_KEEP)),
+      ...keys.filter((key) => active.has(key)),
+    ])
+    const retained = new Set([...keep(workspaceKeys), ...keep(stateKeys)])
+    const stale = [...workspaceKeys, ...stateKeys].filter((key) => !retained.has(key))
     for (const key of stale) await this.env.CHECKPOINTS.delete(key)
     if (stale.length) logEvent("checkpoint.pruned", { count: stale.length })
   }
@@ -1818,6 +3577,18 @@ export class Conversation extends DurableObject<Env> {
   }
 
   private async checkpoint(): Promise<boolean> {
+    const previous = this.checkpointTail
+    let release!: () => void
+    this.checkpointTail = new Promise<void>((resolve) => { release = resolve })
+    await previous
+    try {
+      return await this.checkpointLocked()
+    } finally {
+      release()
+    }
+  }
+
+  private async checkpointLocked(): Promise<boolean> {
     // The control server archives the workspace without stopping OpenCode, so
     // the cached port stays valid across a checkpoint.
     return withSpan("conversation.checkpoint", async (span) => {
@@ -1864,6 +3635,7 @@ export class Conversation extends DurableObject<Env> {
               await this.store.patch({
                 checkpointSize: bytes,
                 checkpointKey: workspaceKey,
+                checkpointManifest: undefined,
                 checkpointEncrypted: encrypted,
               })
               const fingerprint = response.headers.get("x-workspace-fingerprint")
@@ -1977,6 +3749,9 @@ export class Conversation extends DurableObject<Env> {
   private invalidateOpenCode(): void {
     this.ready = false
     this.opencodePort = undefined
+    this.opencodeGeneration = undefined
+    this.eventPersistence = undefined
+    this.eventPersistenceGeneration = undefined
   }
 
   // -------------------------------------------------------------------- Slack
@@ -2073,6 +3848,10 @@ function errorMessage(err: unknown): string {
   } catch {
     return String(err)
   }
+}
+
+function finiteBudgetValue(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0
 }
 
 /** Pass a stream through unchanged while counting its bytes. */

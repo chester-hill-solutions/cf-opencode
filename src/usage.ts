@@ -1,65 +1,68 @@
-/**
- * Usage arithmetic.
- *
- * OpenCode reports two shapes:
- *   - `session.usage.updated`: the session's cumulative step totals (replace).
- *   - `session.usage.recorded`: one auxiliary call (title/compaction) with its
- *     own event id, which must be added exactly once.
- *
- * The per-conversation/day ledger is the sum of the latest step totals and the
- * deduplicated auxiliary spend. Keeping them separate stops the settle-time
- * context sum from dropping title/compaction costs.
- */
+/** Validation and conversion for OpenCode's durable usage events. */
 
-export interface UsageTotals {
+export interface DurableUsageReport {
+  sourceID: string
+  sessionID: string
   date: string
   costUSD: number
   input: number
   output: number
+  seq: number
+  assistantMessageID?: string
 }
 
-export interface UsageAux extends UsageTotals {
-  /** Auxiliary event ids already counted, oldest first. */
-  seen: string[]
+const USAGE_EVENT_TYPES = new Set([
+  "session.step.ended",
+  "session.step.failed",
+  "session.usage.recorded",
+])
+
+function finiteNonnegative(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
 }
 
-/** Cap the dedupe list; a day with more auxiliary calls than this is unusual. */
-export const AUX_SEEN_LIMIT = 200
-
-export function emptyUsage(date: string): UsageTotals {
-  return { date, costUSD: 0, input: 0, output: 0 }
-}
-
-export function emptyAux(date: string): UsageAux {
-  return { ...emptyUsage(date), seen: [] }
-}
-
-export function sumUsage(step: UsageTotals, aux: UsageTotals): UsageTotals {
-  return {
-    date: step.date,
-    costUSD: step.costUSD + aux.costUSD,
-    input: step.input + aux.input,
-    output: step.output + aux.output,
+/** Returns undefined for durable events that do not carry billable usage. */
+export function durableUsageEvent(raw: unknown, expectedSessionID: string): DurableUsageReport | undefined {
+  if (!raw || typeof raw !== "object") throw new Error("durable usage event is unreadable")
+  const event = raw as Record<string, unknown>
+  if (typeof event.type !== "string" || !USAGE_EVENT_TYPES.has(event.type)) return undefined
+  const durable = event.durable as Record<string, unknown> | undefined
+  const data = event.data as Record<string, unknown> | undefined
+  const tokens = data?.tokens as Record<string, unknown> | undefined
+  const seq = durable?.seq
+  const eventSessionID = data?.sessionID
+  if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) {
+    throw new Error("durable event sequence is unreadable")
   }
-}
-
-/**
- * Add one auxiliary event to the day's accumulator. Returns undefined when the
- * event id was already counted, so a replayed stream cannot double count.
- */
-export function auxAfterEvent(
-  aux: UsageAux,
-  eventID: string | undefined,
-  costUSD: number,
-  input: number,
-  output: number,
-): UsageAux | undefined {
-  if (eventID && aux.seen.includes(eventID)) return undefined
+  if (typeof eventSessionID !== "string" || eventSessionID !== expectedSessionID) {
+    throw new Error("durable event session does not match")
+  }
+  if (typeof event.id !== "string" || !event.id) throw new Error("durable usage event id is unreadable")
+  if (typeof event.created !== "number" || !Number.isFinite(event.created) || event.created <= 0) {
+    throw new Error("durable usage event date is unreadable")
+  }
+  const date = new Date(event.created < 1e12 ? event.created * 1000 : event.created)
+  if (!Number.isFinite(date.getTime())) throw new Error("durable usage event date is unreadable")
+  const costUSD = data?.cost
+  const input = tokens?.input
+  const output = tokens?.output
+  if (!finiteNonnegative(costUSD) || !finiteNonnegative(input) || !finiteNonnegative(output)) {
+    throw new Error("durable usage event totals are unreadable")
+  }
+  if (data?.assistantMessageID !== undefined &&
+    (typeof data.assistantMessageID !== "string" || data.assistantMessageID.length === 0)) {
+    throw new Error("durable assistant message id is unreadable")
+  }
   return {
-    date: aux.date,
-    costUSD: aux.costUSD + costUSD,
-    input: aux.input + input,
-    output: aux.output + output,
-    seen: eventID ? [...aux.seen, eventID].slice(-AUX_SEEN_LIMIT) : aux.seen,
+    sourceID: event.id,
+    sessionID: expectedSessionID,
+    date: date.toISOString().slice(0, 10),
+    costUSD,
+    input,
+    output,
+    seq,
+    ...(typeof data?.assistantMessageID === "string"
+      ? { assistantMessageID: data.assistantMessageID }
+      : {}),
   }
 }

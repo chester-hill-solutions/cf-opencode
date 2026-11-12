@@ -1,12 +1,28 @@
 # R1 design — agent boundary and tenant isolation
 
-Status: proposed · Date: 2026-11-07 · Scope: R1 (tenancy foundations)
+Status: partially implemented; isolation gate open · Updated: 2026-11-11 · Scope: R1 (tenancy foundations)
 Related: `docs/roadmap.md` R1-1…R1-11, audit findings on agent credentials, control
 plane, checkpoints and tenancy.
+
+**Runtime direction — 2026-11-11:** retain OpenCode in Cloudflare Containers,
+stow-s3 for the hot workspace and R2 for recovery. R1's credential and tenant
+boundaries must be established on this stack. Runtime extraction in R1-4 does not
+authorize migrating the harness into an isolate, adding a generic backend framework
+or replacing storage. The [roadmap decision and revisit gate](../roadmap.md#runtime-direction--retain-the-current-stack)
+defer alternative runtimes until measured startup, idle-cost or concurrency needs
+justify investigation. AgentOS's scoped-capability and recovery concepts refine
+the existing boundary work without adding a runtime dependency.
 
 This document covers **one question**: what exactly separates a tenant's agent from
 the harness, from other tenants, and from credentials it should never see. It does
 not repeat the release plan; ticket ids refer to `docs/roadmap.md`.
+
+**Assessment update (Nov 11):** initial audit findings 29–33 and subsequent local repair
+evidence are recorded in [the production audit](../production-audit.md#local-repair-verification--2026-11-11).
+R0-10 retention/restore behavior is locally repaired and regression-tested; a fresh
+real-container restore check remains open. R1-7 remains mandatory before executing untrusted
+repository code; command permission patterns do not isolate credentials. Historical Nov 7
+container results below were not rerun after these changes.
 
 ---
 
@@ -20,8 +36,11 @@ Worker + Durable Object  ── trusted ──┐
                                       └─ /workspace                        (repo + agent output, agent)
 ```
 
-Everything runs in **one container per deployment** (`max_instances: 1`), with one
-global `Settings` DO, one shared `API_TOKEN` and one account snapshot. The control
+The current configuration selects **one container per conversation** under
+`scheduling_policy: "durable_object"`, with a global lease cap (default two) and
+onboarding exempt from that cap. There is still one global `Settings` DO, one shared
+HTTP `API_TOKEN` and a default account snapshot; optional channel/agent namespaces
+are only a partial tenancy implementation. The control
 server runs as root and owns `CONTROL_TOKEN` and the OpenCode password; OpenCode,
 its tools and stow-s3 run as `agent`. The agent can no longer read the control
 server's environment, and `/workspace` no longer contains harness config or
@@ -92,6 +111,13 @@ Move harness state **out of the agent's workspace**:
 still read `state` (OpenCode needs write access to its DB). The fix is not file
 permissions; it is keeping long-lived credentials out of `state` (see 3.4).
 
+**Observed execution path (audit 32):** `bun test` and `bun run typecheck` are
+default-allowed commands that execute repository-controlled code. A disposable Bun
+test could read a synthetic sibling-state marker under the shared identity. Putting
+state outside `/workspace` and denying its literal path in tool rules does not stop
+that code from opening it. Keep initial use limited to trusted repositories until
+the external credential boundary in §3.4 is verified in a real container.
+
 ### 3.2 Process model and control-plane auth
 
 ```
@@ -154,6 +180,21 @@ tenants/<tenantID>/conversations/<conversationID>/state/<ts>.tar.gz
 - Until tenancy lands, the implemented keys are
   `workspaces/<DO id>/workspace-<ts>.tar.gz` and `state-<ts>.tar.gz`, with the
   manifest in DO storage.
+
+**Locally verified repair (audit 29 / R0-10):** pruning now paginates and recognizes the
+exact `workspace-<ts>.tar.gz` and `state-<ts>.tar.gz` basenames, retains the newest five
+per class plus active manifest/legacy references, and serializes publication with pruning.
+Restore fails before destructive restore/configure/start calls when a declared part is
+missing; intentionally stateless and proven legacy restores remain supported. Local tests cover:
+
+- Retention classifies actual object names and never deletes an object referenced by
+  the active manifest, even when an unchanged part is older than five versions.
+- A checkpoint reported successful remains a complete recovery point after pruning.
+- Restore rejects a missing required part or selects a verified complete recovery point;
+  it must not silently turn a split checkpoint into a workspace-only restore.
+- Tests cover both unchanged-state and unchanged-workspace retention, pagination, old active
+  references, unknown names, missing parts, and legacy cold restore. See `docs/testing.md`.
+  Fresh real-container verification remains open.
 
 ### 3.4 Credentials and egress
 
@@ -281,7 +322,7 @@ when tenancy lands.
 
 | # | Decision | Rationale |
 | --- | --- | --- |
-| D1 | State lives outside `/workspace`. | The repo must never be able to overwrite harness config or credentials. |
+| D1 | State lives outside `/workspace`. | Prevent checkout/restore from replacing state; this path split does not isolate state from repository code running as `agent`. |
 | D2 | Control plane requires a per-start bearer token. | The agent can reach `:4001`; it must not be able to reconfigure or restore. |
 | D3 | The DO never holds the OpenCode password. | Shrinks the secret's blast radius and removes it from Worker logs/memory. |
 | D4 | Workspace and state checkpoint separately, with a manifest. | Restores stay correct, tenancy is namespaceable, and verification is possible. |
@@ -365,7 +406,11 @@ Implemented in P0b:
 - **Egress**: sandbox cannot reach an unlisted host; proxy injects model/git auth;
   no long-lived provider token is readable in the container.
 - **Checkpoint**: manifest verification, ignored-file-only changes, two-archive
-  restore, legacy fallback.
+  restore, legacy fallback, retention beyond five updates with one part unchanged,
+  active-reference protection, and missing-part restore rejection.
+- **Repository execution**: run allowed test/typecheck commands that attempt to read
+  synthetic provider state through code, not only direct tool paths; enforce the
+  target credential boundary in the real container and egress proxy.
 
 ---
 
@@ -378,7 +423,7 @@ Implemented in P0b:
 | Root → `agent` split; OpenCode binds loopback | **Done** (container, uid verified) |
 | State moved out of `/workspace`; marker moved | **Done** (container) |
 | `/opencode/*` proxy; DO holds no password | **Done** (static + container) |
-| Split workspace/state checkpoints + manifest | **Done** (vitest + container) |
+| Split workspace/state checkpoints + manifest | **Locally verified repaired** — retention/preflight regressions pass; fresh real-container verification remains open |
 | Restore member validation | **Done** (unit + container) |
 | OpenCode secret-scrubbing spike | **Done — residual confirmed and documented (§8.1)** |
 
@@ -419,15 +464,18 @@ build and container run, not a published image.
 | Phase | Work | Roadmap |
 | --- | --- | --- |
 | P0 | Control token, curated OpenCode env, control proxy, state relocation, marker move | R1-2 prerequisite |
-| P1 | Stable checkpoint keys, manifest layout, copy job for existing checkpoints | R1-1 |
-| P2 | `durable_object` policy, per-conversation containers | R1-2/R1-3 |
+| P1 | R0-10 retention/restore correctness, stable checkpoint keys, legacy copy job | R1-1 |
+| P2 | Verify deployed `durable_object` policy and per-conversation lifecycle already present in code/configuration | R1-2/R1-3 |
 | P3 | Runtime extraction (`ContainerRuntime`, `EventStream`) | R1-4 |
 | P4 | Tenant model, per-tenant settings/account/keys, DO names | R1-5/R1-6 |
 | P5 | Egress proxy, credential injection, default-deny | R1-7 |
 | P6 | Isolation tests + dual-run/cutover | R1-9/R1-10 |
 
-Each phase is independently shippable and reversible. P0/P1 can land on the
-current single-container policy; P4/P5 are gated on P2.
+P0's process/state split is implemented and P2 is present in code/configuration;
+deployed cutover and isolation still need verification. R0-10 retention/restore fixes
+pass local regressions, but fresh real-container verification and P1's stable-key/copy
+job remain open before treating archives as migration recovery points. P4/P5 require
+verified P2 behavior, not just a configuration change.
 
 **Rollback:** the v2 replacement app runs beside v1 with the same image; the
 control server accepts both token-authenticated and (temporarily) legacy calls
@@ -445,9 +493,12 @@ during dual-run, then legacy calls are removed.
 - Unauthenticated control-plane calls fail, and the agent cannot read the control
   token.
 - The sandbox holds no long-lived provider or git credential; unlisted egress is
-  denied.
+  denied. Repository-controlled test/typecheck probes cannot recover synthetic
+  credentials through files, environment or process state.
 - A checkpoint restore reproduces both the workspace and the OpenCode state, and a
-  deleted object forces a re-archive.
+  deleted object forces a re-archive before reuse or a visible restore failure.
+- More than five updates to either part leave every active-manifest object intact;
+  cold restore after retention preserves both roots.
 
 ---
 

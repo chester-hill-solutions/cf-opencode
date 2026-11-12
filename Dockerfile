@@ -9,11 +9,11 @@
 #
 # Pins:
 #   base image       — oven/bun:1.3 pinned by manifest-list digest
-#   OPENCODE_VERSION — must match the client contract the Worker is built against
+#   @opencode/server — locked to the client contract the Worker is built against
 #   STOW_VERSION     — native stow-s3 release used for the local S3 workspace
 #
-# OpenCode is installed from its npm tarball and verified against the registry's
-# sha512 integrity, so the download cannot be swapped between build and run.
+# OpenCode's event-persistent server is installed as an isolated, locked runtime
+# package. The control plane remains in the root Bun application.
 
 FROM oven/bun:1.3@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4
 
@@ -22,36 +22,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && groupadd --gid 1001 agent \
     && useradd --uid 1001 --gid agent --create-home --shell /bin/bash agent \
     && rm -rf /var/lib/apt/lists/*
-
-ARG OPENCODE_VERSION=2.2.5
-ARG TARGETARCH
-RUN set -eu; \
-    case "${TARGETARCH}" in \
-      amd64) target="x64-baseline" ;; \
-      arm64) target="arm64" ;; \
-      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
-    esac; \
-    package="@opencode/cli-linux-${target}"; \
-    metadata=/tmp/opencode-package.json; \
-    curl -fsSL "https://registry.npmjs.org/@opencode%2fcli-linux-${target}/${OPENCODE_VERSION}" -o "${metadata}"; \
-    url=$(jq -r '.dist.tarball' "${metadata}"); \
-    integrity=$(jq -r '.dist.integrity' "${metadata}"); \
-    echo "installing ${package}@${OPENCODE_VERSION}"; \
-    curl -fsSL "${url}" -o /tmp/opencode.tgz; \
-    expected=${integrity#sha512-}; \
-    actual=$(openssl dgst -sha512 -binary /tmp/opencode.tgz | openssl base64 -A); \
-    if [ "${expected}" != "${actual}" ]; then \
-      echo "opencode tarball integrity mismatch" >&2; \
-      exit 1; \
-    fi; \
-    mkdir -p /tmp/opencode; \
-    tar -xzf /tmp/opencode.tgz -C /tmp/opencode; \
-    mv /tmp/opencode/package/bin/opencode /usr/local/bin/opencode; \
-    chmod +x /usr/local/bin/opencode; \
-    rm -rf /tmp/opencode /tmp/opencode.tgz "${metadata}"; \
-    if ! opencode --version; then \
-      echo "warning: opencode --version failed; continuing (expected for an amd64 cross-build under QEMU; CI verifies natively)" >&2; \
-    fi
 
 ARG STOW_VERSION=0.3.7
 ARG TARGETARCH
@@ -67,9 +37,13 @@ RUN cd /tmp \
 
 WORKDIR /app
 COPY control-server.ts entrypoint.sh ./
+COPY runtime/opencode/package.json runtime/opencode/bun.lock ./runtime/opencode/
+RUN cd /app/runtime/opencode && bun install --production --frozen-lockfile
+COPY runtime/opencode/server.ts runtime/opencode/options.ts ./runtime/opencode/
 COPY src/permissions.ts ./src/permissions.ts
 COPY src/control-auth.ts ./src/control-auth.ts
 COPY src/tar.ts ./src/tar.ts
+COPY src/accounting-policy.ts ./src/accounting-policy.ts
 RUN chmod +x entrypoint.sh
 
 # State paths are fixed here and exported by entrypoint.sh. They are deliberately

@@ -8,13 +8,14 @@ import { deriveWorkspaceKey } from "@chester-hill-solutions/vault/core"
 import type { Alert } from "./alerts"
 import { annotate, traceId } from "./telemetry"
 import { MODEL_CATALOG, recommendModel } from "./models"
-import { hasConnectedProvider, isOnboardingProxyPath } from "./onboarding"
+import { isOnboardingProxyPath } from "./onboarding"
 import { approvalVerdict, fetchChannelMembers } from "./slack-auth"
 import { conversationKey, parseConversationKey, resolveAgentForChannel } from "./tenancy"
 import { encryptionRequired, plaintextArchivesAllowed } from "./archive-policy"
 import { bearerAuthorized } from "./control-auth"
 import { enforceRateLimit } from "./rate-limit"
 import { logEvent } from "./log"
+import { parseObjectJson } from "./http-json"
 
 export { Conversation } from "./conversation"
 export { Settings } from "./settings-do"
@@ -25,7 +26,10 @@ const DECISIONS = {
   oc_perm_reject: "reject",
 } as const
 
-const KEY_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/
+// Tenancy-namespaced keys can exceed 128 chars: `tenant:{64}:agent:{64}:{legacy}`
+// where legacy is a Slack `channel:thread` pair (thread_ts has a dot).
+// Keep the cap generous but finite. `:` separates segments, `.` appears in thread timestamps.
+const KEY_PATTERN = /^[A-Za-z0-9:.\\_-]{1,256}$/
 
 /** Decode a path segment without letting a malformed escape reach the router. */
 function safeDecode(value: string): string | undefined {
@@ -78,15 +82,24 @@ export default {
     if (!valid) return new Response("invalid signature", { status: 401 })
 
     if (url.pathname === "/slack/events") {
-      const payload = JSON.parse(body) as SlackEventEnvelope
+      let payload: SlackEventEnvelope
+      try {
+        payload = JSON.parse(body) as SlackEventEnvelope
+      } catch {
+        return new Response("invalid json", { status: 400 })
+      }
       if (payload.type === "url_verification") {
         return Response.json({ challenge: payload.challenge })
       }
 
       const event = payload.event
       if (!event?.channel || !event.ts) return new Response("ok")
+      if (event.bot_id || event.subtype || (env.SLACK_BOT_USER_ID && event.user === env.SLACK_BOT_USER_ID)) return new Response("ok")
 
       const isDm = event.channel_type === "im"
+      if (!isDm && event.type !== "app_mention" &&
+        (event.type !== "message" || !event.thread_ts ||
+          (env.SLACK_BOT_USER_ID && event.text?.includes(`<@${env.SLACK_BOT_USER_ID}>`)))) return new Response("ok")
       const replyTs = isDm ? undefined : event.thread_ts ?? event.ts
       const legacyKey = isDm ? `${event.channel}:dm` : `${event.channel}:${event.thread_ts ?? event.ts}`
       // A channel binding selects the agent, which namespaces the conversation
@@ -106,6 +119,7 @@ export default {
       ctx.waitUntil(settingsDo(env, "/conversations", { key }).catch(() => undefined))
 
       const dispatch: SlackEventRequest = {
+        appUrl: url.origin,
         ...(payload.event_id ? { eventID: payload.event_id } : {}),
         ...(replyTs ? { replyTs } : {}),
         event,
@@ -125,9 +139,10 @@ export default {
       if (!action?.value || !action.action_id) return new Response("ok")
 
       const decision = DECISIONS[action.action_id as keyof typeof DECISIONS]
-      if (!decision) return new Response("ok")
+      const formAction = action.action_id === "form_answer" || action.action_id === "form_cancel"
+      if (!decision && !formAction) return new Response("ok")
 
-      let parsed: { key?: string; requestID?: string; channel?: string }
+      let parsed: { key?: string; requestID?: string; channel?: string; sessionID?: string; field?: string; value?: string | number | boolean }
       try {
         parsed = JSON.parse(action.value) as typeof parsed
       } catch {
@@ -184,7 +199,20 @@ export default {
         return Response.json({ response_type: "ephemeral", text })
       }
 
-      const dispatch: PermissionRequest = { requestID: parsed.requestID, decision }
+      if (formAction) {
+        if (typeof parsed.sessionID !== "string" || !parsed.channel) return new Response("invalid question", { status: 400 })
+        ctx.waitUntil(
+          conversationStub(env, parsed.key).fetch("https://conversation/form", {
+            method: "POST",
+            body: JSON.stringify({
+              sessionID: parsed.sessionID, formID: parsed.requestID, channel: payload?.channel?.id,
+              ...(action.action_id === "form_cancel" ? { cancel: true } : { field: parsed.field, value: parsed.value }),
+            }),
+          }),
+        )
+        return new Response("ok")
+      }
+      const dispatch: PermissionRequest = { requestID: parsed.requestID, decision: decision! }
       ctx.waitUntil(
         conversationStub(env, parsed.key).fetch("https://conversation/permission", {
           method: "POST",
@@ -283,7 +311,12 @@ async function handleApi(
     const settings = env.SETTINGS.getByName("global")
     if (request.method === "GET") return settings.fetch("https://settings/get")
     if (request.method === "PUT" || request.method === "POST") {
-      return settings.fetch("https://settings/put", { method: "POST", body: await request.text() })
+      const parsed = await parseObjectJson(request)
+      if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 })
+      return settings.fetch("https://settings/put", {
+        method: "POST",
+        body: JSON.stringify(parsed.value),
+      })
     }
     return Response.json({ error: "not found" }, { status: 404 })
   }
@@ -302,23 +335,81 @@ async function handleApi(
     return Response.json({ error: "invalid conversation key" }, { status: 400 })
   }
   annotate({ "conversation.key": key, "http.route": `/api/conversations/{key}/${suffixLabel(parts)}` })
-  ctx.waitUntil(settingsDo(env, "/conversations", { key }).catch(() => undefined))
+  const recordConversation = () =>
+    ctx.waitUntil(settingsDo(env, "/conversations", { key }).catch(() => undefined))
 
   const conversation = conversationStub(env, key)
   const suffix = parts.slice(3)
 
-  if (request.method === "POST" && suffix.length === 1 && suffix[0] === "messages") {
-    const body = (await request.json()) as {
-      text?: string
-      user?: string
-      idempotencyKey?: string
+  if (suffix.length === 1 && suffix[0] === "recovery") {
+    if (request.method === "GET") {
+      // Passive recovery inspection must not register the conversation.
+      return conversation.fetch("https://conversation/recovery")
     }
-    if (!body.text) return Response.json({ error: "text is required" }, { status: 400 })
+    if (request.method === "POST") {
+      const parsed = await parseObjectJson(request)
+      if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 })
+      const action = parsed.value.action
+      const expectedSnapshotID = parsed.value.expectedSnapshotID
+      if (Object.keys(parsed.value).some((field) => field !== "action" && field !== "expectedSnapshotID") ||
+        (action !== "retry" && action !== "cancel_before_dispatch") ||
+        typeof expectedSnapshotID !== "string" || !/^[a-f0-9]{64}$/.test(expectedSnapshotID)) {
+        return Response.json({ error: "action and SHA-256 expectedSnapshotID are required" }, { status: 400 })
+      }
+      const response = await conversation.fetch("https://conversation/recovery", {
+        method: "POST",
+        body: JSON.stringify({ action, expectedSnapshotID }),
+      })
+      return new Response(response.body, { status: response.status, headers: response.headers })
+    }
+    return Response.json({ error: "method not allowed" }, { status: 405 })
+  }
+
+  if (suffix.length === 2 && suffix[0] === "accounting" && suffix[1] === "cutover") {
+    if (request.method === "GET") {
+      // Read-only planning must not create/update the conversation registry.
+      return conversation.fetch("https://conversation/accounting/cutover")
+    }
+    if (request.method === "POST") {
+      const parsed = await parseObjectJson(request)
+      if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 })
+      const expectedPlanID = parsed.value.expectedPlanID
+      if (typeof expectedPlanID !== "string" || !/^[a-f0-9]{64}$/.test(expectedPlanID)) {
+        return Response.json({ error: "expectedPlanID must be a SHA-256 plan id" }, { status: 400 })
+      }
+      const response = await conversation.fetch("https://conversation/accounting/cutover", {
+        method: "POST",
+        body: JSON.stringify({ expectedPlanID }),
+      })
+      if (response.ok) recordConversation()
+      return new Response(response.body, { status: response.status, headers: response.headers })
+    }
+    return Response.json({ error: "method not allowed" }, { status: 405 })
+  }
+
+  if (request.method === "POST" && suffix.length === 1 && suffix[0] === "messages") {
+    const parsed = await parseObjectJson(request)
+    if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 })
+    const body = parsed.value
+    if (body.user !== undefined && typeof body.user !== "string") {
+      return Response.json({ error: "invalid user" }, { status: 400 })
+    }
+    if (body.idempotencyKey !== undefined && typeof body.idempotencyKey !== "string") {
+      return Response.json({ error: "invalid idempotencyKey" }, { status: 400 })
+    }
+    if (typeof body.idempotencyKey === "string" && body.idempotencyKey && !/^[A-Za-z0-9:_-]{1,128}$/.test(body.idempotencyKey)) {
+      return Response.json({ error: "invalid idempotencyKey" }, { status: 400 })
+    }
+    if (body.text === undefined) return Response.json({ error: "text is required" }, { status: 400 })
+    if (typeof body.text !== "string" || !body.text.trim()) {
+      return Response.json({ error: "empty message" }, { status: 400 })
+    }
+    recordConversation()
     const message: MessageRequest = {
       text: body.text,
       transport: "http",
-      ...(body.user ? { user: body.user } : {}),
-      ...(body.idempotencyKey ? { idempotencyKey: body.idempotencyKey } : {}),
+      ...(body.user ? { user: body.user as string } : {}),
+      ...(body.idempotencyKey ? { idempotencyKey: body.idempotencyKey as string } : {}),
     }
     const res = await conversation.fetch("https://conversation/message", {
       method: "POST",
@@ -328,48 +419,63 @@ async function handleApi(
   }
 
   if (request.method === "GET" && suffix.length === 1 && suffix[0] === "events") {
+    recordConversation()
     return conversation.fetch("https://conversation/events", {
       headers: { accept: "text/event-stream" },
     })
   }
 
   if (request.method === "GET" && suffix.length === 1 && suffix[0] === "context") {
+    recordConversation()
     return conversation.fetch("https://conversation/context")
   }
 
   if (request.method === "GET" && suffix.length === 1 && suffix[0] === "debug") {
+    recordConversation()
     return conversation.fetch("https://conversation/debug")
   }
 
   if (request.method === "GET" && suffix.join("/") === "debug/messages") {
+    recordConversation()
     return conversation.fetch("https://conversation/debug/messages")
   }
 
+  if (request.method === "GET" && suffix.join("/") === "debug/providers") {
+    return conversation.fetch("https://conversation/debug/providers")
+  }
+
   if (request.method === "POST" && suffix.join("/") === "debug/snapshot/invalidate") {
+    recordConversation()
     return conversation.fetch("https://conversation/debug/snapshot/invalidate", { method: "POST" })
   }
 
   if (request.method === "POST" && suffix.length === 1 && suffix[0] === "recycle") {
+    recordConversation()
     return conversation.fetch("https://conversation/recycle", { method: "POST" })
   }
 
   if (request.method === "DELETE" && suffix.length === 0) {
+    recordConversation()
     const res = await conversation.fetch("https://conversation/delete", { method: "DELETE" })
     if (res.ok) await settingsDo(env, "/conversations/delete", { key }).catch(() => undefined)
     return res
   }
 
   if (request.method === "GET" && suffix.length === 0) {
+    recordConversation()
     return conversation.fetch("https://conversation/state")
   }
 
   if (request.method === "POST" && suffix.length === 2 && suffix[0] === "permissions") {
     const requestID = safeDecode(suffix[1]!)
     if (!requestID) return Response.json({ error: "invalid request id" }, { status: 400 })
-    const body = (await request.json()) as { decision?: "once" | "always" | "reject" }
+    const parsed = await parseObjectJson(request)
+    if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 })
+    const body = parsed.value as { decision?: "once" | "always" | "reject" }
     if (body.decision !== "once" && body.decision !== "always" && body.decision !== "reject") {
       return Response.json({ error: "decision is required" }, { status: 400 })
     }
+    recordConversation()
     const res = await conversation.fetch("https://conversation/permission", {
       method: "POST",
       body: JSON.stringify({ requestID, decision: body.decision } satisfies PermissionRequest),
@@ -444,6 +550,10 @@ async function handleOnboarding(
     if (!path || !isOnboardingProxyPath(path, request.method)) {
       return Response.json({ error: "not found" }, { status: 404 })
     }
+    if (request.method === "POST" && path.startsWith("/integrations/")) {
+      const parsed = await parseObjectJson(request.clone())
+      if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 })
+    }
     const conversation = conversationStub(env, ONBOARDING_KEY)
     const body =
       request.method === "GET" || request.method === "HEAD" ? undefined : await request.text()
@@ -451,7 +561,10 @@ async function handleOnboarding(
       method: request.method,
       ...(body === undefined ? {} : { body }),
     })
-    return new Response(res.body, { status: res.status, headers: res.headers })
+    const headers = new Headers(res.headers)
+    headers.delete("content-encoding")
+    headers.delete("content-length")
+    return new Response(res.body, { status: res.status, headers })
   }
 
   if (section === "reset" && request.method === "POST") {
@@ -495,15 +608,17 @@ async function handleOnboarding(
     }
     if (!current.onboarding?.opencodeConnectedAt) {
       const conversation = conversationStub(env, ONBOARDING_KEY)
-      const status = await conversation.fetch("https://conversation/onboarding/integrations")
+      // Ask the owning runtime for a small serialized status, rather than
+      // parsing a forwarded (possibly compressed) provider response across DOs.
+      const status = await conversation.fetch("https://conversation/provider-status")
       if (!status.ok) {
         return Response.json(
           { error: "provider status unavailable", retryable: true },
           { status: 503 },
         )
       }
-      const body = (await status.json()) as { data?: Array<{ connections?: unknown[] }> }
-      if (!hasConnectedProvider(body.data ?? [])) {
+      const body = (await status.json()) as { connected?: boolean }
+      if (body.connected !== true) {
         return Response.json({ error: "connect a provider before finishing" }, { status: 400 })
       }
     }

@@ -95,6 +95,10 @@ describe("validateSettings", () => {
     }
   })
 
+  test("rejects arrays as settings bodies", () => {
+    expect(validateSettings([], base)).toEqual({ ok: false, error: "body must be an object" })
+  })
+
   test("trims permission patterns", () => {
     const result = validateSettings({ permissions: { allow: ["  ls *  "], ask: [], deny: [] } }, base)
     expect(result.ok).toBe(true)

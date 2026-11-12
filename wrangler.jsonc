@@ -15,13 +15,22 @@
   "vars": {
     "WORKSPACE_REPO": "https://github.com/chester-hill-solutions/opencode-slack",
     "OPENCODE_MODEL": "opencode/deepseek-v4.1-flash",
-    "POLL_SECONDS": "2"
+    "POLL_SECONDS": "2",
+    "EVENTED_CANARY_KEY": "event-retention-canary-20261111-02",
+    "EVENTED_FRESH_CONVERSATIONS": "true"
   },
   "containers": [
     {
       "class_name": "Conversation",
       "scheduling_policy": "durable_object",
-      "images": { "base": { "dockerfile": "./Dockerfile" } }
+      "images": {
+        "base": {
+          "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-conversation-base@sha256:1401c9174256edd59bed01711f3464f5aec8b517b84f81a63f360795d2c5ce35"
+        },
+        "evented": {
+          "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-conversation-evented@sha256:826337168d6d3820181d39c69764787da6e934217889370c0a91399adc5da431"
+        }
+      }
     }
   ],
   "durable_objects": {

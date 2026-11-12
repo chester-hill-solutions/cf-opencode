@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
+import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
 
 /**
  * The daily budget is a ceiling for every transport. HTTP checked it; Slack
@@ -21,10 +22,14 @@ function fakeContainer() {
 
       if (port === 4001) {
         if (url.pathname === "/status") return json({ initialized: true })
-        if (url.pathname === "/configure" || url.pathname === "/start") return json({ ok: true })
+        if (url.pathname === "/configure") return json({ ok: true })
+
+        if (url.pathname === "/start") return json(accountingPolicyStart)
         if (url.pathname === "/checkpoint") return new Response(null, { status: 204 })
         return json({ error: "not found" }, 404)
       }
+
+      if (url.pathname === "/api/config") return json(accountingPolicyConfig)
 
       if (url.pathname === "/api/session") return json({ data: { id: "ses_1" } })
       if (url.pathname === "/api/session/ses_1/model") return new Response(null, { status: 204 })
@@ -68,6 +73,11 @@ describe("daily budget admission", () => {
     const result = await runInDurableObject(stub, async (instance) => {
       const fake = fakeContainer()
       instance.transport = fake.transport
+      const posts: string[] = []
+      ;(instance as unknown as { slack: unknown }).slack = async (_method: string, body: Record<string, unknown>) => {
+        posts.push(String(body.text ?? ""))
+        return { ok: true }
+      }
       const response = await instance.fetch(
         new Request("https://conversation/slack", {
           method: "POST",
@@ -83,11 +93,12 @@ describe("daily budget admission", () => {
           }),
         }),
       )
-      return { status: response.status, prompts: fake.counters.prompts }
+      return { status: response.status, prompts: fake.counters.prompts, posts }
     })
 
     expect(result.status).toBe(200)
     expect(result.prompts).toBe(0)
+    expect(result.posts.some((text) => text.includes("$5.00 spent") && text.includes("$0.00 reserved"))).toBe(true)
   })
 
   it("refuses an HTTP message after the budget is spent", async () => {

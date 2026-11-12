@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
 import { conversationKey } from "../src/tenancy"
+import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
 
 /**
  * A namespaced conversation must seed from its own agent's account state, never
@@ -29,12 +30,14 @@ function fakeContainer(seed: { body: string }) {
           seed.body = await request.text()
           return json({ ok: true })
         }
-        if (url.pathname === "/configure" || url.pathname === "/start") return json({ ok: true })
+        if (url.pathname === "/configure") return json({ ok: true })
+
+        if (url.pathname === "/start") return json(accountingPolicyStart)
         if (url.pathname === "/checkpoint") return new Response(null, { status: 204 })
         if (url.pathname === "/restore") return json({ error: "unexpected restore" }, 500)
         return json({ error: "not found" }, 404)
       }
-
+      if (url.pathname === "/api/config") return json(accountingPolicyConfig)
       if (url.pathname === "/api/info") return json({ data: {} })
       return json({ error: "not found" }, 404)
     },

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
+import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
 
 /**
  * The container control server refuses unauthenticated calls. The DO must send
@@ -22,10 +23,12 @@ function fakeContainer(seen: Array<string | null>) {
         seen.push(request.headers.get("authorization"))
         if (url.pathname === "/status") return json({ initialized: true })
         if (url.pathname === "/configure") return json({ ok: true })
-        if (url.pathname === "/start") return json({ ok: true, password: "opencode-pw" })
+        if (url.pathname === "/start") return json(accountingPolicyStart)
         if (url.pathname === "/checkpoint") return new Response(null, { status: 204 })
         return json({ ok: true })
       }
+
+      if (url.pathname === "/api/config") return json(accountingPolicyConfig)
 
       if (url.pathname === "/api/session/ses_1") return json({ data: { id: "ses_1" } })
       if (url.pathname === "/api/session" && request.method === "POST") {
@@ -57,6 +60,13 @@ describe("control-plane token", () => {
         }),
       )
       await response.text()
+
+      // This transport-only fixture does not bind a real Container instance;
+      // provide the base image needed to inspect its startup options.
+      Object.defineProperty((instance as unknown as { ctx: object }).ctx, "container", {
+        configurable: true,
+        value: { images: { base: "registry.cloudflare.com/test/conversation-base@sha256:base" } },
+      })
 
       const token = await state.storage.get<string>("controlToken")
       const options = (

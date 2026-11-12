@@ -1,4 +1,4 @@
-/** Budget rules, kept pure so the admission gate is testable without a DO. */
+/** Budget rules kept pure so their boundary semantics remain easy to test. */
 
 /**
  * A daily cap of 0 (or less) disables enforcement. Spend equal to the cap
