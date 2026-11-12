@@ -16,6 +16,7 @@ export type ConversationTelemetryEventName =
   | "checkpoint.missing"
   | "checkpoint.manifest.missing"
   | "recovery.started"
+  | "recovery.scheduled"
   | "recovery.settled"
   | "recovery.blocked"
   | "lease.renewed"
@@ -30,6 +31,7 @@ export type ConversationTelemetryEventName =
 
 export type ConversationTelemetryResult =
   | "started"
+  | "scheduled"
   | "settled"
   | "succeeded"
   | "failed"
@@ -95,6 +97,7 @@ const COMPONENT_BY_EVENT: Record<ConversationTelemetryEventName, ConversationTel
   "checkpoint.missing": "checkpoints",
   "checkpoint.manifest.missing": "checkpoints",
   "recovery.started": "recovery",
+  "recovery.scheduled": "recovery",
   "recovery.settled": "recovery",
   "recovery.blocked": "recovery",
   "lease.renewed": "leases",
@@ -109,7 +112,7 @@ const COMPONENT_BY_EVENT: Record<ConversationTelemetryEventName, ConversationTel
 }
 
 const RESULTS = new Set<ConversationTelemetryResult>([
-  "started", "settled", "succeeded", "failed", "blocked", "skipped",
+  "started", "scheduled", "settled", "succeeded", "failed", "blocked", "skipped",
   "renewed", "released", "requested", "approved", "denied", "stopped",
 ])
 

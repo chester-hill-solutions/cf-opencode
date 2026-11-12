@@ -527,3 +527,10 @@ prove these contracts; the review is not runtime qualification.
   dispatch-marker/queue/job transaction remain unchanged inside the owner.
   Forty-three focused Worker tests and full typecheck passed; 140 coordinator
   lines were removed. The service has no provider-prompt capability.
+- Recovery inspection/retry/cancel and the shared manual-action exclusion now
+  belong to `ConversationRecoveryActions`. Operator, checkpoint and upgrade
+  work use its scoped action guard instead of a coordinator-owned mutable flag.
+  Classification and receipts are unchanged; 50 focused Worker tests and full
+  typecheck pass. Retry acknowledgement emits `recovery.scheduled`, not a claim
+  that asynchronous recovery has already completed. A further 253 inline
+  coordinator lines were removed.

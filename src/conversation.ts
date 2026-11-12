@@ -34,6 +34,7 @@ import { ConversationEventStream } from "./conversation/event-stream"
 import { ConversationCheckpoints } from "./conversation/checkpoints"
 import { ConversationRuntime } from "./conversation/runtime"
 import { ConversationUsage, type UsageCutoverLedger } from "./conversation/usage"
+import { ConversationRecoveryActions } from "./conversation/recovery-actions"
 import { ConversationControlPlane } from "./conversation/control-plane"
 import { ConversationImages } from "./conversation/images"
 import { ConversationLease } from "./conversation/lease"
@@ -168,6 +169,7 @@ export class Conversation extends DurableObject<Env> {
   private readonly eventStream: ConversationEventStream
   private readonly checkpoints: ConversationCheckpoints
   private readonly usage: ConversationUsage
+  private readonly recoveryActions: ConversationRecoveryActions
   private readonly controlPlane: ConversationControlPlane
   private readonly images: ConversationImages
   private readonly leases: ConversationLease
@@ -184,7 +186,6 @@ export class Conversation extends DurableObject<Env> {
   /** An admission is in flight in this instance; alarms must not reset it. */
   private admitting = false
   /** Fences admissions and polling while an operator recovery action is in flight. */
-  private recoveryAction = false
   /** Conversation key, sent by the Worker; admin traffic skips the cap. */
   private key?: string
   /** Onboarding credential epoch copied into this legacy conversation instance. */
@@ -243,6 +244,21 @@ export class Conversation extends DurableObject<Env> {
       onMemoryLimit: (context) => this.onLifecycleMemoryLimit(context),
     })
     this.lifecycle.use(this.jobs)
+    this.recoveryActions = new ConversationRecoveryActions({
+      conversationID: ctx.id.toString(),
+      storage: ctx.storage,
+      store: this.store,
+      usage: this.usage,
+      settings: {
+        fetch: (input, init) => this.env.SETTINGS.getByName("global").fetch(input, init),
+      },
+      withAdmissionLock: (task) => this.withAdmissionLock(task),
+      live: () => ({ admitting: this.admitting, pumping: this.pumping, activeJobs: this.activeLifecycleJobs.size }),
+      jobs: {
+        epoch: () => this.ensureJobEpoch(),
+        scheduleRecovery: (at, payload, allowSealed) => this.scheduleConversationJob("recovery:wake", at, payload, allowSealed),
+      },
+    })
     this.controlPlane = new ConversationControlPlane({
       conversationID: ctx.id.toString(),
       storage: ctx.storage,
@@ -539,7 +555,7 @@ export class Conversation extends DurableObject<Env> {
       }
       return this.applyRuntimeUpgrade(body.expectedPlanID)
     }
-    if (url.pathname === "/recovery" && request.method === "GET") return this.inspectRecovery()
+    if (url.pathname === "/recovery" && request.method === "GET") return this.recoveryActions.inspect()
     if (url.pathname === "/recovery" && request.method === "POST") {
       let parsed: unknown
       try {
@@ -552,7 +568,7 @@ export class Conversation extends DurableObject<Env> {
         typeof parsed.expectedSnapshotID !== "string" || !/^[a-f0-9]{64}$/.test(parsed.expectedSnapshotID)) {
         return Response.json({ error: "action and SHA-256 expectedSnapshotID are required" }, { status: 400 })
       }
-      return this.actOnRecovery(parsed.action, parsed.expectedSnapshotID)
+      return this.recoveryActions.act(parsed.action, parsed.expectedSnapshotID)
     }
     if (url.pathname === "/state") return Response.json(await this.store.get())
     if (url.pathname === "/health") return Response.json({ ok: true })
@@ -1002,7 +1018,7 @@ export class Conversation extends DurableObject<Env> {
     const state = await this.store.get()
     const phase = state.phase ?? "idle"
     const active = phase === "admitting" || phase === "running" || phase === "settling" || phase === "queued"
-    if (state.budgetReservation || active || this.recoveryAction || this.activeLifecycleJobs.size > 0 || state.checkpointPending) {
+    if (state.budgetReservation || active || this.recoveryActions.active || this.activeLifecycleJobs.size > 0 || state.checkpointPending) {
       return Response.json(
         { ok: false, error: "conversation has unresolved work; wait for it to settle before reset or delete" },
         { status: 409 },
@@ -1116,7 +1132,7 @@ export class Conversation extends DurableObject<Env> {
       try {
         await this.ctx.storage.transaction(async () => {
           const state = await this.store.get()
-          if (this.recoveryAction || await this.hasPendingRuntimeUpgrade() || state.queued || this.isBusy(state.phase)) return
+          if (this.recoveryActions.active || await this.hasPendingRuntimeUpgrade() || state.queued || this.isBusy(state.phase)) return
           const admissionID = crypto.randomUUID()
           const admissionStartedAt = Date.now()
           await this.store.patch({ phase: "admitting", admissionID, admissionStartedAt })
@@ -1213,7 +1229,7 @@ export class Conversation extends DurableObject<Env> {
   private async requireSlackIdle(): Promise<ConversationState> {
     const state = await this.store.get()
     if (await this.hasPendingRuntimeUpgrade()) throw new Error("A runtime upgrade is pending. Resume it before changing the model or session.")
-    if (this.admitting || this.pumping || this.recoveryAction || this.isBusy(state.phase) || state.queued || state.budgetReservation) {
+    if (this.admitting || this.pumping || this.recoveryActions.active || this.isBusy(state.phase) || state.queued || state.budgetReservation) {
       throw new Error("This conversation has unfinished work. Use `!stop`, then wait for settlement; `!status` shows any retained usage hold.")
     }
     return state
@@ -1820,7 +1836,7 @@ export class Conversation extends DurableObject<Env> {
 
   /** One poll: deliver new assistant text, permissions, settle + checkpoint. */
   private async pumpOnce(): Promise<boolean> {
-    if (this.pumping || this.recoveryAction) return false
+    if (this.pumping || this.recoveryActions.active) return false
     this.pumping = true
     try {
       const state = await this.store.get()
@@ -2004,228 +2020,19 @@ export class Conversation extends DurableObject<Env> {
     }
   }
 
-  private async recoveryStatus(): Promise<UnknownRecord> {
-    const state = await this.store.get()
-    const localReservation = isRecord(state.budgetReservation) &&
-      typeof state.budgetReservation.reservationID === "string"
-      ? state.budgetReservation.reservationID
-      : undefined
-    let ledger: UsageCutoverLedger | undefined
-    let authority: RecoveryAuthority | undefined
-    let authorityError: string | undefined
-    try {
-      ledger = await this.usage.ledger(localReservation)
-      authority = {
-        conversationID: ledger.conversationID,
-        snapshotID: ledger.snapshotID,
-        holds: ledger.holds,
-        legacyRows: ledger.legacyRows,
-        ...(ledger.retirement ? { retirement: ledger.retirement } : {}),
-      }
-    } catch (error) {
-      authorityError = errorMessage(error)
-    }
-    const live = { admitting: this.admitting, pumping: this.pumping }
-    const classification = classifyRecovery({
-      conversationID: this.ctx.id.toString(), state, authority, live,
-    })
-    const snapshotID = await recoverySnapshotID({
-      conversationID: this.ctx.id.toString(), state, authority, live,
-    })
-    return {
-      conversationID: this.ctx.id.toString(),
-      snapshotID,
-      kind: classification.kind,
-      blockers: classification.blockers,
-      actions: classification.actions,
-      local: {
-        sessionID: state.sessionID ?? null,
-        phase: state.phase ?? "idle",
-        reservation: state.budgetReservation ?? null,
-        queued: state.queued ? {
-          present: true,
-          attempts: state.queued.attempts,
-          nextAttemptAt: state.queued.nextAttemptAt ?? null,
-          lastError: state.queued.lastError ?? null,
-        } : null,
-        usageCursor: state.usageCursor ?? null,
-        usageTerminal: state.usageTerminal ?? null,
-        usageExecution: state.usageExecution ?? null,
-        cachedEvidence: "last_observed_not_fresh_provider_proof",
-        usageError: state.usageError ?? null,
-        settlementError: state.settlementError ?? null,
-        lastTurnError: state.lastTurnError ?? null,
-        operatorReconciliation: state.operatorReconciliation ?? null,
-        historicalUsageUnreconciled: state.operatorReconciliation?.kind === "acknowledged_unknown",
-      },
-      live,
-      authority: ledger ? {
-        conversationID: ledger.conversationID,
-        snapshotID: ledger.snapshotID,
-        holds: ledger.holds,
-        legacyRows: ledger.legacyRows,
-        blockers: ledger.blockers,
-        retirement: ledger.retirement ?? null,
-      } : null,
-      ...(authorityError ? { authorityError } : {}),
-    }
-  }
-
-  private async inspectRecovery(): Promise<Response> {
-    try {
-      return Response.json(await this.recoveryStatus())
-    } catch (error) {
-      return Response.json({ error: errorMessage(error), retryable: true }, { status: 503 })
-    }
-  }
-
-  private async actOnRecovery(
-    action: "retry" | "cancel_before_dispatch",
-    expectedSnapshotID: string,
-  ): Promise<Response> {
-    return this.withAdmissionLock(async () => {
-      const act = async (): Promise<Response> => {
-        if (this.admitting || this.pumping || this.recoveryAction || this.activeLifecycleJobs.size > 0) {
-          return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
-        }
-        const status = await this.recoveryStatus()
-        if (status.snapshotID !== expectedSnapshotID) {
-          return Response.json({ error: "recovery snapshot changed", recovery: status }, { status: 409 })
-        }
-        if (!Array.isArray(status.actions) || !status.actions.includes(action)) {
-          return Response.json({ error: "recovery action is blocked", recovery: status }, { status: 409 })
-        }
-        const current = await this.store.get()
-        const reservation = current.budgetReservation
-        if (!reservation) return Response.json({ error: "local reservation is unavailable" }, { status: 409 })
-        if (action === "retry") {
-          if (reservation.dispatched !== true) {
-            return Response.json({ error: "retry requires a dispatched reservation" }, { status: 409 })
-          }
-          try {
-            this.recoveryAction = true
-            const refreshed = await this.recoveryStatus()
-            const refreshedState = await this.store.get()
-            const refreshedReservation = refreshedState.budgetReservation
-            if (refreshed.snapshotID !== expectedSnapshotID ||
-              !Array.isArray(refreshed.actions) || !refreshed.actions.includes("retry") ||
-              refreshedState.sessionID !== current.sessionID || !refreshedReservation?.dispatched ||
-              refreshedReservation.reservationID !== reservation.reservationID ||
-              refreshedReservation.date !== reservation.date) {
-              return Response.json({ error: "recovery snapshot changed or retry owner is no longer current", recovery: refreshed }, { status: 409 })
-            }
-            const epoch = await this.ensureJobEpoch()
-            await this.ctx.storage.transaction(async (txn) => {
-              if (await txn.get<number>("conversationJobEpoch") !== epoch) throw new Error("recovery epoch changed")
-              const live = await txn.get<ConversationState>("state")
-              const liveReservation = live?.budgetReservation
-              if (!liveReservation?.dispatched || liveReservation.reservationID !== reservation.reservationID ||
-                liveReservation.date !== reservation.date || live?.sessionID !== current.sessionID) {
-                throw new Error("recovery owner changed")
-              }
-              await txn.delete("lifecycleJobsSealed")
-              if (live?.lifecycleJobsSealed) await txn.put("state", { ...live, lifecycleJobsSealed: false })
-              await this.scheduleConversationJob("recovery:wake", Date.now(), {
-                reservationID: reservation.reservationID,
-                reservationDate: reservation.date,
-                sessionID: current.sessionID,
-                reason: "operator-recovery-retry",
-              }, true)
-            })
-            return Response.json({ ok: true, scheduled: true }, { status: 202 })
-          } catch (error) {
-            return Response.json({ error: errorMessage(error), retryable: true }, { status: 503 })
-          } finally {
-            this.recoveryAction = false
-          }
-        }
-
-        {
-          if (this.admitting || this.pumping || this.recoveryAction) {
-            return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
-          }
-          this.recoveryAction = true
-          try {
-            const refreshed = await this.recoveryStatus()
-            if (refreshed.snapshotID !== expectedSnapshotID ||
-              !Array.isArray(refreshed.actions) || !refreshed.actions.includes(action)) {
-              return Response.json({ error: "recovery snapshot changed or action is blocked", recovery: refreshed }, { status: 409 })
-            }
-            const captured = current.budgetReservation
-            if (!captured || captured.dispatched !== false) {
-              return Response.json({ error: "cancellation requires a strictly undispatched proposal" }, { status: 409 })
-            }
-            const refreshedAuthority = isRecord(refreshed.authority) ? refreshed.authority : undefined
-            if (!refreshedAuthority || typeof refreshedAuthority.snapshotID !== "string" ||
-              !/^[a-f0-9]{64}$/.test(refreshedAuthority.snapshotID)) {
-              return Response.json({ error: "Settings authority snapshot is unavailable" }, { status: 503 })
-            }
-            const retirement = isRecord(refreshedAuthority.retirement) ? refreshedAuthority.retirement : undefined
-            if (retirement?.conversationID === this.ctx.id.toString() &&
-              retirement.reservationID === captured.reservationID &&
-              (retirement.reason === "cancelled_before_dispatch" || retirement.reason === "released")) {
-              const cleared = await this.store.clearUndispatchedBudgetProposal(captured)
-              return cleared
-                ? Response.json({ ok: true, cancelled: true, retirement })
-                : Response.json({ error: "local proposal changed after cancellation was recorded" }, { status: 409 })
-            }
-            const response = await this.env.SETTINGS.getByName("global").fetch("https://settings/usage/cancel", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({
-                conversationID: this.ctx.id.toString(),
-                reservationID: captured.reservationID,
-                expectedSnapshotID: refreshedAuthority.snapshotID,
-              }),
-            })
-            const result: unknown = await response.json().catch(() => undefined)
-            if (!response.ok) {
-              return Response.json(isRecord(result) ? result : { error: `Settings cancellation rejected: ${response.status}` }, {
-                status: response.status,
-              })
-            }
-            if (!isRecord(result) || result.ok !== true || typeof result.released !== "boolean" ||
-              !isRecord(result.retirement) ||
-              result.retirement.conversationID !== this.ctx.id.toString() ||
-              result.retirement.reservationID !== captured.reservationID ||
-              (result.retirement.reason !== "cancelled_before_dispatch" && result.retirement.reason !== "released") ||
-              typeof result.retirement.retiredAt !== "number" || !Number.isFinite(result.retirement.retiredAt) ||
-              (result.retirement.date !== undefined && (typeof result.retirement.date !== "string" ||
-                !/^\d{4}-\d{2}-\d{2}$/.test(result.retirement.date))) ||
-              (captured.date !== undefined && typeof result.retirement.date === "string" &&
-                result.retirement.date !== captured.date)) {
-              return Response.json({ error: "Settings returned an invalid cancellation receipt" }, { status: 502 })
-            }
-            const cleared = await this.store.clearUndispatchedBudgetProposal(captured)
-            if (!cleared) return Response.json({ error: "local proposal changed after cancellation was recorded" }, { status: 409 })
-            return Response.json({ ok: true, cancelled: true, retirement: result.retirement })
-          } catch (error) {
-            return Response.json({ error: errorMessage(error), retryable: true }, { status: 503 })
-          } finally {
-            this.recoveryAction = false
-          }
-        }
-      }
-      return action === "cancel_before_dispatch" ? this.usage.serialize(act) : act()
-    })
-  }
-
   private async previewOperatorReconciliation(kind: OperatorReconciliationKind): Promise<Response> {
     return this.withAdmissionLock(async () => {
-      if (this.admitting || this.pumping || this.recoveryAction) {
+      if (this.admitting || this.pumping || this.recoveryActions.active) {
         return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
       }
-      this.recoveryAction = true
       try {
-        return await this.usage.serialize(async () => {
+        return await this.recoveryActions.runAction(() => this.usage.serialize(async () => {
           const result = await this.buildOperatorReconciliationDraft(kind)
           if (!result.ok) return Response.json({ error: result.error, ...(result.blockers ? { blockers: result.blockers } : {}) }, { status: result.status })
           return Response.json(result.body)
-        })
+        }))
       } catch {
         return Response.json({ error: "reconciliation preview could not be verified", retryable: true }, { status: 503 })
-      } finally {
-        this.recoveryAction = false
       }
     })
   }
@@ -2233,7 +2040,7 @@ export class Conversation extends DurableObject<Env> {
   private async buildOperatorReconciliationDraft(kind: OperatorReconciliationKind): Promise<OperatorReconciliationPreviewResult> {
     const conversationID = this.ctx.id.toString()
     const state = await this.store.get()
-    if (this.admitting || this.pumping || this.recoveryAction !== true || state.queued) {
+    if (this.admitting || this.pumping || !this.recoveryActions.active || state.queued) {
       return { ok: false, status: 409, error: "conversation has live or queued work" }
     }
     const reservation = state.budgetReservation
@@ -2521,12 +2328,11 @@ export class Conversation extends DurableObject<Env> {
     }
 
     return this.withAdmissionLock(async () => {
-      if (this.admitting || this.pumping || this.recoveryAction) {
+      if (this.admitting || this.pumping || this.recoveryActions.active) {
         return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
       }
-      this.recoveryAction = true
       try {
-        return await this.usage.serialize(async () => {
+        return await this.recoveryActions.runAction(() => this.usage.serialize(async () => {
           const digest = await operatorReconciliationDigest(proposal)
           const central = await this.operatorReconciliationSnapshot(
             proposal.conversationID, proposal.sessionID, proposal.reservationID,
@@ -2580,11 +2386,9 @@ export class Conversation extends DurableObject<Env> {
             return Response.json({ error: "central reconciliation receipt did not match the reviewed owner" }, { status: 502 })
           }
           return this.clearAcknowledgedOperatorReservation(proposal, receipt, retirement, Boolean(result.replayed))
-        })
+        }))
       } catch {
         return Response.json({ error: "operator reconciliation could not be completed", retryable: true }, { status: 503 })
-      } finally {
-        this.recoveryAction = false
       }
     })
   }
@@ -2966,7 +2770,7 @@ export class Conversation extends DurableObject<Env> {
     if (payload.reservationID && (!reservation?.dispatched || reservation.reservationID !== payload.reservationID ||
       reservation.date !== payload.reservationDate)) return undefined
     if (!reservation?.dispatched && !["running", "settling"].includes(before.phase ?? "idle")) return undefined
-    if (this.recoveryAction || this.admitting || this.pumping) return { rescheduleAt: Date.now() + POLL_MS }
+    if (this.recoveryActions.active || this.admitting || this.pumping) return { rescheduleAt: Date.now() + POLL_MS }
 
     const phase = before.phase ?? "idle"
     if (reservation?.dispatched && phase !== "running" && phase !== "settling") {
@@ -3017,7 +2821,7 @@ export class Conversation extends DurableObject<Env> {
       if (!state.queued || state.queued.id !== payload.queueID) return undefined
       const due = state.queued.nextAttemptAt ?? 0
       if (Date.now() < due) return { rescheduleAt: due }
-      if (this.admitting || this.pumping || this.recoveryAction) return { rescheduleAt: Date.now() + POLL_MS }
+      if (this.admitting || this.pumping || this.recoveryActions.active) return { rescheduleAt: Date.now() + POLL_MS }
       await this.drainQueue()
       const after = await this.store.get()
       if (!after.queued || after.queued.id !== payload.queueID) return undefined
@@ -3037,15 +2841,10 @@ export class Conversation extends DurableObject<Env> {
     const due = state.checkpointRetryAt ?? Date.now() + CHECKPOINT_RETRY_MS
     if (!state.checkpointRetryAt) await this.store.patch({ checkpointRetryAt: due })
     if (Date.now() < due) return { rescheduleAt: due }
-    if ((state.phase ?? "idle") !== "idle" || this.admitting || this.pumping || this.recoveryAction) {
+    if ((state.phase ?? "idle") !== "idle" || this.admitting || this.pumping || this.recoveryActions.active) {
       return { rescheduleAt: Date.now() + POLL_MS }
     }
-    this.recoveryAction = true
-    try {
-      await this.checkpoints.retry()
-    } finally {
-      this.recoveryAction = false
-    }
+    await this.recoveryActions.runAction(() => this.checkpoints.retry())
     return undefined
   }
 
@@ -3073,7 +2872,7 @@ export class Conversation extends DurableObject<Env> {
     if (payload.reason === "stale-admission-recovery") {
       if ((state.phase ?? "idle") !== "admitting" || state.budgetReservation?.dispatched ||
         (payload.admissionID && state.admissionID !== payload.admissionID)) return undefined
-      if (this.recoveryAction || this.admitting || this.pumping) return { rescheduleAt: Date.now() + POLL_MS }
+      if (this.recoveryActions.active || this.admitting || this.pumping) return { rescheduleAt: Date.now() + POLL_MS }
       if (staleAction(state, Date.now(), false) !== "admission") return undefined
       const queueID = state.queued?.id ?? (state.queued ? crypto.randomUUID() : undefined)
       const retryAt = state.queued ? Math.max(state.queued.nextAttemptAt ?? 0, Date.now()) : undefined
@@ -3098,7 +2897,7 @@ export class Conversation extends DurableObject<Env> {
     const reservation = state.budgetReservation
     if (!reservation?.dispatched || reservation.reservationID !== payload.reservationID ||
       reservation.date !== payload.reservationDate) return undefined
-    if (this.recoveryAction || this.admitting || this.pumping) return { rescheduleAt: Date.now() + POLL_MS }
+    if (this.recoveryActions.active || this.admitting || this.pumping) return { rescheduleAt: Date.now() + POLL_MS }
     // This wake only observes/reconciles the already dispatched prompt.
     if (!(["running", "settling"].includes(state.phase ?? "idle"))) await this.resumeDispatchedTurn(false)
     await this.scheduleConversationJob("turn:observe", Date.now() + POLL_MS, {
@@ -3226,12 +3025,11 @@ export class Conversation extends DurableObject<Env> {
 
   private async previewRuntimeUpgrade(): Promise<Response> {
     return this.withAdmissionLock(async () => {
-      if (this.admitting || this.pumping || this.recoveryAction) {
+      if (this.admitting || this.pumping || this.recoveryActions.active) {
         return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
       }
-      this.recoveryAction = true
       try {
-        return await this.usage.serialize(async () => {
+        return await this.recoveryActions.runAction(() => this.usage.serialize(async () => {
           const pending = await this.readRuntimeUpgradePending()
           if (pending) {
             const state = await this.store.get()
@@ -3246,11 +3044,9 @@ export class Conversation extends DurableObject<Env> {
           const draft = await this.buildRuntimeUpgradePlan()
           if (!draft.ok) return Response.json({ canApply: false, blockers: draft.blockers, error: draft.error }, { status: draft.status })
           return Response.json(draft.body)
-        })
+        }))
       } catch {
         return Response.json({ error: "runtime upgrade preview could not be verified", retryable: true }, { status: 503 })
-      } finally {
-        this.recoveryAction = false
       }
     })
   }
@@ -3267,7 +3063,7 @@ export class Conversation extends DurableObject<Env> {
     if (state.queued) blockers.push("queued_work")
     if (state.budgetReservation) blockers.push("local_usage_hold")
     if (state.checkpointPending) blockers.push("checkpoint_pending")
-    if (this.admitting || this.pumping || !this.recoveryAction) blockers.push("live_local_operation")
+    if (this.admitting || this.pumping || !this.recoveryActions.active) blockers.push("live_local_operation")
     const target = this.ctx.container?.images?.evented
     const targetImage = typeof target === "string" ? target : ""
     if (!/^[a-zA-Z0-9._:/-]+@sha256:[a-f0-9]{64}$/.test(targetImage)) blockers.push("pinned_evented_image_unavailable")
@@ -3394,12 +3190,11 @@ export class Conversation extends DurableObject<Env> {
 
   private async applyRuntimeUpgrade(expectedPlanID: string): Promise<Response> {
     return this.withAdmissionLock(async () => {
-      if (this.admitting || this.pumping || this.recoveryAction) {
+      if (this.admitting || this.pumping || this.recoveryActions.active) {
         return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
       }
-      this.recoveryAction = true
       try {
-        return await this.usage.serialize(async () => {
+        return await this.recoveryActions.runAction(() => this.usage.serialize(async () => {
           const completed = await this.ctx.storage.get<RuntimeUpgradeCompletion>("runtimeUpgradeCompletion")
           if (completed?.planID === expectedPlanID && completed.conversationID === this.ctx.id.toString()) {
             return Response.json({ ok: true, completed: true, replayed: true, receipt: completed })
@@ -3460,11 +3255,9 @@ export class Conversation extends DurableObject<Env> {
             return Response.json({ error: "restored runtime proof is incomplete; upgrade remains pending" }, { status: 503 })
           }
           return Response.json({ ok: true, completed: true, receipt })
-        })
+        }))
       } catch (error) {
         return Response.json({ error: errorMessage(error), pending: true, retryable: true }, { status: 503 })
-      } finally {
-        this.recoveryAction = false
       }
     })
   }
@@ -3731,7 +3524,7 @@ export class Conversation extends DurableObject<Env> {
 
   /** Hold one admission when the container cannot start; drain it from the alarm. */
   private async enqueue(text: string, slack?: SlackTarget): Promise<boolean> {
-    if (this.recoveryAction || await this.hasPendingRuntimeUpgrade()) return false
+    if (this.recoveryActions.active || await this.hasPendingRuntimeUpgrade()) return false
     const nextAttemptAt = Date.now() + 5000
     const entry = {
       id: crypto.randomUUID(),
@@ -3776,13 +3569,13 @@ export class Conversation extends DurableObject<Env> {
   }
 
   private async drainQueue(): Promise<boolean> {
-    if (this.admitting || this.pumping || this.recoveryAction) return false
+    if (this.admitting || this.pumping || this.recoveryActions.active) return false
     // Claim the queued work under the same lock as admissions, so a new
     // message cannot start while the queue is being drained.
     const queued = await this.withAdmissionLock(async () => {
       const state = await this.store.get()
       // The warm stream stays connected while idle; it must not block the queue.
-      if (!state.queued || this.admitting || this.pumping || this.recoveryAction || state.budgetReservation?.dispatched) return undefined
+      if (!state.queued || this.admitting || this.pumping || this.recoveryActions.active || state.budgetReservation?.dispatched) return undefined
       if (Date.now() < (state.queued.nextAttemptAt ?? 0)) return undefined
       const phase = state.phase ?? "idle"
       if (phase === "running" || phase === "settling" || phase === "admitting") return undefined
