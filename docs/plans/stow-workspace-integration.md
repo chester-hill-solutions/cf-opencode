@@ -276,7 +276,8 @@ The earlier successful receipts are retained as hash-bound historical runs.
 C1 qualifies this local split-archive path in disposable containers, not
 Cloudflare/R2 recovery or production startup. Multipart recovery, generic
 object-only migration and cold restore remain unqualified. The separate
-container CI issue above also remains pending the new revision's run.
+container CI gate passed for code commit `002983b`: both application checks and
+rebuilt-container smoke succeeded in [run 43175201864](https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43175201864).
 
 Diagnostic commit `fddce34` reproduced a stall in the initial `/start`, with
 Stow health returning 200 and OpenCode logging ready. This rules out treating
