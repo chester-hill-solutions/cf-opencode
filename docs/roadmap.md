@@ -139,11 +139,12 @@ Cloudflare Containers, the stow-s3 hot workspace and R2 recovery checkpoints.
 Prioritize R0 reliability and measured recovery, R1 tenant/credential isolation,
 then R2 onboarding. No alternative-runtime prototype is scheduled.
 
-**Stow integration prerequisite:** source inspection found that current startup
-selects the generic filesystem object store rather than Stow's registered
-shared-directory Workspace. R0-15 repairs that wiring and proves bidirectional
-file/S3 visibility plus R2-only cold recovery. This is work on the selected native
-stack; the same-bytes claim remains unverified until its acceptance checks pass.
+**Stow integration evidence — 2026-11-12:** native Workspace startup now passes
+the full rebuilt-container smoke on native amd64. An isolated Cloudflare test
+restored the same identity, exact file/S3 bytes and content type from encrypted
+R2 archives after destroying the old container, without snapshots or model calls.
+Production cutover, additional S3 operations, unusual keys, multipart and active
+writer consistency remain open under R0-15.
 See the [integration plan](plans/stow-workspace-integration.md).
 
 The [runtime feasibility research](plans/wasm-sandbox-feasibility.md) remains a
@@ -207,7 +208,7 @@ repositories until R1-7 removes long-lived credentials from repository execution
 | R0-12 | Audit 32: record the trusted-repository rollout boundary and add a synthetic repository-code probe; track credential removal in R1-7 | S | agent | **documentation/probe evidence done**; audit 32 credential isolation remains open until R1-7 |
 | R0-13 | Audit 33: controlled 400 responses for malformed JSON/body shapes across HTTP JSON routes | S | agent | **done locally**; deployed verification remains open |
 | R0-14 | Retain the assessment reproductions as regression tests; cover retention, queue recovery, concurrent reservations and malformed input | M | agent | **done locally**; broader G0 criteria remain open |
-| R0-15 | Correct native Stow Workspace startup/readiness/identity, preserve existing object-only data, and verify disk ↔ S3 plus R2-only cold recovery | M | agent | **planned**; source-level integration mismatch identified; [ordered slices and acceptance](plans/stow-workspace-integration.md) |
+| R0-15 | Native Stow Workspace startup/readiness/identity and disk ↔ S3 plus encrypted R2-only cold recovery; legacy retention only for named operator data | M | agent | **B2/C2 bounded proofs passed**; native amd64 CI and isolated Cloudflare recovery verified. Production cutover, further S3 operations, unusual keys, multipart and active writers remain open in the [canonical plan](plans/stow-workspace-integration.md) |
 
 **Exit criteria**
 

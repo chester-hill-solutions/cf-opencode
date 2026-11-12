@@ -6,9 +6,10 @@ Coverage: local repairs in R0-10–R0-14. G0, G1 and audit 32 remain open.
 
 **Subsequent planning addition:** [R0-15 Stow workspace integration](stow-workspace-integration.md)
 records the generic-store/shared-directory mismatch and its native startup/recovery
-acceptance. It is planned work outside the completed repair scope below; prior
-local gates do not verify it. The roadmap adds it to G0 without reopening the
-alternative-runtime investigation.
+acceptance. Its later B2 native amd64 startup smoke and bounded C2 encrypted
+Cloudflare/R2 cold restore passed on 2026-11-12, independently of the older gates
+below. Production cutover and wider storage qualification remain open in the
+owning integration plan; G0 is not closed by those bounded proofs.
 
 Execution checkpoint: W1–W9, W10 independent review, W11 local gate and W12 evidence
 publication are complete. The final gate passed with 212 unit tests/34 files, 100 Worker
