@@ -92,6 +92,11 @@ and local verification. The integrated gate passed 562 tests (307 Bun, including
 deployment checks. No live hold has been changed and no reconciliation approval
 has been applied.
 
+Current approval state: the HTTP observed-actual GET preview returns
+`canApply:true`, but its exact operator decision is still pending. The DM
+unknown-amount case needs a fresh preview before any decision. No reconciliation
+POST has been issued; both existing holds remain unchanged.
+
 S8c first-turn evidence: the original HTTP conversation can have an undefined
 local `turnBaseline` on its first accepted turn; that is a valid pre-turn state.
 After the durable `runStartedAt` marker, its native history contains exactly one
