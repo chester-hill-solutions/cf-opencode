@@ -1,6 +1,12 @@
 import type { makeClient } from "../opencode"
+import { traceId } from "../telemetry"
 import { ConversationStore } from "../state"
 import { parseFormAnswer, visibleFields, type Form, type FormAnswer } from "../slack-forms"
+import {
+  emitConversationTelemetry,
+  type ConversationTelemetryEventName,
+  type ConversationTelemetryResult,
+} from "./telemetry"
 
 type OpenCodeClient = ReturnType<typeof makeClient>
 
@@ -20,6 +26,7 @@ export interface SlackFormRequest {
 }
 
 export interface ControlPlaneOptions {
+  conversationID?: string
   storage: DurableObjectStorage
   store: ConversationStore
   withClient<T>(fn: (client: OpenCodeClient) => Promise<T>, recoverOnRejection?: boolean): Promise<T>
@@ -39,6 +46,19 @@ export class ConversationControlPlane {
   private tokenFlight?: Promise<string>
 
   constructor(private readonly options: ControlPlaneOptions) {}
+
+  private emitPermissionTelemetry(
+    event: Extract<ConversationTelemetryEventName, `permission.${string}`>,
+    result: ConversationTelemetryResult,
+    reasonCode?: string,
+  ): void {
+    emitConversationTelemetry({
+      event,
+      ...(this.options.conversationID ? { conversationID: this.options.conversationID } : {}),
+      result,
+      ...(reasonCode ? { reasonCode } : {}),
+    }, undefined, traceId)
+  }
 
   get cachedToken(): string | undefined {
     return this.cached
@@ -150,14 +170,32 @@ export class ConversationControlPlane {
   async onPermission(input: PermissionRequest): Promise<Response> {
     return this.options.withAdmissionLock(async () => {
       if (await this.options.hasPendingRuntimeUpgrade()) {
+        this.emitPermissionTelemetry("permission.reply.blocked", "blocked", "runtime_upgrade_pending")
         return Response.json({ error: "runtime upgrade is pending" }, { status: 409 })
       }
       const sessionID = (await this.options.store.peekPermission(input.requestID)) ?? input.sessionID
-      if (!sessionID) return Response.json({ ok: false, error: "unknown request" }, { status: 404 })
-      await this.options.withClient((client) =>
-        client.permission.reply({ sessionID, requestID: input.requestID, decision: input.decision }),
+      if (!sessionID) {
+        this.emitPermissionTelemetry("permission.reply.blocked", "blocked", "unknown_request")
+        return Response.json({ ok: false, error: "unknown request" }, { status: 404 })
+      }
+      try {
+        await this.options.withClient((client) =>
+          client.permission.reply({ sessionID, requestID: input.requestID, decision: input.decision }),
+        )
+      } catch (error) {
+        this.emitPermissionTelemetry("permission.reply.failed", "failed", "upstream_rejected")
+        throw error
+      }
+      try {
+        await this.options.store.clearPermission(input.requestID)
+      } catch (error) {
+        this.emitPermissionTelemetry("permission.reply.failed", "failed", "local_clear_failed")
+        throw error
+      }
+      this.emitPermissionTelemetry(
+        "permission.resolved",
+        input.decision === "reject" ? "denied" : "approved",
       )
-      await this.options.store.clearPermission(input.requestID)
       return Response.json({ ok: true })
     })
   }

@@ -1,3 +1,6 @@
+import { traceId } from "../telemetry"
+import { emitConversationTelemetry, type ConversationTelemetryEventName, type ConversationTelemetryResult } from "./telemetry"
+
 const LEASE_TTL_MS = 10 * 60_000
 const LEASE_RENEW_MS = LEASE_TTL_MS / 2
 const LEASE_RETRY_MS = 30_000
@@ -27,6 +30,7 @@ export interface ConversationLeaseOptions {
     schedule(at: number, reason: string): Promise<void>
     cancel(): Promise<void>
   }
+  count?(name: "capacity.rejected"): Promise<void>
 }
 
 /** Conversation-side intent and retry layer; Settings remains lease authority. */
@@ -34,6 +38,19 @@ export class ConversationLease {
   private tail: Promise<unknown> = Promise.resolve()
 
   constructor(private readonly options: ConversationLeaseOptions) {}
+
+  private emitTelemetry(
+    event: Extract<ConversationTelemetryEventName, `lease.${string}`>,
+    result: ConversationTelemetryResult,
+    reasonCode?: string,
+  ): void {
+    emitConversationTelemetry({
+      event,
+      conversationID: this.options.identity.id,
+      result,
+      ...(reasonCode ? { reasonCode } : {}),
+    }, undefined, traceId)
+  }
 
   private serialize<T>(task: () => Promise<T>): Promise<T> {
     const run = this.tail.then(task, task)
@@ -50,10 +67,16 @@ export class ConversationLease {
 
   ensureHeld(): Promise<void> {
     return this.serialize(async () => {
-      if (!this.options.identity.enabled()) return
       const record = await this.status()
+      const enabled = this.options.identity.enabled()
+      if (!enabled && !record) return
+      if (!enabled && record?.desired === "released") {
+        if (this.options.identity.confirmedStopped()) await this.releasePending(record)
+        return
+      }
       if (record?.desired === "released") {
         if (!(await this.releasePending(record))) throw new Error("container lease authority unavailable")
+        if (!enabled) return
       }
       const current = await this.status()
       if (current?.desired === "held" && current.status === "acknowledged" &&
@@ -64,12 +87,12 @@ export class ConversationLease {
 
   renew(): Promise<void> {
     return this.serialize(async () => {
-      if (!this.options.identity.enabled()) return
       const record = await this.status()
       if (!record) return
       if (record.desired === "released") {
         if (!this.options.identity.confirmedStopped()) {
           await this.persistIntent({ ...record, status: "pending", errorCode: "stopped_unconfirmed" }, "lease-release-retry")
+          this.emitTelemetry("lease.failed", "failed", "stopped_unconfirmed")
           return
         }
         await this.releasePending(record)
@@ -81,7 +104,8 @@ export class ConversationLease {
 
   releaseAfterStop(): Promise<boolean> {
     return this.serialize(async () => {
-      await this.status()
+      const existing = await this.status()
+      if (!this.options.identity.enabled() && !existing) return true
       if (!this.options.identity.confirmedStopped()) return false
       const record: ConversationLeaseRecord = {
         version: 1,
@@ -101,10 +125,13 @@ export class ConversationLease {
       if (!record) return
       if (record.desired === "released") {
         if (this.options.identity.confirmedStopped()) await this.releasePending(record)
-        else await this.persistIntent({ ...record, status: "pending", errorCode: "stopped_unconfirmed" }, "lease-release-retry")
+        else {
+          await this.persistIntent({ ...record, status: "pending", errorCode: "stopped_unconfirmed" }, "lease-release-retry")
+          this.emitTelemetry("lease.failed", "failed", "stopped_unconfirmed")
+        }
         return
       }
-      if (record.desired === "held" && this.options.identity.enabled()) await this.acquire()
+      if (record.desired === "held") await this.acquire()
     })
   }
 
@@ -126,14 +153,22 @@ export class ConversationLease {
       })
     } catch {
       await this.persistIntent({ ...pending, errorCode: "authority_unavailable" }, "lease-renew-retry")
+      this.emitTelemetry("lease.failed", "failed", "authority_unavailable")
       throw new Error("container lease authority unavailable")
     }
     if (response.status === 429) {
       await this.persistIntent({ ...pending, errorCode: "capacity" }, "lease-renew-retry")
+      try {
+        void this.options.count?.("capacity.rejected").catch(() => {})
+      } catch {
+        // Advisory counters cannot change the authority's rejection.
+      }
+      this.emitTelemetry("lease.failed", "failed", "capacity")
       throw new Error("container capacity reached")
     }
     if (!response.ok || !(await acknowledges(response))) {
       await this.persistIntent({ ...pending, errorCode: "authority_unavailable" }, "lease-renew-retry")
+      this.emitTelemetry("lease.failed", "failed", "authority_unavailable")
       throw new Error("container lease authority unavailable")
     }
     await this.persistIntent({
@@ -143,11 +178,13 @@ export class ConversationLease {
       requestStartedAt,
       acknowledgedUntil: requestStartedAt + LEASE_TTL_MS,
     }, "lease-renew", requestStartedAt + LEASE_RENEW_MS)
+    this.emitTelemetry("lease.renewed", "renewed", "acquire_or_refresh")
   }
 
   private async releasePending(record: ConversationLeaseRecord): Promise<boolean> {
     if (!this.options.identity.confirmedStopped()) {
       await this.persistIntent({ ...record, status: "pending", errorCode: "stopped_unconfirmed" }, "lease-release-retry")
+      this.emitTelemetry("lease.failed", "failed", "stopped_unconfirmed")
       return false
     }
     const pending: ConversationLeaseRecord = {
@@ -168,16 +205,19 @@ export class ConversationLease {
       })
     } catch {
       await this.persistIntent({ ...pending, errorCode: "authority_unavailable" }, "lease-release-retry")
+      this.emitTelemetry("lease.failed", "failed", "authority_unavailable")
       return false
     }
     if (!response.ok || !(await acknowledges(response))) {
       await this.persistIntent({ ...pending, errorCode: "authority_unavailable" }, "lease-release-retry")
+      this.emitTelemetry("lease.failed", "failed", "authority_unavailable")
       return false
     }
     await this.options.storage.transaction(async (txn) => {
       await txn.delete("containerLease")
       await this.options.jobs.cancel()
     })
+    this.emitTelemetry("lease.released", "released")
     return true
   }
 

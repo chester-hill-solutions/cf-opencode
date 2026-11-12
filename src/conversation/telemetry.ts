@@ -23,6 +23,8 @@ export type ConversationTelemetryEventName =
   | "lease.released"
   | "permission.requested"
   | "permission.resolved"
+  | "permission.reply.blocked"
+  | "permission.reply.failed"
   | "container.started"
   | "container.stopped"
 
@@ -100,6 +102,8 @@ const COMPONENT_BY_EVENT: Record<ConversationTelemetryEventName, ConversationTel
   "lease.released": "leases",
   "permission.requested": "permissions",
   "permission.resolved": "permissions",
+  "permission.reply.blocked": "permissions",
+  "permission.reply.failed": "permissions",
   "container.started": "runtime",
   "container.stopped": "runtime",
 }

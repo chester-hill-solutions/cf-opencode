@@ -80,6 +80,40 @@ describe("conversation lifecycle telemetry", () => {
     expect(emitted).not.toHaveProperty("traceId")
   })
 
+  test("types lease and permission outcomes while dropping request data", () => {
+    let emitted: unknown
+    emitConversationTelemetry({
+      event: "lease.renewed",
+      conversationID: "conv_456",
+      result: "renewed",
+      reasonCode: "acquire_or_refresh",
+      requestID: "private-request-id",
+    } as never, (event) => { emitted = event })
+    expect(emitted).toMatchObject({
+      event: "lease.renewed",
+      component: "leases",
+      conversationID: "conv_456",
+      result: "renewed",
+      reasonCode: "acquire_or_refresh",
+    })
+    expect(emitted).not.toHaveProperty("requestID")
+
+    emitConversationTelemetry({
+      event: "permission.reply.blocked",
+      conversationID: "conv_456",
+      result: "blocked",
+      reasonCode: "unknown_request",
+      requestID: "private-request-id",
+    } as never, (event) => { emitted = event })
+    expect(emitted).toMatchObject({
+      event: "permission.reply.blocked",
+      component: "permissions",
+      result: "blocked",
+      reasonCode: "unknown_request",
+    })
+    expect(emitted).not.toHaveProperty("requestID")
+  })
+
   test("swallows trace getter and sink failures", () => {
     expect(() => emitConversationTelemetry({ event: "lease.failed" }, () => {
       throw new Error("test sink failed")
