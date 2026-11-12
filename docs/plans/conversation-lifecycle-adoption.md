@@ -1,8 +1,7 @@
 # Conversation Lifecycle adoption
 
-Status: execution in progress on the isolated lifecycle branch. Alarm/lease
-integration and most extractions are verified. Sealed-idle recovery repair,
-runtime-use exclusion, idle-close measurement and remaining telemetry are open.
+Status: required implementation and runtime qualification complete on the review
+branch. Production rollout remains separate; optional protocol extensions deferred.
 Date: 2026-11-12. Baseline: `0c90963`. Owner: platform/runtime.
 
 ## Outcome
@@ -32,11 +31,11 @@ Execution snapshot (the detailed assignments and release gates remain below):
 | Slice | State |
 |---|---|
 | LC-0 | SDK pin/SQLite compatibility and earlier native smoke verified. |
-| LC-1a | Full alarm cutover verified locally and in CI/native smoke through `6d85109` (run 43295111182). |
+| LC-1a | Full alarm cutover verified locally and in CI/native smoke through `02e4ddf` (run 43313283317). |
 | LC-1b | EventStream and durable lease renewal/release recovery wired; integrated local checks pass. Runtime-use/idle-close gating remains LC-3. |
-| LC-2 | Checkpoints, runtime cache/ports, image/snapshot policy, readiness, usage, reservations, recovery actions, reconciliation, cutover, control plane and turn execution extracted. Scheduler, admission/queue and runtime-upgrade families extracted; coordinator reduced to about 1,900 lines. |
-| LC-3 | Runtime-use gate, no-inference measurement tool and isolated qualification fixture prepared. Close/reopen policy and actual measurements pending. |
-| LC-4 | Checkpoint, lease and permission outcome events wired/tested. Recovery actions wired; turn/admission/runtime categories pending. |
+| LC-2 | Checkpoints, runtime cache/ports, image/snapshot policy, readiness, usage, reservations, recovery actions, reconciliation, cutover, control plane and turn execution extracted. Scheduler, admissions, upgrades, sessions, Slack and provider onboarding extracted; coordinator reduced from 4,833 to about 1,220 lines. |
+| LC-3 | Verified locally, in native CI, and through three isolated Cloudflare encrypted same-session close/restore cycles; measurement/cleanup receipt saved. |
+| LC-4 | Required categories wired/tested with allowlisted events; native URL-safe generation IDs retained, sampling/annotations preserved. |
 | LC-5 | Existing replay/dedupe guarantees and limits documented. Optional protocol extensions deferred. |
 
 ### Research baseline
@@ -320,7 +319,7 @@ parallel. Models below are available in this session, not product model choices.
 | LC-2a | Dispatch owner, `gpt-6-luna` / high | Runtime + checkpoint modules/tests; LC-1 | Mechanical extraction preserves runtime image/policy/auth and encrypted archive contracts, protected seams and all existing recovery tests. |
 | LC-2b | Same dispatch owner, `gpt-6-luna` / high | Turns, usage/reconciliation and recovery; LC-2a | HTTP/Slack share the same admission service; no dispatcher or accounting store duplication; locks/tails remain with owners. |
 | LC-2c | Same owner, `gpt-6-luna` / medium | Control plane + event-stream modules; LC-2b | Coordinator delegates cohesive operations; routes, permission denies, credential custody and replay/backpressure unchanged. |
-| LC-3 | Inventory owner, `gpt-6-luna` / high | Idle policy, runtime close/reopen + bench extensions; LC-2 | Close races/failures/unknown holds fail safe; same-session encrypted cold restore and measurements pass. |
+| LC-3 | Parent locks contracts; persistent inventory owner, `gpt-6-luna` / medium, and dispatch owner / high | Idle policy, runtime close/reopen + bench extensions; LC-2 | Close races/failures/unknown holds fail safe; same-session encrypted cold restore and measurements pass. |
 | LC-4 | Same inventory owner, `gpt-6-luna` / medium | Typed telemetry + adoption note; LC-3 | Required transitions share the envelope, redaction/sampling tests pass, internal note records implemented SDK version and remaining differences. |
 | LC-5 optional | Dispatch owner, `gpt-6-luna` / medium | Replay handoff/idempotency documentation; after required slices | Race-free snapshot+watermark/live handoff regression; current dedupe limits documented. Permanent receipts and new public after/follow API need a separate bounded contract. |
 | Acceptance | Parent + one `gpt-6.1-terra` / high review | SDK/DO transaction, failure and teardown invariants, not routine implementation | Consequential review findings addressed; integrated gates and scoped runtime evidence recorded. |
@@ -570,3 +569,44 @@ prove these contracts; the review is not runtime qualification.
   financial retries. Pure classifier tests cover maintenance intent, malformed
   evidence, active claims, unknown holds and snapshot changes. Durable log
   consumption now stays inside its client borrow; nine ledger tests pass.
+
+- Whole-operation runtime borrowing now covers SDK callbacks, log iteration,
+  checkpoint transfer, onboarding responses and admin teardown. A shared
+  streaming archive verifier removes duplicate validation and avoids buffering
+  whole tarballs during each idle check. Focused archive/telemetry/recovery
+  Worker checks passed (10 tests). Idle unit scenarios now run under Worker
+  types: 19 tests cover demand races, stop/release uncertainty and passive-stop
+  capacity cleanup. Actual native close/restore measurement is still pending.
+- Consequential review identified two P2s: lost canonical identity on cold alarms
+  could select a global credential seed, and demand after a close claim could
+  abandon the close rather than wait/reopen. Both are repaired with focused
+  regressions. Review found no remaining P1 in its narrow recheck. Eight original
+  security/authority source hashes remain unchanged; the ninth (`recovery.ts`)
+  deliberately adds only the guarded sealed-idle branch and snapshot evidence.
+
+- Final transport extraction moves Slack policy/delivery, shared session setup and
+  provider onboarding into narrow owners. Warm provider diagnostics borrow the
+  runtime without starting it or refreshing idle activity. Forty-eight focused
+  adapter Worker checks passed before final integration.
+- The first full gate passed all five typecheck targets, 399 Bun plus five runtime
+  tests, config and UI build. Worker integration found 26 failures, chiefly old
+  fixtures forwarding a key different from the named object, plus four removed
+  private Slack hooks. These are being corrected without weakening identity
+  validation; the acceptance gate remains open until the full rerun passes.
+
+- The corrected full gate passed 337 Worker tests across 57 files, 399 root Bun
+  plus five runtime tests, all five typecheck projects, config, UI build and diff
+  checks. [CI/native run 43313283317](https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43313283317)
+  passed at `02e4ddf`. The later generation-ID serialization correction adds one
+  passing regression (seven envelope tests) and passes full typecheck; final CI
+  will cover that follow-up too.
+- LC-3's real Cloudflare qualification passed three measured cycles without model
+  inference: warm context median 186.7 ms, cold restore median 6,441.6 ms, paired
+  delta 6,254.8 ms; observed shutdown 31.45–32.21 seconds. Source/image, raw samples,
+  same-session proof and limits are in [the receipt](../../bench/lifecycle-idle-2026-11-12.json).
+  The isolated Worker, container app and empty bucket were deleted; fresh local
+  secrets removed. No production resources, holds or conversations were changed.
+- Native qualification exposed generation IDs beginning with hyphens. The
+  allowlist now retains those URL-safe identifiers while still rejecting paths
+  and free-form values. This changes telemetry serialization only; runtime
+  measurements above remain tied to their recorded source commit.

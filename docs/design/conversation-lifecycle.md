@@ -1,8 +1,7 @@
 # Conversation lifecycle kernel
 
-Status: LC-0 and Conversation alarm integration verified in CI/native smoke; remaining
-module extraction, runtime-use gating, idle close and remaining telemetry wiring
-are pending. Durable lease integration passes the current local integrated gate.
+Status: implemented and locally verified; native CI and isolated Cloudflare cold
+restore qualification passed. Production has not been rolled out.
 Implementation sequence: [adoption plan](../plans/conversation-lifecycle-adoption.md).
 
 We use `agents@0.33.0` through `agents/lifecycle` on the existing Conversation
@@ -32,12 +31,40 @@ required. Slow work needs a durable backstop before it leaves the alarm handler;
 for the SDK breaker. A completed old attempt must not cancel a newer intent.
 
 Separate owners now handle encrypted checkpoints, image/snapshot selection,
-runtime cache/ports, usage replay, budget reservations, recovery actions and
-control tokens/permission forms. Settings remains the lease authority: a named
+runtime cache/ports, readiness, usage replay, reservations, recovery actions,
+admissions, runtime upgrades, reconciliation, cutover and control tokens/forms.
+The coordinator retains transport routing and composition. Settings remains the lease authority: a named
 job renews its ten-minute lease halfway through its acknowledged lifetime.
 Unknown release outcomes retain durable retry intent. Destructive lifecycle
 actions keep state when stop or release is unconfirmed; new dispatch requires
 a valid lease while observation of existing dispatched work remains possible.
+
+Runtime access uses a fair shared/exclusive gate. A client borrow covers response
+and log consumption; checkpoint capture enters that gate before its publication
+tail. Readiness and teardown use explicit already-owned primitives rather than
+reentrant access. The native event reader is separately owner-fenced and cancelled
+on every physical stop; it never holds a permanent shared borrow. Idle/admin
+cleanup takes admission, drains that stream, serializes usage, then takes runtime
+exclusivity. Lease renewal has an independent tail and can run during long I/O.
+
+Idle close proves the session is quiescent and Settings has no unresolved owner,
+then authenticates both published encrypted archives by streaming their full
+contents. It persists a close intent before stopping, invalidates fast snapshots,
+and releases capacity only after confirmed stop and authority acknowledgement.
+Queued uses wait for a committed close, then restore the same durable session.
+Unknown stop/release retains the intent and returns a retryable 503. An already
+stopped binding can release capacity without changing any financial hold.
+
+Memory sealing preserves financial uncertainty. A snapshot-fenced operator retry
+can also resume a sealed idle conversation without a reservation: it rechecks
+Settings, cached execution, epoch, active claims and maintenance intent, then
+atomically unseals and restores checkpoint, lease and idle maintenance jobs.
+Failure rolls back the unseal. Cleanup returns an actionable 409 until that retry;
+it never infers zero usage. Existing dispatched recovery remains observation only.
+
+Named identity comes from `ctx.id.name` before alarm startup, and forwarded headers
+must agree. Missing identity blocks runtime preparation rather than selecting a
+global account seed. This uses the documented [named-object alarm identity](https://developers.cloudflare.com/durable-objects/api/id/).
 
 The HTTP EventStream capability owns process-local subscribers and its own
 heartbeat job. Replay entries are appended by ConversationStore before broadcast;
@@ -70,10 +97,27 @@ log remains the accounting evidence source, separate from public replay.
 | Authorization/accounting | Existing non-relaxable permission denies, constant-time control auth, tenancy, Settings, budgets, holds and operator receipts remain authoritative. |
 | Public replay | Existing retained 200-event SSE log, cursor replay and reset; not a new SDK session.events()/session.log() protocol. |
 | Submission dedupe | Existing idempotency keys and bounded dedupe/tombstones. This is not a permanent receipt or exactly-once provider guarantee. |
-| Idle close | The current platform safety timeout is ten minutes. A checkpointed approximately 30-second close/reopen policy and its measurements remain pending. Embedded-host close timing is not evidence of container cold-start cost. |
+| Idle close | Approximately 30 seconds after completed native runtime use, subject to quiescence, ledger and encrypted split-checkpoint proof. Public SSE/diagnostic reads do not refresh it. The platform ten-minute safety timeout remains. Measured empty-session cold context median is 6.44 seconds versus 187 ms warm; see bench results. |
 
 The official [Lifecycle](https://developers.cloudflare.com/agents/runtime/lifecycle/)
 and [OpenCodeHarness](https://developers.cloudflare.com/agents/harnesses/opencode/)
 references explain the upstream patterns. Our runtime/recovery contracts above
 remain specialized. SDK diagnostics are advisory; existing tracing, head sampling
 and durable accounting evidence must retain their separate roles.
+
+Lifecycle telemetry uses one allowlisted versioned envelope for admission/queue,
+turn start/settlement, checkpoint, recovery, lease, permission and container
+transitions. Settlement is emitted after usage acknowledgement and the durable
+idle transition. Existing counters, annotations and head sampling remain; raw
+provider errors, prompts, credentials and archive keys are excluded from events.
+
+Backout must retain a Lifecycle-aware queue and close-intent reader. Disable new
+idle scheduling and reconcile existing close intents before considering an older
+binary; a pre-SDK binary cannot safely consume these persisted jobs. No production
+rollout is implied by the isolated qualification fixture.
+
+Qualification used three no-inference Cloudflare close/restore cycles. Observed
+idle shutdown was 31.45–32.21 seconds; cold context ranged 6.16–7.39 seconds.
+The [raw receipt](../../bench/lifecycle-idle-2026-11-12.json) records source/image,
+proofs, cleanup and sample limits. These are empty-session public-network
+measurements, not model latency or a p95 claim.

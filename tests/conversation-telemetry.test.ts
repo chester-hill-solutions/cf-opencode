@@ -47,6 +47,14 @@ describe("conversation lifecycle telemetry", () => {
     expect(emitted).not.toHaveProperty("traceId")
   })
 
+  test("retains native URL-safe generations with leading hyphens or underscores", () => {
+    for (const generation of ["--native-generation", "_native-generation"]) {
+      let emitted: unknown
+      emitConversationTelemetry({ event: "container.stopped", runtimeGeneration: generation }, (event) => { emitted = event })
+      expect(emitted).toHaveProperty("runtimeGeneration", generation)
+    }
+  })
+
   test("drops unsafe identifiers and free-form values instead of logging them", () => {
     let emitted: unknown
     emitConversationTelemetry({

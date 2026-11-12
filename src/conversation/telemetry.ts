@@ -138,6 +138,12 @@ function safeIdentifier(value: unknown): string | undefined {
     : undefined
 }
 
+/** Native runtime generations are URL-safe random IDs and may start with - or _. */
+function safeRuntimeGeneration(value: unknown): string | number | undefined {
+  if (typeof value === "number") return Number.isSafeInteger(value) && value >= 0 ? value : undefined
+  return typeof value === "string" && /^[A-Za-z0-9_-][A-Za-z0-9_.:-]{0,127}$/.test(value) ? value : undefined
+}
+
 function safeReasonCode(value: unknown): string | undefined {
   return typeof value === "string" && /^[a-z0-9][a-z0-9_.-]{0,63}$/.test(value)
     ? value
@@ -177,9 +183,7 @@ export function emitConversationTelemetry(
     const sessionID = safeIdentifier(input.sessionID)
     const turnID = safeIdentifier(input.turnID)
     const jobID = safeIdentifier(input.jobID)
-    const runtimeGeneration = typeof input.runtimeGeneration === "number"
-      ? (Number.isSafeInteger(input.runtimeGeneration) && input.runtimeGeneration >= 0 ? input.runtimeGeneration : undefined)
-      : safeIdentifier(input.runtimeGeneration)
+    const runtimeGeneration = safeRuntimeGeneration(input.runtimeGeneration)
     if (conversationID !== undefined) envelope.conversationID = conversationID
     if (sessionID !== undefined) envelope.sessionID = sessionID
     if (turnID !== undefined) envelope.turnID = turnID
