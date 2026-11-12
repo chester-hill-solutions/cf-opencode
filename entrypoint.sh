@@ -13,11 +13,11 @@ export HOME="$STATE_ROOT"
 export XDG_DATA_HOME="$STATE_ROOT/data"
 export XDG_CONFIG_HOME="$STATE_ROOT/config"
 export XDG_CACHE_HOME="$STATE_ROOT/cache"
-export STOW_DIR="${STOW_DIR:-$WORKSPACE/.stow}"
 
 mkdir -p "$WORKSPACE" "$HOME" "$XDG_CONFIG_HOME/opencode" "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$RUN_DIR"
 
-# Workspace: owned outright by the agent.
+# Workspace: owned outright by the agent. Native workspace metadata is created
+# only after the control server has verified that this path is fresh or restored.
 chown -R "$AGENT_UID:$AGENT_GID" "$WORKSPACE"
 
 # State: the top-level directory is root-owned and only the agent group can

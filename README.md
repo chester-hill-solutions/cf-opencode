@@ -12,15 +12,26 @@ Client (HTTP/SSE, Slack, anything)
 Worker ──► Conversation DO (one per conversation)
              ├─ SQLite state: session, targets, dedupe, pending permissions
              ├─ container :4001 control server (status / restore / start / checkpoint)
-             ├─ container :9000 stow-s3 — local S3 for the hot workspace
+             ├─ native Stow Workspace — private loopback S3 endpoint
              ├─ container :4000 opencode serve (cwd /workspace)
              ├─ R2 CHECKPOINTS — cold tar.gz checkpoints
              └─ alarm pump → SSE subscribers (+ Slack delivery when configured)
 ```
 
-- **Hot**: the workspace is a normal POSIX directory *and* an S3 bucket — stow-s3 serves the same bytes, so tools and agents can use `s3://` while OpenCode edits files.
-- **Cold**: after each settled prompt the DO streams a tar.gz of the workspace to R2 (deps excluded, SQLite WAL flushed). A cold container restores it before `opencode serve` starts.
+- **Hot**: a registered native Stow Workspace serves the same `/workspace` bytes through its filesystem and S3 APIs. Startup validates its saved identity and private readiness response before starting OpenCode.
+- **Cold**: after each settled prompt the DO stores separate workspace and OpenCode-state archives in R2. Native `.stow` metadata and its registry are preserved, `node_modules` is excluded, and SQLite uses a consistent backup. A cold container restores both parts before starting the saved Workspace and OpenCode.
 - **Transport-neutral**: every event is emitted to SSE subscribers; Slack receives the same events when a Slack target is set.
+
+OpenCode receives `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID` and
+`S3_SECRET_ACCESS_KEY` from validated native readiness. The endpoint and credentials
+are generated for the running storage process and kept outside the portable R2
+archives.
+
+The pre-customer native-storage cutover supports one format. Fresh empty
+workspaces are initialized once; restored workspaces must resume their saved
+identity. Unsupported old state fails clearly rather than being silently reset
+or converted. See the [integration plan](docs/plans/stow-workspace-integration.md)
+for verification and rollout status.
 
 ## HTTP/SSE API
 
@@ -125,7 +136,8 @@ The kit carries the complete CHS UI set — actions, forms, navigation, overlays
 Onboarding connects a model provider through the running OpenCode instance (OAuth where the
 provider offers it, API key otherwise), connects GitHub through an OAuth App, and sets the
 workspace repository, branch and model. Completing it snapshots the OpenCode state to R2 so
-new conversations start connected. Credentials live in the Settings Durable Object encrypted
+new conversations start connected. Account snapshots omit conversation-specific Stow identity
+and initialization state; each new conversation creates its own Workspace. Credentials live in the Settings Durable Object encrypted
 by [`@chester-hill-solutions/vault`](vendor/chester-hill-solutions/vault); see
 [`docs/runbook.md`](docs/runbook.md#onboarding) for the required secrets and callback URL.
 

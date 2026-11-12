@@ -1,10 +1,10 @@
 # OpenCode harness container.
 #
-# Trust split: the control server runs as root; OpenCode, stow-s3 and every
-# process that touches user files run as the unprivileged `agent` user. Harness
-# state lives in /var/lib/aboiteau/state, outside the agent's workspace.
+# Trust split: the control server runs as root for the synthetic empty Workspace
+# prepare and state coordination. Native Stow serving, OpenCode and user-file
+# operations run as `agent`. Harness state lives outside the agent workspace.
 #
-# Hot workspace: stow-s3 serves /workspace as a local S3 endpoint on :9000.
+# Hot workspace: stow-s3 serves the native /workspace as a local S3 endpoint.
 # Cold storage: the Durable Object streams tar checkpoints to R2.
 #
 # Pins:
@@ -44,6 +44,8 @@ COPY src/permissions.ts ./src/permissions.ts
 COPY src/control-auth.ts ./src/control-auth.ts
 COPY src/tar.ts ./src/tar.ts
 COPY src/accounting-policy.ts ./src/accounting-policy.ts
+COPY stow-workspace.ts ./stow-workspace.ts
+COPY control-lifecycle.ts ./control-lifecycle.ts
 RUN chmod +x entrypoint.sh
 
 # State paths are fixed here and exported by entrypoint.sh. They are deliberately
@@ -51,9 +53,7 @@ RUN chmod +x entrypoint.sh
 ENV ABOITEAU_STATE_DIR=/var/lib/aboiteau/state \
     ABOITEAU_RUN_DIR=/var/lib/aboiteau/run \
     AGENT_UID=1001 \
-    AGENT_GID=1001 \
-    STOW_ACCESS_KEY=stow \
-    STOW_SECRET_KEY=stow-secret
+    AGENT_GID=1001
 
 RUN mkdir -p /workspace "${ABOITEAU_STATE_DIR}" "${ABOITEAU_RUN_DIR}" \
     && chown -R agent:agent /workspace \
@@ -61,5 +61,5 @@ RUN mkdir -p /workspace "${ABOITEAU_STATE_DIR}" "${ABOITEAU_RUN_DIR}" \
     && chmod 0770 "${ABOITEAU_STATE_DIR}" \
     && chmod 0700 "${ABOITEAU_RUN_DIR}"
 
-EXPOSE 4000 4001 9000
+EXPOSE 4000 4001
 CMD ["./entrypoint.sh"]

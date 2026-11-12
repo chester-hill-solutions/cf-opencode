@@ -8,6 +8,7 @@ umask 077
 #
 #   bash scripts/characterize-stow-workspace.sh          # R0-15A regression
 #   bash scripts/characterize-stow-workspace.sh workspace # native Stow B1
+#   bash scripts/characterize-stow-workspace.sh workspace-root # native Stow B2
 #   bash scripts/characterize-stow-workspace.sh recovery-baseline # C1 archive gap
 #   bash scripts/characterize-stow-workspace.sh recovery # C1 split archive recovery
 
@@ -17,6 +18,9 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 if [[ "$MODE" == "workspace" ]]; then
   LOG_DIR="$(mktemp -d "/tmp/stow-workspace-b1-${STAMP}.XXXXXX")"
   NAME="stow-b1-${STAMP}-$$"
+elif [[ "$MODE" == "workspace-root" ]]; then
+  LOG_DIR="$(mktemp -d "/tmp/stow-workspace-b2-${STAMP}.XXXXXX")"
+  NAME="stow-b2-${STAMP}-$$"
 elif [[ "$MODE" == "recovery-baseline" || "$MODE" == "recovery" ]]; then
   LOG_DIR="$(mktemp -d "/tmp/stow-workspace-c1-${STAMP}.XXXXXX")"
   NAME="stow-c1-${STAMP}-$$"
@@ -504,12 +508,221 @@ EOF
   echo "native Workspace B1 characterization passed; evidence: $LOG_DIR"
   cat "$LOG_DIR/result.json"
 }
+
+run_workspace_root_b2() {
+  local manifest_host="$LOG_DIR/workspace-root-manifest.json"
+  local serve_pid=""
+  local root=/workspace
+  local registry=/var/lib/aboiteau/state/stow/registry
+
+  PHASE="workspace-root-preflight"
+  bounded docker exec "$CONTAINER_ID" sh -lc \
+    'test -d /workspace && entries="$(find /workspace -mindepth 1 -maxdepth 1 -print -quit)" && test -z "$entries" && test ! -e /var/lib/aboiteau/state/stow/registry' \
+    || fail "image /workspace was not an existing empty directory"
+  bounded docker exec "$CONTAINER_ID" rmdir /workspace \
+    || fail "could not remove the verified-empty /workspace directory"
+  bounded docker exec "$CONTAINER_ID" sh -lc \
+    'test ! -e /workspace && mkdir -p /tmp/stow-b2/empty && chown -R 1001:1001 /tmp/stow-b2 && chmod 700 /tmp/stow-b2 /tmp/stow-b2/empty' \
+    || fail "could not establish absent root and empty agent-owned input"
+  jq -n '{version:1,root:"/workspace",working_directory:".",registry_dir:"/var/lib/aboiteau/state/stow/registry",bucket:"aboiteau-workspace",inputs:[{source:"/tmp/stow-b2/empty",destination:"."}]}' \
+    >"$manifest_host"
+  chmod 600 "$manifest_host"
+  bounded docker cp "$manifest_host" "$CONTAINER_ID:/tmp/stow-b2/manifest.json" \
+    || fail "could not copy private B2 manifest"
+  bounded docker cp "$ROOT/scripts/stow-s3-probe.ts" "$CONTAINER_ID:/tmp/stow-b2/stow-s3-probe.ts" \
+    || fail "could not copy probe into B2 container"
+  bounded docker exec "$CONTAINER_ID" sh -lc \
+    'chown 1001:1001 /tmp/stow-b2/manifest.json /tmp/stow-b2/stow-s3-probe.ts && chmod 600 /tmp/stow-b2/manifest.json /tmp/stow-b2/stow-s3-probe.ts' \
+    || fail "could not protect B2 input files"
+
+  PHASE="workspace-root-prepare-as-root"
+  if ! BOUNDED_TIMEOUT_MS=30000 bounded docker exec "$CONTAINER_ID" sh -lc \
+    'stow-s3 workspace prepare --manifest /tmp/stow-b2/manifest.json > /tmp/stow-b2/prepared.json 2> /tmp/stow-b2/prepare.stderr'; then
+    bounded docker cp "$CONTAINER_ID:/tmp/stow-b2/prepare.stderr" "$LOG_DIR/prepare.stderr" >/dev/null 2>&1 || true
+    fail "native root-owned workspace prepare failed; see prepare.stderr"
+  fi
+  bounded docker exec "$CONTAINER_ID" sh -lc \
+    'chown 1001:1001 /tmp/stow-b2/prepared.json /tmp/stow-b2/prepare.stderr /tmp/stow-b2/manifest.json /tmp/stow-b2/stow-s3-probe.ts && chmod 600 /tmp/stow-b2/prepared.json /tmp/stow-b2/prepare.stderr' \
+    || fail "could not protect root-owned prepare descriptor"
+  if ! BOUNDED_TIMEOUT_MS=15000 bounded docker exec --user 1001:1001 "$CONTAINER_ID" \
+    bun /tmp/stow-b2/stow-s3-probe.ts workspace-root-prepare-check \
+    /tmp/stow-b2/manifest.json /tmp/stow-b2/prepared.json >"$LOG_DIR/prepare-check.json"; then
+    fail "prepared /workspace descriptor failed identity validation"
+  fi
+  jq -e '.ok == true and .workspaceIDValid and .rootMatches and .workingDirectoryWithinRoot and .workingDirectoryMatchesManifest and .registryMatches and .bucketMatches and .versionMatches' \
+    "$LOG_DIR/prepare-check.json" >/dev/null || fail "prepared /workspace identity did not match manifest"
+
+  PHASE="workspace-root-empty-input-check"
+  bounded docker exec "$CONTAINER_ID" sh -lc \
+    'chown -R 1001:1001 /workspace /var/lib/aboiteau/state/stow' \
+    || fail "could not hand prepared root and native registry to agent UID"
+  bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+    'find /workspace -mindepth 1 -maxdepth 1 ! -name .stow -print | LC_ALL=C sort' \
+    >"$LOG_DIR/prepared-user-visible-paths.txt" || fail "could not inspect prepared /workspace entries"
+  if [[ -s "$LOG_DIR/prepared-user-visible-paths.txt" ]]; then
+    fail "empty directory input created user-visible entries; see prepared-user-visible-paths.txt"
+  fi
+  bounded docker exec "$CONTAINER_ID" sh -lc \
+    'for path in /workspace /workspace/.stow /workspace/.stow/index.json /workspace/.stow/manifest.json /var/lib /var/lib/aboiteau /var/lib/aboiteau/state /var/lib/aboiteau/state/stow /var/lib/aboiteau/state/stow/registry; do stat -c "%u:%g %a %n" "$path"; done; find /workspace/.stow /var/lib/aboiteau/state/stow -printf "%u:%g %m %p\\n" | LC_ALL=C sort' \
+    >"$LOG_DIR/prepared-owners.txt" || fail "could not inspect native metadata/registry ownership"
+  if ! bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+    'test -x /var/lib/aboiteau/state/stow && test -x /var/lib/aboiteau/state/stow/registry && test -r /var/lib/aboiteau/state/stow/registry && find /var/lib/aboiteau/state/stow/registry -maxdepth 1 -print >/dev/null'; then
+    fail "agent UID cannot traverse the native registry path; see prepared-owners.txt"
+  fi
+  if bounded docker exec "$CONTAINER_ID" sh -lc \
+    'test -z "$(find /workspace /workspace/.stow /var/lib/aboiteau/state/stow \( ! -user 1001 -o ! -group 1001 \) -print -quit)"' \
+    >/dev/null 2>&1; then
+    printf '%s\n' '{"noUserVisibleInputFiles":true,"rootMetadataRegistryAgentOwned":true,"agentCanTraverseRegistry":true}' >"$LOG_DIR/prepared-root-check.json"
+  else
+    fail "native root/metadata/registry ownership was not fully transferred to agent UID; see prepared-owners.txt"
+  fi
+  bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+    'find /workspace/.stow -type f -printf "%P\\n" | LC_ALL=C sort' \
+    >"$LOG_DIR/native-metadata-files.txt" || fail "could not capture native metadata paths"
+  bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+    'jq -c "{version,workspace_id,root,working_directory,registry_dir,bucket}" /tmp/stow-b2/prepared.json' \
+    >"$LOG_DIR/prepared-reference.json" || fail "could not capture sanitized descriptor paths"
+  chmod 600 "$LOG_DIR/prepared-reference.json"
+  bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+    'jq -er ".workspace_id | select(type == \"string\" and test(\"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$\"))" /tmp/stow-b2/prepared.json > /tmp/stow-b2/workspace-id && chmod 600 /tmp/stow-b2/workspace-id' \
+    || fail "prepared root workspace identity was invalid"
+
+  cat >"$LOG_DIR/serve-root-supervisor.sh" <<'EOF'
+#!/bin/sh
+set -u
+label="$1"
+base=/tmp/stow-b2
+workspace_id="$(cat "$base/workspace-id")"
+readiness="$base/readiness-${label}.json"
+childpid="$base/serve-${label}.childpid"
+logfile="$base/serve-${label}.log"
+exitfile="$base/serve-${label}.exit"
+stow-s3 workspace serve --id "$workspace_id" --registry-dir /var/lib/aboiteau/state/stow/registry --ready-fd 3 3>"$readiness" >"$logfile" 2>&1 </dev/null &
+child=$!
+printf '%s\n' "$child" >"$childpid"
+wait "$child"
+status=$?
+printf '%s\n' "$status" >"$exitfile.tmp"
+mv "$exitfile.tmp" "$exitfile"
+exit 0
+EOF
+  chmod 600 "$LOG_DIR/serve-root-supervisor.sh"
+  bounded docker cp "$LOG_DIR/serve-root-supervisor.sh" "$CONTAINER_ID:/tmp/stow-b2/serve-supervisor.sh" \
+    || fail "could not copy B2 serve supervisor"
+  bounded docker exec "$CONTAINER_ID" sh -lc \
+    'chown 1001:1001 /tmp/stow-b2/serve-supervisor.sh && chmod 600 /tmp/stow-b2/serve-supervisor.sh' \
+    || fail "could not protect B2 serve supervisor"
+
+  start_root_serve() {
+    local label="$1"
+    local readiness="/tmp/stow-b2/readiness-${label}.json"
+    local supervisor_pidfile="/tmp/stow-b2/serve-${label}.supervisorpid"
+    local child_pidfile="/tmp/stow-b2/serve-${label}.childpid"
+    local logfile="/tmp/stow-b2/serve-${label}.log"
+    bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+      "rm -f '$readiness' '$supervisor_pidfile' '$child_pidfile' /tmp/stow-b2/serve-${label}.exit '$logfile'; nohup sh /tmp/stow-b2/serve-supervisor.sh '$label' >/dev/null 2>&1 </dev/null & echo \$! >'$supervisor_pidfile'" \
+      || fail "could not start B2 native Workspace serve"
+    local ready=0
+    for _ in $(seq 1 120); do
+      if bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+        "test -s '$readiness' && test -s '$supervisor_pidfile' && test -s '$child_pidfile' && kill -0 \$(cat '$child_pidfile')" >/dev/null 2>&1; then
+        ready=1
+        break
+      fi
+      sleep 0.25
+    done
+    [[ "$ready" == 1 ]] || fail "B2 native Workspace readiness timed out"
+    bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+      "chmod 600 '$readiness' '$supervisor_pidfile' '$child_pidfile' '$logfile'; cat '$supervisor_pidfile'; cat '$child_pidfile'" \
+      >"$LOG_DIR/serve-${label}-pids.txt" || fail "could not capture B2 process ownership"
+    bounded docker exec --user 1001:1001 "$CONTAINER_ID" \
+      bun /tmp/stow-b2/stow-s3-probe.ts workspace-root-validation-selftest \
+      /tmp/stow-b2/manifest.json /tmp/stow-b2/prepared.json "$readiness" \
+      >"$LOG_DIR/readiness-${label}-validation.json" \
+      || fail "B2 readiness validation failed"
+    jq -e '.ok == true and .validReadinessAccepted and .noClientBeforeValidation and .s3ClientConstructions == 0 and .versionRejected and .foreignRootRejected and .foreignWorkspaceIDRejected and .offLoopbackEndpointRejected' \
+      "$LOG_DIR/readiness-${label}-validation.json" >/dev/null \
+      || fail "B2 readiness negative checks failed"
+    bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+      "jq -c '{version,workspace_id,root,working_directory,registry_dir,bucket,endpoint}' '$readiness'" \
+      >"$LOG_DIR/readiness-${label}-reference.json" \
+      || fail "could not capture redacted B2 readiness paths"
+    chmod 600 "$LOG_DIR/readiness-${label}-reference.json"
+  }
+
+  stop_root_serve() {
+    local label="$1"
+    local supervisor_pid serve_pid
+    supervisor_pid="$(awk 'NR==1 {print; exit}' "$LOG_DIR/serve-${label}-pids.txt")"
+    serve_pid="$(awk 'NR==2 {print; exit}' "$LOG_DIR/serve-${label}-pids.txt")"
+    [[ "$supervisor_pid" =~ ^[0-9]+$ && "$serve_pid" =~ ^[0-9]+$ ]] || fail "B2 serve process identifiers were invalid"
+    bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+      "test -r '/proc/$supervisor_pid/cmdline' && tr '\\000' ' ' <'/proc/$supervisor_pid/cmdline' | grep -F 'serve-supervisor.sh' >/dev/null && test -r '/proc/$serve_pid/cmdline' && tr '\\000' ' ' <'/proc/$serve_pid/cmdline' | grep -F 'stow-s3 workspace serve' >/dev/null && kill -TERM '$serve_pid'" \
+      || fail "refused to stop unverified B2 native Workspace process"
+    local stopped=0
+    for _ in $(seq 1 80); do
+      if bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+        "test -s /tmp/stow-b2/serve-${label}.exit" >/dev/null 2>&1; then
+        stopped=1
+        break
+      fi
+      sleep 0.25
+    done
+    [[ "$stopped" == 1 ]] || fail "B2 serve child did not exit within bounded wait"
+    bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+      "test \"\$(cat /tmp/stow-b2/serve-${label}.exit)\" = 0" \
+      || fail "B2 native Workspace serve did not exit cleanly"
+  }
+
+  PHASE="workspace-root-first-serve"
+  start_root_serve first
+  if ! BOUNDED_TIMEOUT_MS=15000 bounded docker exec --user 1001:1001 "$CONTAINER_ID" \
+    bun /tmp/stow-b2/stow-s3-probe.ts workspace-root-first \
+    /tmp/stow-b2/manifest.json /tmp/stow-b2/prepared.json /tmp/stow-b2/readiness-first.json \
+    >"$LOG_DIR/workspace-first.json"; then
+    fail "B2 direct-file/S3 round trip failed"
+  fi
+  jq -e '.ok == true and .readinessValid and .rootMatches and .workingDirectoryMatches and .directFileToS3GetMatches and .s3PutToWorkspaceFileMatches' \
+    "$LOG_DIR/workspace-first.json" >/dev/null || fail "B2 first path/S3 equality check failed"
+  stop_root_serve first
+  PHASE="workspace-root-restart"
+  start_root_serve restart
+  if ! BOUNDED_TIMEOUT_MS=15000 bounded docker exec --user 1001:1001 "$CONTAINER_ID" \
+    bun /tmp/stow-b2/stow-s3-probe.ts workspace-root-restart \
+    /tmp/stow-b2/manifest.json /tmp/stow-b2/prepared.json /tmp/stow-b2/readiness-restart.json \
+    >"$LOG_DIR/workspace-restart.json"; then
+    fail "B2 same-ID native Workspace restart failed"
+  fi
+  jq -e '.ok == true and .readinessValid and .rootMatches and .workingDirectoryMatches and .directFileToS3GetMatches and .s3PutToWorkspaceFileMatches' \
+    "$LOG_DIR/workspace-restart.json" >/dev/null || fail "B2 restarted path/S3 equality check failed"
+  stop_root_serve restart
+  jq -n \
+    --arg status "characterized" \
+    --arg image "$EVENTED_IMAGE" \
+    --arg imageID "$(awk '{print $1}' "$LOG_DIR/image-inspect.txt")" \
+    --arg platform "$IMAGE_PLATFORM" \
+    --arg hostArch "$HOST_ARCH" \
+    --arg emulation "$EMULATION" \
+    --arg stowSHA256 "$(awk 'length($1)==64 && $1 ~ /^[0-9a-f]+$/ {print $1; exit}' "$LOG_DIR/stow-binary.txt")" \
+    --arg containerID "$CONTAINER_ID" \
+    --arg containerName "$NAME" \
+    --argjson rootAbsentBeforePrepare true \
+    --argjson emptyInputAccepted true \
+    --argjson rootMetadataRegistryAgentOwned true \
+    --argjson noUserVisibleInputFiles true \
+    --argjson sameIDServeAndRestart true \
+    --argjson s3BidirectionalBytesMatch true \
+    '{status:$status,mode:"b2_workspace_root_preflight",image:$image,imageID:$imageID,platform:$platform,hostArch:$hostArch,emulation:$emulation,stowBinarySHA256:$stowSHA256,containerID:$containerID,containerName:$containerName,rootAbsentBeforePrepare:$rootAbsentBeforePrepare,emptyInputAccepted:$emptyInputAccepted,rootMetadataRegistryAgentOwned:$rootMetadataRegistryAgentOwned,noUserVisibleInputFiles:$noUserVisibleInputFiles,sameIDServeAndRestart:$sameIDServeAndRestart,s3BidirectionalBytesMatch:$s3BidirectionalBytesMatch,prepareAsRoot:true,serveAsAgent:true}' \
+    >"$LOG_DIR/result.json"
+  echo "B2 /workspace root characterization passed; evidence: $LOG_DIR"
+  cat "$LOG_DIR/result.json"
+}
 trap cleanup EXIT INT TERM
 
 for command in docker curl jq tar rg awk openssl bun node; do
   command -v "$command" >/dev/null 2>&1 || fail "missing host command: $command"
 done
-[[ "$MODE" == "generic" || "$MODE" == "workspace" || "$MODE" == "recovery-baseline" || "$MODE" == "recovery" ]] || fail "mode must be generic, workspace, recovery-baseline or recovery"
+[[ "$MODE" == "generic" || "$MODE" == "workspace" || "$MODE" == "workspace-root" || "$MODE" == "recovery-baseline" || "$MODE" == "recovery" ]] || fail "mode must be generic, workspace, workspace-root, recovery-baseline or recovery"
 
 # Resolve the image from wrangler.jsonc instead of accepting a mutable tag or
 # caller-provided replacement.
@@ -633,6 +846,10 @@ done
 # port 9000 and the generic filesystem server remain unused in this mode.
 if [[ "$MODE" == "workspace" || "$MODE" == "recovery-baseline" || "$MODE" == "recovery" ]]; then
   run_workspace_b1
+  exit 0
+fi
+if [[ "$MODE" == "workspace-root" ]]; then
+  run_workspace_root_b2
   exit 0
 fi
 

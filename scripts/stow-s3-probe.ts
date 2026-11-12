@@ -6,6 +6,7 @@
 
 import { isIP } from "node:net"
 import { isAbsolute, relative, resolve } from "node:path"
+import { readFileSync, readlinkSync, readdirSync } from "node:fs"
 
 export {}
 
@@ -44,6 +45,10 @@ const s3Marker = "synthetic-b1-s3-object-bytes-v1\n"
 const metadataKey = "b1-metadata.json"
 const metadataMarker = '{"fixture":"c1-supported-content-type"}\n'
 const metadataType = "application/vnd.aboiteau.synthetic+json"
+const nativeIdentityPath = "/var/lib/aboiteau/state/stow/identity.json"
+const nativeReadinessPath = process.env.STOW_PROBE_READINESS_PATH ?? "/var/lib/aboiteau/run/stow-ready.json"
+const expectedKernelExecutable = process.env.STOW_EXPECTED_KERNEL_EXECUTABLE ?? "/usr/local/bin/stow-s3"
+const controlPort = process.env.CONTROL_PORT ?? "4001"
 
 function asObject(value: unknown): JsonObject | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -73,6 +78,10 @@ function validWorkspaceID(value: unknown): value is string {
 function expectedManifest(value: unknown): WorkspaceManifest | undefined {
   const manifest = asObject(value)
   if (!manifest || manifest.version !== 1) return undefined
+  const rootWorkspaceMode = mode.startsWith("workspace-root-") || mode === "native-process-check"
+  const workspaceRoot = rootWorkspaceMode ? "/workspace" : "/workspace/stow-workspace"
+  const inputSource = rootWorkspaceMode ? "/tmp/stow-b2/empty" : "/tmp/stow-b1/seed.txt"
+  const inputDestination = rootWorkspaceMode ? "." : "seed.txt"
   const root = readString(manifest, "root")
   const workingDirectory = readString(manifest, "working_directory")
   const registryDir = readString(manifest, "registry_dir")
@@ -80,14 +89,14 @@ function expectedManifest(value: unknown): WorkspaceManifest | undefined {
   const inputs = Array.isArray(manifest.inputs) ? manifest.inputs : undefined
   const firstInput = inputs?.length === 1 ? asObject(inputs[0]) : undefined
   if (
-    root !== "/workspace/stow-workspace" ||
+    root !== workspaceRoot ||
     workingDirectory !== "." ||
     registryDir !== "/var/lib/aboiteau/state/stow/registry" ||
     bucket !== "aboiteau-workspace" ||
     !firstInput ||
     Object.keys(firstInput).length !== 2 ||
-    firstInput.source !== "/tmp/stow-b1/seed.txt" ||
-    firstInput.destination !== "seed.txt"
+    firstInput.source !== inputSource ||
+    firstInput.destination !== inputDestination
   ) {
     return undefined
   }
@@ -97,7 +106,7 @@ function expectedManifest(value: unknown): WorkspaceManifest | undefined {
     working_directory: workingDirectory,
     registry_dir: registryDir,
     bucket,
-    inputs: [{ source: "/tmp/stow-b1/seed.txt", destination: "seed.txt" }],
+    inputs: [{ source: inputSource, destination: inputDestination }],
   }
 }
 
@@ -266,6 +275,9 @@ function safeIdentityFlags(
   return {
     workspaceIDPresent: Boolean(identity?.workspaceID),
     rootMatches: Boolean(identity && manifest && resolve(identity.root) === resolve(manifest.root)),
+    workingDirectoryMatches: Boolean(
+      identity && manifest && canonicalWithin(manifest.root, identity.workingDirectory) === identity.workingDirectory,
+    ),
     registryMatches: Boolean(identity && manifest && resolve(identity.registryDir) === resolve(manifest.registry_dir)),
     bucketMatches: Boolean(identity && manifest && identity.bucket === manifest.bucket),
   }
@@ -311,7 +323,8 @@ async function validationSelfTest(manifestPath: string, preparedPath: string, re
     working_directory: ".",
   })
   const relativeWorkingDirectoryCanonicalized =
-    relativeWorkingDirectory.identity?.workingDirectory === resolve("/workspace/stow-workspace")
+    relativeWorkingDirectory.identity?.workingDirectory ===
+    (expectedManifest(manifestValue) ? resolve(expectedManifest(manifestValue)!.root) : undefined)
   const rejects = (changed: JsonObject): boolean =>
     !validateReadiness(manifestValue, preparedValue, changed).client
 
@@ -351,6 +364,35 @@ async function workspaceCheck(
     readJson(preparedPath),
     readJson(readyPath),
   ])
+  await workspaceCheckValues(manifestValue, preparedValue, readyValue, phase, checkMetadata)
+}
+
+function nativeRootManifest(): WorkspaceManifest {
+  return {
+    version: 1,
+    root: "/workspace",
+    working_directory: ".",
+    registry_dir: "/var/lib/aboiteau/state/stow/registry",
+    bucket: "aboiteau-workspace",
+    inputs: [{ source: "/tmp/stow-b2/empty", destination: "." }],
+  }
+}
+
+async function nativeWorkspaceCheck(phase: "first" | "restart"): Promise<void> {
+  const [identity, readiness] = await Promise.all([
+    readJson(nativeIdentityPath),
+    readJson(nativeReadinessPath),
+  ])
+  await workspaceCheckValues(nativeRootManifest(), identity, readiness, phase, true)
+}
+
+async function workspaceCheckValues(
+  manifestValue: unknown,
+  preparedValue: unknown,
+  readyValue: unknown,
+  phase: "first" | "restart",
+  checkMetadata: boolean,
+): Promise<void> {
   const checked = validateReadiness(manifestValue, preparedValue, readyValue)
   if (!checked.client || !checked.identity) {
     process.stdout.write(`${JSON.stringify({
@@ -426,6 +468,203 @@ async function workspaceCheck(
   if (!ok) process.exit(2)
 }
 
+function readProcFile(path: string): string | undefined {
+  try {
+    return readFileSync(path, "utf8")
+  } catch {
+    return undefined
+  }
+}
+
+async function processEnvironmentCheck(): Promise<void> {
+  operation = "validate-native-process-identity-and-environment"
+  const [identityValue, readinessValue] = await Promise.all([
+    readJson(nativeIdentityPath),
+    readJson(nativeReadinessPath),
+  ])
+  const checked = validateReadiness(nativeRootManifest(), identityValue, readinessValue)
+  if (!checked.client || !checked.identity) {
+    process.stdout.write(`${JSON.stringify({ mode, ok: false, readinessValid: false })}\n`)
+    process.exit(2)
+  }
+
+  let opencodeUIDMatches = false
+  let stowUIDMatches = false
+  let opencodeEnvironmentMatches = false
+  let stowUsesPinnedBinary = false
+  let stowKernelExecutableMatches = false
+  let opencodeProcessMatches = false
+  let stowProcessMatches = false
+  let opencodeProcessCount = 0
+  let stowProcessCount = 0
+  for (const entry of readdirSync("/proc", { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue
+    const base = `/proc/${entry.name}`
+    const command = readProcFile(`${base}/cmdline`)
+    if (!command) continue
+    const status = readProcFile(`${base}/status`) ?? ""
+    const uidLine = status.split("\n").find((line) => line.startsWith("Uid:"))
+    const uidValues = uidLine?.trim().split(/\s+/).slice(1, 5) ?? []
+    const agentUID = uidValues.length === 4 && uidValues.every((value) => value === "1001")
+    if (command.includes("/app/runtime/opencode/server.ts")) {
+      opencodeProcessCount++
+      opencodeUIDMatches ||= agentUID
+      const env = readProcFile(`${base}/environ`)
+      const entries = env?.split("\0") ?? []
+      const environmentMatches = entries.includes(`S3_ENDPOINT=${checked.client.endpoint}`) &&
+        entries.includes(`S3_REGION=${checked.client.region}`) &&
+        entries.includes(`S3_BUCKET=${checked.client.bucket}`) &&
+        entries.includes(`S3_ACCESS_KEY_ID=${checked.client.accessKeyId}`) &&
+        entries.includes(`S3_SECRET_ACCESS_KEY=${checked.client.secretAccessKey}`)
+      opencodeEnvironmentMatches ||= environmentMatches
+      opencodeProcessMatches ||= agentUID && environmentMatches
+    }
+    if (command.includes("stow-s3") && command.includes("workspace") && command.includes("serve")) {
+      stowProcessCount++
+      stowUIDMatches ||= agentUID
+      let executable: string | undefined
+      try {
+        executable = readlinkSync(`${base}/exe`)
+      } catch {
+        /* process exited during inspection */
+      }
+      const commandUsesPinnedBinary = command.includes("/usr/local/bin/stow-s3")
+      stowUsesPinnedBinary ||= commandUsesPinnedBinary
+      stowKernelExecutableMatches ||= executable === expectedKernelExecutable
+      stowProcessMatches ||= agentUID && commandUsesPinnedBinary && executable === expectedKernelExecutable
+    }
+  }
+  const ok = opencodeProcessCount === 1 && stowProcessCount === 1 && opencodeProcessMatches && stowProcessMatches
+  process.stdout.write(`${JSON.stringify({
+    mode,
+    ok,
+    readinessValid: true,
+    opencodeAgentUID: opencodeUIDMatches,
+    stowAgentUID: stowUIDMatches,
+    opencodeS3EnvironmentMatchesReadiness: opencodeEnvironmentMatches,
+    stowProcessUsesPinnedBinary: stowUsesPinnedBinary,
+    kernelExecutableMatchesExpected: stowKernelExecutableMatches,
+    expectedKernelExecutable,
+    opencodeProcessIdentityMatches: opencodeProcessMatches,
+    stowProcessIdentityMatches: stowProcessMatches,
+    opencodeProcessCount,
+    stowProcessCount,
+  })}\n`)
+  if (!ok) process.exit(2)
+}
+
+function nativeProcessCounts(): { opencodeProcessCount: number; stowProcessCount: number } {
+  let opencodeProcessCount = 0
+  let stowProcessCount = 0
+  for (const entry of readdirSync("/proc", { withFileTypes: true })) {
+    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue
+    const command = readProcFile(`/proc/${entry.name}/cmdline`)
+    if (!command) continue
+    if (command.includes("/app/runtime/opencode/server.ts")) opencodeProcessCount++
+    if (command.includes("stow-s3") && command.includes("workspace") && command.includes("serve")) {
+      stowProcessCount++
+    }
+  }
+  return { opencodeProcessCount, stowProcessCount }
+}
+
+function nativeProcessCountCheck(): void {
+  operation = "count-native-runtime-processes"
+  const { opencodeProcessCount, stowProcessCount } = nativeProcessCounts()
+  const identityExists = Bun.file(nativeIdentityPath).size > 0
+  const ok = opencodeProcessCount === 0 && stowProcessCount === 0
+  process.stdout.write(`${JSON.stringify({ mode, ok, opencodeProcessCount, stowProcessCount, identityExists })}\n`)
+  if (!ok) process.exit(2)
+}
+
+async function nativeLifecycleObserve(): Promise<void> {
+  operation = "observe-safe-workspace-lifecycle-state"
+  const identity = asObject(await Bun.file(nativeIdentityPath).json().catch(() => undefined))
+  const { opencodeProcessCount, stowProcessCount } = nativeProcessCounts()
+  process.stdout.write(`${JSON.stringify({
+    mode,
+    ok: true,
+    workspaceID: readString(identity ?? {}, "workspace_id") ?? null,
+    initialized: Bun.file("/var/lib/aboiteau/state/initialized").size > 0,
+    workspaceEntries: readdirSync("/workspace").sort(),
+    opencodeProcessCount,
+    stowProcessCount,
+  })}\n`)
+}
+
+async function archiveBoundaryCheck(
+  workspacePath: string,
+  statePath: string,
+  accountPath: string,
+  readinessPaths: string[],
+): Promise<void> {
+  operation = "verify-native-archive-boundaries"
+  const readinessValues = await Promise.all(readinessPaths.map(readJson))
+  const credentials = readinessValues.map((value) => {
+    const readiness = asObject(value)
+    return {
+      accessKey: readString(readiness ?? {}, "access_key_id"),
+      secretKey: readString(readiness ?? {}, "secret_access_key"),
+    }
+  })
+  if (credentials.some(({ accessKey, secretKey }) => !accessKey || !secretKey)) {
+    process.stdout.write(`${JSON.stringify({ mode, ok: false, readinessValid: false })}\n`)
+    process.exit(2)
+  }
+
+  const archives = [workspacePath, statePath, accountPath]
+  const evidence: Array<{ readyFileAbsent: boolean; generatedCredentialsAbsent: boolean }> = []
+  for (const archive of archives) {
+    const listed = Bun.spawnSync(["tar", "tzf", archive], { stdout: "pipe", stderr: "ignore" })
+    if (listed.exitCode !== 0) throw new Error("could not inspect checkpoint archive")
+    const members = new TextDecoder().decode(listed.stdout).split("\n")
+    const bytes = Bun.gunzipSync(new Uint8Array(await Bun.file(archive).arrayBuffer()))
+    const contents = new TextDecoder("latin1").decode(bytes)
+    evidence.push({
+      readyFileAbsent: !members.some((member) => member.endsWith("stow-ready.json")),
+      generatedCredentialsAbsent: credentials.every(({ accessKey, secretKey }) =>
+        !contents.includes(accessKey!) && !contents.includes(secretKey!)),
+    })
+  }
+  const workspaceMetadataPresent = (() => {
+    const listed = Bun.spawnSync(["tar", "tzf", workspacePath], { stdout: "pipe", stderr: "ignore" })
+    const members = new TextDecoder().decode(listed.stdout).split("\n").map((member) => member.replace(/^\.\//, ""))
+    return members.includes(".stow/index.json") && members.includes(".stow/manifest.json")
+  })()
+  const stateHasIdentity = (() => {
+    const listed = Bun.spawnSync(["tar", "tzf", statePath], { stdout: "pipe", stderr: "ignore" })
+    const members = new TextDecoder().decode(listed.stdout).split("\n").map((member) => member.replace(/^\.\//, ""))
+    return members.includes("stow/identity.json") && members.some((member) =>
+      member.startsWith("stow/registry/") && !member.endsWith("/"))
+  })()
+  const accountExcludesStowAndInitialized = (() => {
+    const listed = Bun.spawnSync(["tar", "tzf", accountPath], { stdout: "pipe", stderr: "ignore" })
+    const members = new TextDecoder().decode(listed.stdout).split("\n").map((member) => member.replace(/^\.\//, ""))
+    return !members.some((member) => member === "stow" || member.startsWith("stow/")) &&
+      !members.some((member) => member === "initialized")
+  })()
+  const accountDatabaseBackupIsConsistent = (() => {
+    const listed = Bun.spawnSync(["tar", "tzf", accountPath], { stdout: "pipe", stderr: "ignore" })
+    const members = new TextDecoder().decode(listed.stdout).split("\n").map((member) => member.replace(/^\.\//, ""))
+    const databaseBackups = members.filter((member) => /(^|\/)opencode\.db$/.test(member))
+    const sidecars = members.filter((member) => /opencode\.db-(wal|shm)$/.test(member))
+    return databaseBackups.length === 1 && sidecars.length === 0
+  })()
+  const ok = evidence.every((item) => item.readyFileAbsent && item.generatedCredentialsAbsent) &&
+    workspaceMetadataPresent && stateHasIdentity && accountExcludesStowAndInitialized && accountDatabaseBackupIsConsistent
+  process.stdout.write(`${JSON.stringify({
+    mode,
+    ok,
+    readyFileAbsentFromArchives: evidence.every((item) => item.readyFileAbsent),
+    generatedCredentialsAbsentFromArchives: evidence.every((item) => item.generatedCredentialsAbsent),
+    workspaceMetadataPresent,
+    stateIdentityAndRegistryPresent: stateHasIdentity,
+    accountSeedExcludesStowAndInitialized: accountExcludesStowAndInitialized,
+    accountDatabaseBackupIsConsistent,
+  })}\n`)
+  if (!ok) process.exit(2)
+}
+
 const args = process.argv.slice(3)
 const expectedArguments: Record<string, number> = {
   characterize: 0,
@@ -436,16 +675,31 @@ const expectedArguments: Record<string, number> = {
   "workspace-restart": 3,
   "workspace-recovery-first": 3,
   "workspace-recovery-restored": 3,
+  "workspace-root-prepare-check": 2,
+  "workspace-root-validation-selftest": 3,
+  "workspace-root-first": 3,
+  "workspace-root-restart": 3,
+  "workspace-root-native-first": 0,
+  "workspace-root-native-restarted": 0,
+  "native-process-check": 0,
+  "native-process-count-check": 0,
+  "archive-boundary-check": 5,
+  "native-lifecycle-observe": 0,
 }
-if (!mode || expectedArguments[mode] === undefined || args.length !== expectedArguments[mode]) {
-  process.stderr.write("usage: bun stow-s3-probe.ts characterize|mutate|workspace-prepare-check|workspace-validation-selftest|workspace-first|workspace-restart|workspace-recovery-first|workspace-recovery-restored [private files]\n")
+const invalidArguments = mode === "archive-boundary-check"
+  ? args.length < 4
+  : !mode || expectedArguments[mode] === undefined || args.length !== expectedArguments[mode]
+if (!mode || invalidArguments) {
+  process.stderr.write("usage: bun stow-s3-probe.ts characterize|mutate|workspace-prepare-check|workspace-validation-selftest|workspace-first|workspace-restart|workspace-recovery-first|workspace-recovery-restored|workspace-root-prepare-check|workspace-root-first|workspace-root-restart|workspace-root-native-first|workspace-root-native-restarted|native-process-check|native-process-count-check|native-lifecycle-observe|archive-boundary-check [private files]\n")
   process.exit(64)
 }
 
 const deadline = setTimeout(() => {
   process.stdout.write(`${JSON.stringify({ mode, ok: false, operation, timedOut: true })}\n`)
   process.exit(124)
-}, mode === "workspace-prepare-check" || mode === "workspace-validation-selftest" ? 15_000 : 12_000)
+}, mode === "workspace-prepare-check" || mode === "workspace-validation-selftest" ? 15_000 :
+  mode === "archive-boundary-check" ? 30_000 :
+  12_000)
 
 try {
   if (mode === "characterize" || mode === "mutate") {
@@ -508,6 +762,26 @@ try {
     await workspaceCheck(args[0], args[1], args[2], "first", true)
   } else if (mode === "workspace-recovery-restored") {
     await workspaceCheck(args[0], args[1], args[2], "restart", true)
+  } else if (mode === "workspace-root-prepare-check") {
+    await prepareCheck(args[0], args[1])
+  } else if (mode === "workspace-root-validation-selftest") {
+    await validationSelfTest(args[0], args[1], args[2])
+  } else if (mode === "workspace-root-first") {
+    await workspaceCheck(args[0], args[1], args[2], "first")
+  } else if (mode === "workspace-root-restart") {
+    await workspaceCheck(args[0], args[1], args[2], "restart")
+  } else if (mode === "workspace-root-native-first") {
+    await nativeWorkspaceCheck("first")
+  } else if (mode === "workspace-root-native-restarted") {
+    await nativeWorkspaceCheck("restart")
+  } else if (mode === "native-process-check") {
+    await processEnvironmentCheck()
+  } else if (mode === "native-process-count-check") {
+    nativeProcessCountCheck()
+  } else if (mode === "archive-boundary-check") {
+    await archiveBoundaryCheck(args[0], args[1], args[2], args.slice(3))
+  } else if (mode === "native-lifecycle-observe") {
+    await nativeLifecycleObserve()
   }
 } catch (error) {
   const errorFields = error && typeof error === "object"

@@ -1,7 +1,7 @@
 # Stow workspace integration and resource adoption
 
 Status: A, B1 and local C1 verified on the pinned Linux image under emulation;
-production startup, migration and Cloudflare/R2 recovery remain open.
+production startup and Cloudflare/R2 recovery remain open.
 Decision date: 2026-11-11. Owner: Aboiteau. Roadmap: R0-15, then R2-4/R3-4.
 
 ## Problem and boundary
@@ -19,6 +19,28 @@ surface is required integration work; it does not reopen alternative runtimes.
 Aboiteau owns container lifecycle, credential custody, writer coordination, tenant
 authorization, R2 publication and restore. Stow owns its Workspace, S3 facade,
 readers, format/lifecycle contracts and applicable artifact qualification.
+
+## Pre-customer cutover decision — 2026-11-12
+
+The product owner permits hard cuts where they simplify the implementation.
+Build one supported native Workspace startup and recovery path. Legacy generic
+store migration, dual writers, automatic format detection and compatibility
+fallbacks are not prerequisites for B2. Reject unsupported old state clearly;
+do not reinterpret it as a valid new Workspace. Historical characterization and
+compatibility tests below record earlier behavior, not a promise to retain it.
+
+Proceed directly with native Workspace startup integration, then verify the
+selected image and R2-only recovery. A cutover must name any operator data to
+retain or intentionally reset; no broad legacy inventory/export project is
+required unless specific data must be kept. This decision does not itself delete
+stored conversations, files, credentials or accounting receipts. Preserve actual
+usage and explicit unknown costs as facts, independently of runtime compatibility.
+
+Fresh workspaces and checkpoints created by the new supported path must still
+preserve identity, bytes and supported metadata across replacement containers.
+Hard cuts remove compatibility work, not current-format recovery, tenant isolation
+or accounting checks. Deployment and any concrete data reset remain separate
+execution actions.
 
 ## R0-15 — repair and qualify the existing integration
 
@@ -222,6 +244,38 @@ to 30/60 seconds, limits each probe to at most one second, and re-probes an
 existing OpenCode child. The local native fixture alone does not close the separate container CI gate;
 the subsequent code revision passed both CI jobs, as recorded under C1 below.
 
+## B2 `/workspace` root-path preflight
+
+B2 tests whether the native workspace can occupy the existing `/workspace`
+path. In the disposable image, the runner first verified `/workspace` was an
+empty directory and the native registry was absent, then removed only that
+verified-empty directory. It prepared root `/workspace` as root with one empty
+directory input mapped to `.`. The returned descriptor and each readiness
+payload reported `/workspace` as both root and working directory. Preparation
+left no top-level user-visible input files; `.stow` contained native metadata.
+
+The native prepare created `/var/lib/aboiteau/state/stow/registry`, but the
+registry parent initially remained inaccessible to the agent. The successful
+fixture handed the synthetic `/workspace` and newly created
+`/var/lib/aboiteau/state/stow` subtree to `agent:agent`; the established
+`/var/lib/aboiteau/state` root remained root-owned with its agent group. The
+registry and metadata paths were then traversable and agent-owned. Native
+`workspace serve` ran as agent, the direct-file/S3 GET and signed PUT/direct
+file round trips matched, and the same ID passed a clean process restart.
+No generic `/start`, repository clone, provider call, or product source change
+was involved.
+
+The B2 result used the same pinned Stow `0.3.7` binary and image as B1. Evidence
+is in `/tmp/stow-workspace-b2-20261112T140559Z.uXONtX/`; the disposable
+container was verified absent. Two earlier B2 attempts are retained: one
+initial ownership assertion combined both conditions, the next isolated the
+registry-parent traversal issue, and a later runner assertion omitted the
+workdir-match flag even though the first native byte checks passed. The final
+receipt includes the corrected parent ownership and probe assertion. This
+preflight supports keeping the `/workspace` path for subsequent integration
+design; it does not prove production startup, restore, R2 cold recovery or
+multi-tenant behavior.
+
 ## C1 split-archive recovery qualification
 
 C1 adds a disposable `recovery-baseline` mode and a `recovery` candidate mode to
@@ -294,11 +348,13 @@ configuration consistency, UI build and diff checks. The native C1 proof uses
 the exact unchanged Stow binary with a separately recorded controller overlay;
 it does not qualify a rebuilt or deployed image.
 
-Before changing startup, classify the existing generic S3 store's contents. Preserve
-object-only data through a verified export/mapping or explicit separate recovery
-part; do not delete `.stow` as a cache or silently reinterpret its records as files.
-Unknown contents or an unverified migration block cutover. The R2 fallback must be
-tested with full-disk snapshots unavailable, so snapshots cannot mask missing data.
+For B2, replace generic-store startup with the supported native Workspace path.
+Do not build a generic-store migration by default. If a named existing workspace
+must be retained, preserve its object-only data through a bounded verified export
+or retain a matching old recovery point; otherwise document its intentional reset
+at cutover. Never silently reinterpret old records as native Workspace files.
+The R2 fallback must be tested with full-disk snapshots unavailable, so snapshots
+cannot mask missing data in the new supported format.
 
 The recovery inventory must cover natural file keys, escaped/reserved keys, object
 metadata, unfinished multipart state and workspace/registry identity. For each,

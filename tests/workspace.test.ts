@@ -109,7 +109,7 @@ describe("workspaceFingerprint", () => {
     expect(edited).not.toBe(baseline)
   })
 
-  test("ignores edits to an existing legacy root .stow directory", async () => {
+  test("fingerprints root .stow metadata in Git and non-Git workspaces", async () => {
     const dir = newRepo()
     writeFileSync(join(dir, "file.txt"), "one")
     writeFileSync(join(dir, ".gitignore"), "/.stow/\n")
@@ -120,7 +120,7 @@ describe("workspaceFingerprint", () => {
 
     const baseline = await workspaceFingerprint(dir)
     writeFileSync(join(dir, ".stow", "legacy-record"), "second")
-    expect(await workspaceFingerprint(dir)).toBe(baseline)
+    expect(await workspaceFingerprint(dir)).not.toBe(baseline)
 
     const nonGit = mkdtempSync(join(tmpdir(), "cf-opencode-fingerprint-legacy-"))
     dirs.push(nonGit)
@@ -128,7 +128,7 @@ describe("workspaceFingerprint", () => {
     writeFileSync(join(nonGit, ".stow", "legacy-record"), "first")
     const nonGitBaseline = await workspaceFingerprint(nonGit)
     writeFileSync(join(nonGit, ".stow", "legacy-record"), "second")
-    expect(await workspaceFingerprint(nonGit)).toBe(nonGitBaseline)
+    expect(await workspaceFingerprint(nonGit)).not.toBe(nonGitBaseline)
   })
 
   test("fingerprints nested native .stow metadata in Git and non-Git workspaces", async () => {
@@ -220,7 +220,7 @@ describe("workspaceFingerprint", () => {
     expect(await workspaceFingerprint(dir)).not.toBe(secondMetadataEdit)
   })
 
-  test("archives nested native .stow metadata but excludes legacy root .stow and node_modules", async () => {
+  test("archives root and nested native .stow metadata but excludes node_modules", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cf-opencode-archive-"))
     dirs.push(dir)
     const archiveDir = mkdtempSync(join(tmpdir(), "cf-opencode-archive-out-"))
@@ -240,7 +240,7 @@ describe("workspaceFingerprint", () => {
     const names = listed.stdout.toString().split("\n")
     expect(names).toContain("native-workspace/.stow/manifest.json")
     expect(names).toContain("native-workspace/.stow/index.json")
-    expect(names).not.toContain(".stow/legacy-record")
+    expect(names).toContain(".stow/legacy-record")
     expect(names.some((name) => name.includes("node_modules"))).toBe(false)
   })
 })
