@@ -15,6 +15,8 @@ describe("conversation lifecycle telemetry", () => {
       attempt: 2,
       result: "succeeded",
       durationMs: 125,
+      bytes: 2048,
+      count: 3,
       reasonCode: "completed",
       // Runtime callers may be untyped; these must never pass through.
       prompt: "private prompt",
@@ -34,6 +36,8 @@ describe("conversation lifecycle telemetry", () => {
       attempt: 2,
       result: "succeeded",
       durationMs: 125,
+      bytes: 2048,
+      count: 3,
       reasonCode: "completed",
     })
     expect((emitted as Record<string, unknown>).at).toMatch(/^\d{4}-\d\d-\d\dT/)
@@ -52,6 +56,8 @@ describe("conversation lifecycle telemetry", () => {
       reasonCode: "failed: user prompt was private",
       result: "failed",
       durationMs: Number.POSITIVE_INFINITY,
+      bytes: Number.POSITIVE_INFINITY,
+      count: -1,
       attempt: -1,
     } as never, (event) => { emitted = event })
 
@@ -60,6 +66,8 @@ describe("conversation lifecycle telemetry", () => {
     expect(emitted).not.toHaveProperty("jobID")
     expect(emitted).not.toHaveProperty("reasonCode")
     expect(emitted).not.toHaveProperty("durationMs")
+    expect(emitted).not.toHaveProperty("bytes")
+    expect(emitted).not.toHaveProperty("count")
     expect(emitted).not.toHaveProperty("attempt")
   })
 

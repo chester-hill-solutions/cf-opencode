@@ -1,6 +1,6 @@
 # Conversation lifecycle kernel
 
-Status: LC-0 and Conversation alarm integration verified locally; remaining
+Status: LC-0 and Conversation alarm integration verified in CI/native smoke; remaining
 module extraction, lease renewal, idle close and telemetry wiring are pending.
 Implementation sequence: [adoption plan](../plans/conversation-lifecycle-adoption.md).
 

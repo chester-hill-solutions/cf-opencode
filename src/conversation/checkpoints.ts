@@ -8,8 +8,8 @@ import {
 } from "../archive-crypto"
 import type { ContainerPort } from "../opencode"
 import { withRetries } from "../retry"
-import { logEvent } from "../log"
-import { withSpan } from "../telemetry"
+import { traceId, withSpan } from "../telemetry"
+import { emitConversationTelemetry, type ConversationTelemetryInput } from "./telemetry"
 import { ConversationStore, type CheckpointManifest } from "../state"
 
 const CHECKPOINT_RETRY_MS = 30_000
@@ -46,6 +46,10 @@ export class ConversationCheckpoints {
 
   constructor(private readonly options: ConversationCheckpointsOptions) {}
 
+  private emitTelemetry(input: Omit<ConversationTelemetryInput, "conversationID">): void {
+    emitConversationTelemetry({ ...input, conversationID: this.options.conversationID }, undefined, traceId)
+  }
+
   private prefix(): string {
     return `workspaces/${this.options.conversationID}/`
   }
@@ -56,12 +60,12 @@ export class ConversationCheckpoints {
     if (manifest?.workspace) {
       const workspace = await this.options.bucket.get(manifest.workspace.key)
       if (!workspace) {
-        logEvent("checkpoint.manifest.missing", { key: manifest.workspace.key })
+        this.emitTelemetry({ event: "checkpoint.manifest.missing", reasonCode: "workspace_archive_missing" })
         throw new Error(`checkpoint manifest workspace is missing: ${manifest.workspace.key}`)
       }
       const stateObject = manifest.state ? await this.options.bucket.get(manifest.state.key) : null
       if (manifest.state && !stateObject) {
-        logEvent("checkpoint.manifest.missing", { key: manifest.state.key })
+        this.emitTelemetry({ event: "checkpoint.manifest.missing", reasonCode: "state_archive_missing" })
         throw new Error(`checkpoint manifest state is missing: ${manifest.state.key}`)
       }
       return { workspace, state: stateObject, split: true }
@@ -131,7 +135,7 @@ export class ConversationCheckpoints {
     if (attempts >= CHECKPOINT_RETRY_LIMIT) {
       await this.options.store.patch({ checkpointPending: undefined, checkpointAttempts: undefined, checkpointRetryAt: undefined })
       await this.options.retry.cancel()
-      logEvent("checkpoint.abandoned", { attempts })
+      this.emitTelemetry({ event: "checkpoint.abandoned", attempt: attempts, result: "blocked", reasonCode: "retry_limit" })
       await this.options.deliverError("workspace checkpoint failed repeatedly; recent changes may not be recoverable").catch(() => {})
       return false
     }
@@ -139,11 +143,11 @@ export class ConversationCheckpoints {
     if (saved) {
       await this.options.store.patch({ checkpointPending: undefined, checkpointAttempts: undefined, checkpointRetryAt: undefined })
       await this.options.retry.cancel()
-      logEvent("checkpoint.recovered", { attempts })
+      this.emitTelemetry({ event: "checkpoint.recovered", attempt: attempts, result: "succeeded" })
       return false
     }
     await this.options.store.patch({ checkpointAttempts: attempts + 1 })
-    logEvent("checkpoint.retry", { attempts: attempts + 1 })
+    this.emitTelemetry({ event: "checkpoint.retry", attempt: attempts + 1, reasonCode: "retry_scheduled" })
     return false
   }
 
@@ -184,7 +188,7 @@ export class ConversationCheckpoints {
     const retained = new Set([...keep(workspaceKeys), ...keep(stateKeys)])
     const stale = [...workspaceKeys, ...stateKeys].filter((key) => !retained.has(key))
     for (const key of stale) await this.options.bucket.delete(key)
-    if (stale.length) logEvent("checkpoint.pruned", { count: stale.length })
+    if (stale.length) this.emitTelemetry({ event: "checkpoint.pruned", count: stale.length })
   }
 
   private async uploadPart(key: string, response: Response, cryptoKey: CryptoKey | undefined): Promise<number> {
@@ -231,7 +235,10 @@ export class ConversationCheckpoints {
     if (!part) return
     const head = await this.options.bucket.head(part.key)
     if (head) return
-    logEvent("checkpoint.missing", { key: part.key })
+    this.emitTelemetry({
+      event: "checkpoint.missing",
+      reasonCode: kind === "workspace" ? "workspace_archive_missing" : "state_archive_missing",
+    })
     await this.options.store.patch(
       kind === "workspace"
         ? { checkpointFingerprint: undefined, checkpointKey: undefined }
@@ -242,13 +249,19 @@ export class ConversationCheckpoints {
 
   private async captureLocked(): Promise<boolean> {
     return withSpan("conversation.checkpoint", async (span) => {
-      const stamp = Date.now()
+      const startedAt = Date.now()
+      const stamp = startedAt
       const prefix = this.prefix()
       const workspaceKey = `${prefix}workspace-${stamp}.tar.gz`
       const stateKey = `${prefix}state-${stamp}.tar.gz`
+      let outcome: "saved" | "skipped" | undefined
+      let outcomeBytes: number | undefined
+      this.emitTelemetry({ event: "checkpoint.started" })
       try {
         await this.cryptoKey()
         await withRetries(async () => {
+          outcome = undefined
+          outcomeBytes = undefined
           const state = await this.options.store.get()
           const cryptoKey = await this.cryptoKey()
           const encrypted = Boolean(cryptoKey)
@@ -266,14 +279,13 @@ export class ConversationCheckpoints {
             if (response.status === 204) {
               await this.requirePart(state.checkpointKey ? { key: state.checkpointKey } : undefined, "workspace")
               void this.options.count("checkpoint.skipped")
-              logEvent("checkpoint.skipped")
+              outcome = "skipped"
               return
             }
             if (!response.ok) throw new Error(`checkpoint returned ${response.status}`)
             const bytes = await this.uploadPart(workspaceKey, response, cryptoKey)
             span.setAttribute("checkpoint.bytes", bytes)
             void this.options.count("checkpoint.saved")
-            logEvent("checkpoint.saved", { bytes })
             await this.options.store.patch({
               checkpointSize: bytes,
               checkpointKey: workspaceKey,
@@ -283,6 +295,8 @@ export class ConversationCheckpoints {
             const fingerprint = response.headers.get("x-workspace-fingerprint")
             if (fingerprint) await this.options.store.patch({ checkpointFingerprint: fingerprint })
             await this.prune()
+            outcome = "saved"
+            outcomeBytes = bytes
             return
           }
 
@@ -331,7 +345,7 @@ export class ConversationCheckpoints {
           const fingerprint = response.headers.get("x-workspace-fingerprint") ?? manifest?.fingerprint
           if (!uploaded) {
             void this.options.count("checkpoint.skipped")
-            logEvent("checkpoint.skipped")
+            outcome = "skipped"
             return
           }
           const next: CheckpointManifest = {
@@ -344,7 +358,6 @@ export class ConversationCheckpoints {
           const bytes = next.workspace.size + (next.state?.size ?? 0)
           span.setAttribute("checkpoint.bytes", bytes)
           void this.options.count("checkpoint.saved")
-          logEvent("checkpoint.saved", { bytes })
           await this.options.store.patch({
             checkpointManifest: next,
             checkpointKey: next.workspace.key,
@@ -354,18 +367,31 @@ export class ConversationCheckpoints {
             ...(stateFingerprint ? { checkpointStateFingerprint: stateFingerprint } : {}),
           })
           await this.prune()
+          outcome = "saved"
+          outcomeBytes = bytes
         }, { attempts: 3, delayMs: 1000 })
         await this.options.store.patch({
           checkpointPending: undefined,
           checkpointAttempts: undefined,
           checkpointRetryAt: undefined,
         })
+        if (!outcome) throw new Error("checkpoint completed without a terminal outcome")
+        this.emitTelemetry({
+          event: outcome === "saved" ? "checkpoint.saved" : "checkpoint.skipped",
+          result: outcome === "saved" ? "succeeded" : "skipped",
+          durationMs: Date.now() - startedAt,
+          ...(outcomeBytes === undefined ? {} : { bytes: outcomeBytes }),
+        })
         return true
       } catch (err) {
         span.recordException(err as Error)
-        console.warn("checkpoint failed", err)
         void this.options.count("checkpoint.failed")
-        logEvent("checkpoint.failed")
+        this.emitTelemetry({
+          event: "checkpoint.failed",
+          result: "failed",
+          reasonCode: "capture_failed",
+          durationMs: Date.now() - startedAt,
+        })
         const retryAt = Date.now() + CHECKPOINT_RETRY_MS
         await this.options.storage.transaction(async () => {
           await this.options.store.patch({ checkpointPending: true, checkpointRetryAt: retryAt })

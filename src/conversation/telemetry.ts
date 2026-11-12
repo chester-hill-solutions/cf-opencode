@@ -7,7 +7,14 @@ export type ConversationTelemetryEventName =
   | "turn.settled"
   | "checkpoint.started"
   | "checkpoint.saved"
+  | "checkpoint.skipped"
   | "checkpoint.failed"
+  | "checkpoint.retry"
+  | "checkpoint.recovered"
+  | "checkpoint.abandoned"
+  | "checkpoint.pruned"
+  | "checkpoint.missing"
+  | "checkpoint.manifest.missing"
   | "recovery.started"
   | "recovery.settled"
   | "recovery.blocked"
@@ -43,6 +50,8 @@ export interface ConversationTelemetryInput {
   attempt?: number
   result?: ConversationTelemetryResult
   durationMs?: number
+  bytes?: number
+  count?: number
   reasonCode?: string
 }
 
@@ -59,6 +68,8 @@ export interface ConversationTelemetryEnvelope {
   attempt?: number
   result?: ConversationTelemetryResult
   durationMs?: number
+  bytes?: number
+  count?: number
   reasonCode?: string
   traceId?: string
 }
@@ -73,7 +84,14 @@ const COMPONENT_BY_EVENT: Record<ConversationTelemetryEventName, ConversationTel
   "turn.settled": "turns",
   "checkpoint.started": "checkpoints",
   "checkpoint.saved": "checkpoints",
+  "checkpoint.skipped": "checkpoints",
   "checkpoint.failed": "checkpoints",
+  "checkpoint.retry": "checkpoints",
+  "checkpoint.recovered": "checkpoints",
+  "checkpoint.abandoned": "checkpoints",
+  "checkpoint.pruned": "checkpoints",
+  "checkpoint.missing": "checkpoints",
+  "checkpoint.manifest.missing": "checkpoints",
   "recovery.started": "recovery",
   "recovery.settled": "recovery",
   "recovery.blocked": "recovery",
@@ -149,6 +167,8 @@ export function emitConversationTelemetry(
     if (typeof input.durationMs === "number" && Number.isFinite(input.durationMs) && input.durationMs >= 0) {
       envelope.durationMs = input.durationMs
     }
+    if (Number.isSafeInteger(input.bytes) && input.bytes! >= 0) envelope.bytes = input.bytes
+    if (Number.isSafeInteger(input.count) && input.count! >= 0) envelope.count = input.count
     const reasonCode = safeReasonCode(input.reasonCode)
     if (reasonCode !== undefined) envelope.reasonCode = reasonCode
 

@@ -32,11 +32,11 @@ Execution snapshot (the detailed assignments and release gates remain below):
 | Slice | State |
 |---|---|
 | LC-0 | SDK pin/SQLite compatibility and earlier native smoke verified. |
-| LC-1a | Full alarm cutover committed; local integrated gate passed. Native startup fixture now waits for SDK schema/publication and physical rearm; corrected CI pending. |
+| LC-1a | Full alarm cutover verified locally and in CI/native smoke at `8661766` (run 43286834935). |
 | LC-1b | EventStream/heartbeat complete. Durable lease renewal/release recovery in implementation. |
-| LC-2 | Checkpoints, private runtime cache/ports, usage replay and control plane extracted. High-level readiness, image policy, turns and recovery still open. |
+| LC-2 | Checkpoints, private runtime cache/ports, image/snapshot policy, usage replay and control plane extracted. High-level readiness, turns and recovery still open. |
 | LC-3 | Runtime-use gate, no-inference measurement tool and isolated qualification fixture prepared. Close/reopen policy and actual measurements pending. |
-| LC-4 | Allowlisted envelope and tests complete; transition wiring pending. |
+| LC-4 | Allowlisted envelope and checkpoint transitions wired/tested; remaining transition categories pending. |
 | LC-5 | Existing replay/dedupe retained; optional further work not started. |
 
 ### Research baseline
@@ -495,3 +495,17 @@ prove these contracts; the review is not runtime qualification.
   SQLite tests prove stable identity across concurrent calls and reloads.
   Existing public request types remain re-exported. Sixty-one focused Worker
   tests, 70 Bun tests and full typecheck passed; policy/auth sources are unchanged.
+- Image/snapshot extraction removes a further 227 coordinator lines, retaining
+  exact freshness checks and protected seams. Thirty-nine affected Worker tests
+  and full typecheck passed. Lease foundation tests cover lost release ACKs,
+  reload, malformed records and stale renewals; queue/start/stop wiring follows.
+- [CI run 43286834935](https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43286834935)
+  passed both checks and native container smoke for `8661766`. The native startup
+  test now waits for schema, durable job publication and physical rearm, including
+  the documented null alarm while its handler runs. This supersedes the two
+  earlier fixture failures; later uncommitted integration still needs its gate.
+- Checkpoint telemetry now uses the allowlisted envelope for capture start and
+  one terminal outcome after publication, plus retry/prune/missing diagnostics.
+  Archive keys/raw errors are excluded; counters and trace sampling are retained.
+  Four envelope tests and 16 checkpoint Worker tests pass. Remaining categories
+  are not yet standardized.
