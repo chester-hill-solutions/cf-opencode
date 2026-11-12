@@ -28,7 +28,7 @@ const readinessValue = {
   region: "local",
   access_key_id: "local_access",
   secret_access_key: "local_secret",
-} 
+}
 
 describe("Stow workspace identity contract", () => {
   test("accepts the v1 identity and canonicalizes working directory dot", () => {
