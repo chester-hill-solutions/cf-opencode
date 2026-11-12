@@ -5,12 +5,21 @@ umask 077
 # Disposable R0-15A characterization of the currently pinned generic Stow
 # filesystem backend. It never builds an image, mounts host data, or calls a
 # model/provider. All S3 traffic stays inside the throwaway container.
+#
+#   bash scripts/characterize-stow-workspace.sh          # R0-15A regression
+#   bash scripts/characterize-stow-workspace.sh workspace # native Stow B1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MODE="${1:-generic}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-LOG_DIR="$(mktemp -d "/tmp/stow-workspace-characterization-${STAMP}.XXXXXX")"
+if [[ "$MODE" == "workspace" ]]; then
+  LOG_DIR="$(mktemp -d "/tmp/stow-workspace-b1-${STAMP}.XXXXXX")"
+  NAME="stow-b1-${STAMP}-$$"
+else
+  LOG_DIR="$(mktemp -d "/tmp/stow-workspace-characterization-${STAMP}.XXXXXX")"
+  NAME="stow-char-${STAMP}-$$"
+fi
 chmod 700 "$LOG_DIR"
-NAME="stow-char-${STAMP}-$$"
 CONTROL_TOKEN="$(openssl rand -hex 24)"
 CONTAINER_ID=""
 CREATED=0
@@ -64,11 +73,190 @@ cleanup() {
     fi
   fi
 }
+
+run_workspace_b1() {
+  local manifest_host="$LOG_DIR/workspace-manifest.json"
+  local serve_pid=""
+
+  PHASE="workspace-preflight"
+  bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+    'test -d /workspace && test ! -e /workspace/stow-workspace && test -d /var/lib/aboiteau/state' \
+    || fail "workspace root is not absent or expected parent paths are unavailable"
+  jq -n '{version:1,root:"/workspace/stow-workspace",working_directory:".",registry_dir:"/var/lib/aboiteau/state/stow/registry",bucket:"aboiteau-workspace",inputs:[{source:"/tmp/stow-b1/seed.txt",destination:"seed.txt"}]}' \
+    >"$manifest_host"
+  chmod 600 "$manifest_host"
+  printf '%s\n' 'synthetic-b1-prepare-seed-v1' >"$LOG_DIR/seed.txt"
+  chmod 600 "$LOG_DIR/seed.txt"
+  bounded docker exec "$CONTAINER_ID" sh -lc \
+    'mkdir -p /tmp/stow-b1 && chown 1001:1001 /tmp/stow-b1 && chmod 700 /tmp/stow-b1' \
+    || fail "could not create private in-container B1 directory"
+  bounded docker cp "$manifest_host" "$CONTAINER_ID:/tmp/stow-b1/manifest.json" \
+    || fail "could not copy private synthetic manifest"
+  bounded docker cp "$LOG_DIR/seed.txt" "$CONTAINER_ID:/tmp/stow-b1/seed.txt" \
+    || fail "could not copy synthetic local seed input"
+  bounded docker cp "$ROOT/scripts/stow-s3-probe.ts" "$CONTAINER_ID:/tmp/stow-b1/stow-s3-probe.ts" \
+    || fail "could not copy S3 probe into disposable container"
+  bounded docker exec "$CONTAINER_ID" sh -lc \
+    'chown 1001:1001 /tmp/stow-b1/manifest.json /tmp/stow-b1/seed.txt /tmp/stow-b1/stow-s3-probe.ts && chmod 600 /tmp/stow-b1/manifest.json /tmp/stow-b1/seed.txt /tmp/stow-b1/stow-s3-probe.ts' \
+    || fail "could not set private B1 file permissions"
+
+  PHASE="workspace-prepare"
+  if ! BOUNDED_TIMEOUT_MS=30000 bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+    'stow-s3 workspace prepare --manifest /tmp/stow-b1/manifest.json > /tmp/stow-b1/prepared.json 2> /tmp/stow-b1/prepare.stderr'; then
+    bounded docker cp "$CONTAINER_ID:/tmp/stow-b1/prepare.stderr" "$LOG_DIR/prepare.stderr" >/dev/null 2>&1 || true
+    fail "native Workspace prepare failed; see private prepare.stderr"
+  fi
+  bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+    'chmod 600 /tmp/stow-b1/prepared.json /tmp/stow-b1/prepare.stderr' \
+    || fail "could not protect prepared descriptor"
+  if ! BOUNDED_TIMEOUT_MS=15000 bounded docker exec --user 1001:1001 "$CONTAINER_ID" \
+    bun /tmp/stow-b1/stow-s3-probe.ts workspace-prepare-check \
+    /tmp/stow-b1/manifest.json /tmp/stow-b1/prepared.json >"$LOG_DIR/prepare-check.json"; then
+    fail "prepared descriptor did not match the locked B1 identity; see prepare-check.json"
+  fi
+  jq -e '.ok == true and .versionMatches and .workspaceIDValid and .rootMatches and .workingDirectoryWithinRoot and .workingDirectoryMatchesManifest and .registryMatches and .bucketMatches' \
+    "$LOG_DIR/prepare-check.json" >/dev/null || fail "prepared descriptor validation failed"
+  if ! bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+    'cmp -s /tmp/stow-b1/seed.txt /workspace/stow-workspace/seed.txt'; then
+    fail "native Workspace prepare did not copy the synthetic seed bytes exactly"
+  fi
+  printf '%s\n' '{"seedCopiedExactly":true}' >"$LOG_DIR/prepared-seed-check.json"
+  bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+    "jq -er '.workspace_id | select(type == \"string\" and test(\"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$\"))' /tmp/stow-b1/prepared.json > /tmp/stow-b1/workspace-id && chmod 600 /tmp/stow-b1/workspace-id" \
+    || fail "prepared workspace identity was invalid"
+  cat >"$LOG_DIR/serve-supervisor.sh" <<'EOF'
+#!/bin/sh
+set -u
+label="$1"
+base=/tmp/stow-b1
+workspace_id="$(cat "$base/workspace-id")"
+readiness="$base/readiness-${label}.json"
+childpid="$base/serve-${label}.childpid"
+logfile="$base/serve-${label}.log"
+exitfile="$base/serve-${label}.exit"
+stow-s3 workspace serve --id "$workspace_id" --registry-dir /var/lib/aboiteau/state/stow/registry --ready-fd 3 3>"$readiness" >"$logfile" 2>&1 </dev/null &
+child=$!
+printf '%s\n' "$child" >"$childpid"
+wait "$child"
+status=$?
+printf '%s\n' "$status" >"$exitfile.tmp"
+mv "$exitfile.tmp" "$exitfile"
+exit 0
+EOF
+  chmod 600 "$LOG_DIR/serve-supervisor.sh"
+  bounded docker cp "$LOG_DIR/serve-supervisor.sh" "$CONTAINER_ID:/tmp/stow-b1/serve-supervisor.sh" \
+    || fail "could not copy private Workspace supervisor"
+  bounded docker exec "$CONTAINER_ID" sh -lc \
+    'chown 1001:1001 /tmp/stow-b1/serve-supervisor.sh && chmod 600 /tmp/stow-b1/serve-supervisor.sh' \
+    || fail "could not protect Workspace supervisor"
+
+  start_workspace_serve() {
+    local label="$1"
+    local readiness="/tmp/stow-b1/readiness-${label}.json"
+    local supervisor_pidfile="/tmp/stow-b1/serve-${label}.supervisorpid"
+    local child_pidfile="/tmp/stow-b1/serve-${label}.childpid"
+    local exitfile="/tmp/stow-b1/serve-${label}.exit"
+    local logfile="/tmp/stow-b1/serve-${label}.log"
+    bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+      "rm -f '$readiness' '$supervisor_pidfile' '$child_pidfile' '$exitfile' '$logfile'; nohup sh /tmp/stow-b1/serve-supervisor.sh '$label' >/dev/null 2>&1 </dev/null & echo \$! >'$supervisor_pidfile'" \
+      || fail "native Workspace serve start failed for $label"
+    local ready=0
+    for _ in $(seq 1 120); do
+      if bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+        "test -s '$readiness' && test -s '$supervisor_pidfile' && test -s '$child_pidfile' && kill -0 \$(cat '$child_pidfile')" >/dev/null 2>&1; then
+        ready=1
+        break
+      fi
+      sleep 0.25
+    done
+    [[ "$ready" == 1 ]] || fail "native Workspace readiness timed out for $label"
+    bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+      "chmod 600 '$readiness' '$supervisor_pidfile' '$child_pidfile' '$logfile'; cat '$supervisor_pidfile'; cat '$child_pidfile'" >"$LOG_DIR/serve-${label}-pids.txt" \
+      || fail "could not capture native Workspace process ownership"
+    bounded docker exec --user 1001:1001 "$CONTAINER_ID" \
+      bun /tmp/stow-b1/stow-s3-probe.ts workspace-validation-selftest \
+      /tmp/stow-b1/manifest.json /tmp/stow-b1/prepared.json "$readiness" \
+      >"$LOG_DIR/readiness-${label}-validation.json" \
+      || fail "native Workspace readiness validation failed for $label"
+    jq -e '.ok == true and .noClientBeforeValidation and .s3ClientConstructions == 0 and .versionRejected and .foreignRootRejected and .foreignWorkspaceIDRejected and .offLoopbackEndpointRejected' \
+      "$LOG_DIR/readiness-${label}-validation.json" >/dev/null \
+      || fail "readiness negative checks failed for $label"
+  }
+
+  PHASE="workspace-first-serve"
+  start_workspace_serve first
+  if ! BOUNDED_TIMEOUT_MS=15000 bounded docker exec --user 1001:1001 "$CONTAINER_ID" \
+    bun /tmp/stow-b1/stow-s3-probe.ts workspace-first \
+    /tmp/stow-b1/manifest.json /tmp/stow-b1/prepared.json /tmp/stow-b1/readiness-first.json \
+    >"$LOG_DIR/workspace-first.json"; then
+    fail "native Workspace first S3/file round trip failed; see workspace-first.json"
+  fi
+  jq -e '.ok == true and .readinessValid and .endpointLoopback and .directFileToS3GetMatches and .s3PutToWorkspaceFileMatches' \
+    "$LOG_DIR/workspace-first.json" >/dev/null || fail "native Workspace first round trip did not match"
+
+  PHASE="workspace-serve-stop"
+  local supervisor_pid
+  supervisor_pid="$(awk 'NR==1 {print; exit}' "$LOG_DIR/serve-first-pids.txt")"
+  serve_pid="$(awk 'NR==2 {print; exit}' "$LOG_DIR/serve-first-pids.txt")"
+  [[ "$supervisor_pid" =~ ^[0-9]+$ && "$serve_pid" =~ ^[0-9]+$ ]] || fail "native Workspace process identifiers were invalid"
+  bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+    "test -r '/proc/$supervisor_pid/cmdline' && tr '\\000' ' ' <'/proc/$supervisor_pid/cmdline' | grep -F 'serve-supervisor.sh' >/dev/null && test -r '/proc/$serve_pid/cmdline' && tr '\\000' ' ' <'/proc/$serve_pid/cmdline' | grep -F 'stow-s3 workspace serve' >/dev/null && kill -TERM '$serve_pid'" \
+    || fail "refused to stop an unverified Workspace serve process"
+  local stopped=0
+  for _ in $(seq 1 80); do
+    if bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+      "test -s /tmp/stow-b1/serve-first.exit" >/dev/null 2>&1; then
+      stopped=1
+      break
+    fi
+    sleep 0.25
+  done
+  [[ "$stopped" == 1 ]] || fail "native Workspace serve did not stop within its bounded wait"
+  bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+    'test "$(cat /tmp/stow-b1/serve-first.exit)" = 0' \
+    || fail "native Workspace serve did not exit cleanly after SIGTERM"
+
+  PHASE="workspace-serve-restart"
+  start_workspace_serve restart
+  if ! BOUNDED_TIMEOUT_MS=15000 bounded docker exec --user 1001:1001 "$CONTAINER_ID" \
+    bun /tmp/stow-b1/stow-s3-probe.ts workspace-restart \
+    /tmp/stow-b1/manifest.json /tmp/stow-b1/prepared.json /tmp/stow-b1/readiness-restart.json \
+    >"$LOG_DIR/workspace-restart.json"; then
+    fail "native Workspace process restart did not preserve bytes; see workspace-restart.json"
+  fi
+  jq -e '.ok == true and .readinessValid and .endpointLoopback and .directFileToS3GetMatches and .s3PutToWorkspaceFileMatches' \
+    "$LOG_DIR/workspace-restart.json" >/dev/null || fail "native Workspace restart round trip did not match"
+
+  local stow_sha image_id
+  stow_sha="$(awk 'length($1)==64 && $1 ~ /^[0-9a-f]+$/ {print $1; exit}' "$LOG_DIR/stow-binary.txt")"
+  image_id="$(awk '{print $1}' "$LOG_DIR/image-inspect.txt")"
+  jq -n \
+    --arg status "characterized" \
+    --arg image "$EVENTED_IMAGE" \
+    --arg imageID "$image_id" \
+    --arg platform "$IMAGE_PLATFORM" \
+    --arg hostArch "$HOST_ARCH" \
+    --arg emulation "$EMULATION" \
+    --arg stowSHA256 "$stow_sha" \
+    --arg containerID "$CONTAINER_ID" \
+    --arg containerName "$NAME" \
+    --argjson workspaceIDValid true \
+    --argjson manifestMatches true \
+    --argjson readinessValidatedTwice true \
+    --argjson directFileToS3Get true \
+    --argjson s3PutToWorkspaceFile true \
+    --argjson processRestartPreserved true \
+    '{status:$status,mode:"native_workspace_b1",image:$image,imageID:$imageID,platform:$platform,hostArch:$hostArch,emulation:$emulation,containerID:$containerID,containerName:$containerName,stowBinarySHA256:$stowSHA256,workspaceIDValid:$workspaceIDValid,manifestMatches:$manifestMatches,readinessValidatedTwice:$readinessValidatedTwice,directFileToS3Get:$directFileToS3Get,s3PutToWorkspaceFile:$s3PutToWorkspaceFile,processRestartPreserved:$processRestartPreserved,prepareCount:1,serveStarts:2,containerRestart:false,r2ColdRestore:false,objectIdentityOrMultipartRecoveryQualified:false}' \
+    >"$LOG_DIR/result.json"
+  echo "native Workspace B1 characterization passed; evidence: $LOG_DIR"
+  cat "$LOG_DIR/result.json"
+}
 trap cleanup EXIT INT TERM
 
 for command in docker curl jq tar rg awk openssl bun node; do
   command -v "$command" >/dev/null 2>&1 || fail "missing host command: $command"
 done
+[[ "$MODE" == "generic" || "$MODE" == "workspace" ]] || fail "mode must be generic or workspace"
 
 # Resolve the image from wrangler.jsonc instead of accepting a mutable tag or
 # caller-provided replacement.
@@ -183,6 +371,14 @@ for expected_flag in --object-dir --bucket --create-bucket; do
   rg -q -- "-{1,2}${expected_flag#--}" "$LOG_DIR/stow-mcp-help.txt" \
     || fail "pinned Stow MCP help does not document $expected_flag"
 done
+
+# B1 deliberately bypasses generic /configure, MCP bucket bootstrap and /start.
+# The native Workspace service owns its own readiness endpoint/credentials, so
+# port 9000 and the generic filesystem server remain unused in this mode.
+if [[ "$MODE" == "workspace" ]]; then
+  run_workspace_b1
+  exit 0
+fi
 
 # Confirm the local control token gate and start the existing services without
 # sending a prompt. The synthetic permission/model config is local only.

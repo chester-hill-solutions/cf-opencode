@@ -118,7 +118,13 @@ This reproduces the generic-store/recovery gap for this fixture. The object
 bucket was bootstrapped before server start via the pinned Stow MCP CLI's
 documented `--object-dir /workspace/.stow --bucket stow-characterization
 --create-bucket` path. This is setup for the test, not evidence that an S3
-CreateBucket request was exercised. Full private evidence is in
+CreateBucket request was exercised. After adding B1 mode, the unchanged generic
+path passed again using the same image/binary; the conditional checkpoint was
+204, and the archive SHA-256 was
+`5c0a87b30593d81afefa2e2c8f87acfd6eaa86c85d1459b1c163e663647728cb`. Its
+container was verified absent after cleanup. The rerun evidence is in
+`/tmp/stow-workspace-characterization-20261112T065015Z.IgINSo/`; the original
+successful evidence remains in
 `/tmp/stow-workspace-characterization-20261112T060859Z.6SNbcZ/`.
 
 Actual image help lists Workspace `prepare`, `adopt`, `resume` and `serve`, but
@@ -127,13 +133,13 @@ readiness JSON object. `prepare --help` takes a versioned manifest; `resume`
 accepts a workspace ID or handoff; `serve` accepts an ID and registry options.
 `adopt` is a bundle-import operation, not a standalone `open` command. The Go
 flag parser exits 1 for several `--help` calls after printing valid help; exit
-1 is not evidence that those commands are missing. No readiness payload was
-invoked or validated. The checked-out source tag is not sufficient provenance
-for this image, so the captured binary hash and image digest are the artifact
-evidence; readiness-schema compatibility, full Workspace ownership/cold restore
-behavior and release-source correspondence remain unqualified. Do not treat
-this characterization as a migration or as an inventory of every existing
-`.stow` store.
+1 is not evidence that those commands are missing. A did not invoke readiness;
+B1 results are recorded below. The checked-out source tag is not sufficient
+provenance for this image, so the captured binary hash and image digest are the
+artifact evidence; full Workspace ownership/cold restore behavior and
+release-source correspondence remain unqualified. Do not treat this
+characterization as a migration or as an inventory of every existing `.stow`
+store.
 
 The disposable runner is `scripts/characterize-stow-workspace.sh`; its signed
 S3 operations are in `scripts/stow-s3-probe.ts`. It resolves the exact pinned
@@ -141,10 +147,64 @@ evented digest, targets `linux/amd64`, exposes only an ephemeral loopback
 control port, uses synthetic data/credentials and creates no host mounts. The
 successful run's container ID was
 `e31b9866b22c39d9c424cd130970f4ffbb7bc5c20043c8ec7f100c4716a27278`; a later
-Docker inspect returned `No such container`, confirming cleanup. A is complete
-for this bounded characterization. Stop before B: durable Workspace identity,
-readiness-schema compatibility, supported data preservation and cold restore
-still require qualification.
+Docker inspect returned `No such container`, confirming cleanup. A and the
+bounded B1 identity/readiness/process-restart characterization are complete.
+Supported data preservation and cold restore still require qualification.
+
+## B1 native Workspace readiness and process restart
+
+B1 uses the same exact pinned `linux/amd64` evented image in a new disposable
+container. Its runner mode is `bash scripts/characterize-stow-workspace.sh
+workspace`; it bypasses the generic control-server configure/start path and does
+not bootstrap the generic MCP object bucket. The test manifest is synthetic:
+
+```json
+{"version":1,"root":"/workspace/stow-workspace","working_directory":".","registry_dir":"/var/lib/aboiteau/state/stow/registry","bucket":"aboiteau-workspace","inputs":[{"source":"/tmp/stow-b1/seed.txt","destination":"seed.txt"}]}
+```
+
+The target root must be absent before the single native `workspace prepare`.
+The runner checks the returned workspace identity and paths, starts `workspace
+serve` using a fresh private `--ready-fd` file, and validates the reported
+loopback endpoint and S3 credentials before constructing Bun's S3 client. It
+then checks exact direct-file-to-S3-GET and signed-S3-PUT-to-direct-file bytes,
+stops the owned serve process, and starts it again with the same identity and
+registry without another prepare. The second readiness file is separate, so a
+stale readiness payload cannot satisfy the restart check. The probe output
+contains validation booleans only; it does not print readiness or credential
+values.
+
+This is a same-container process restart check. It is not a container restart,
+checkpoint/restore test, R2 cold restore, or proof that `.stow` object metadata
+and multipart state survive the existing workspace archive. The initial
+manifest-only attempt stopped with `stow: prepare requires at least one input`;
+its private failure receipt is retained in
+`/tmp/stow-workspace-b1-20261112T064541Z.zP6lhw/`. The public task-manifest
+contract at `/Users/ladmin/WebProjects/stow/docs/contracts/task-manifest.md`
+specified an `inputs` source/destination mapping, so the retry supplied one
+synthetic local seed file (`/tmp/stow-b1/seed.txt` to `seed.txt`) and verified
+its exact bytes in the prepared root.
+
+The successful bounded run used the exact configured image digest and
+`linux/amd64` platform on an `arm64` host under emulation. Stow was `0.3.7`,
+binary SHA-256
+`780c3ccf89abdb4355e1b943ab686693d7436bd08cefdffd0f315226815f27da`. Prepare
+ran once; the descriptor's version, identity, root, canonical working
+directory, registry and bucket matched the manifest. The two fresh readiness
+payloads passed schema/identity checks and rejected wrong version, root,
+workspace ID and non-loopback endpoint before client construction. Bun S3
+verified exact direct-file-to-GET and signed-PUT-to-file bytes. The owned native
+serve child was signaled, its supervisor recorded clean exit status 0, and a
+second serve start without another prepare read the same bytes. The disposable
+container (`05cd70cf00caac05021e9383b81358a63d7bea9c4064da427d437d149646e07b`)
+was verified absent after cleanup. Redacted evidence is in
+`/tmp/stow-workspace-b1-20261112T064905Z.vaAqcK/`.
+
+B1 qualifies only this manifest/prepare/readiness/S3-byte-parity and
+same-container serve-process restart path. It does not qualify a container
+restart, `.stow` object metadata or multipart recovery, checkpoint restoration,
+or R2 cold restore. Preserve the initial failed attempt as part of the record.
+Do not change production startup or archive behavior based on this bounded
+result.
 
 Before changing startup, classify the existing generic S3 store's contents. Preserve
 object-only data through a verified export/mapping or explicit separate recovery
