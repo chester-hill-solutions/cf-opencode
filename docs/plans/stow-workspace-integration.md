@@ -219,8 +219,8 @@ an initial `/start` stall lasting over 110 seconds even though Stow health was
 200 and OpenCode reported ready; it did not prove that any individual health
 fetch was the cause. The frozen controller now bounds Stow/OpenCode readiness
 to 30/60 seconds, limits each probe to at most one second, and re-probes an
-existing OpenCode child. The local native fixture does not close the separate
-container CI issue; CI for this frozen source remains pending.
+existing OpenCode child. The local native fixture alone does not close the separate container CI gate;
+the subsequent code revision passed both CI jobs, as recorded under C1 below.
 
 ## C1 split-archive recovery qualification
 
