@@ -35,6 +35,8 @@ import { ConversationCheckpoints } from "./conversation/checkpoints"
 import { ConversationRuntime } from "./conversation/runtime"
 import { ConversationUsage, type UsageCutoverLedger } from "./conversation/usage"
 import { ConversationControlPlane } from "./conversation/control-plane"
+import { ConversationImages } from "./conversation/images"
+import { LEGACY_ALARM_MIGRATION_KEY, isFreshLegacyAlarmMigration, type LegacyAlarmMigration } from "./conversation/job-state"
 import type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
 export type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
 import { createSseParser } from "./sse"
@@ -84,21 +86,6 @@ import {
 } from "./conversation/jobs"
 
 type UnknownRecord = Record<string, unknown>
-
-interface LegacyAlarmMigration {
-  version: 1
-  dueAt: number | null
-  scheduled: boolean
-  consumed: boolean
-}
-
-const LEGACY_ALARM_MIGRATION_KEY = "lifecycleLegacyAlarmMigration"
-
-function isFreshLegacyAlarmMigration(value: unknown): value is LegacyAlarmMigration {
-  if (!isRecord(value)) return false
-  return Object.keys(value).length === 4 && value.version === 1 && value.dueAt === null &&
-    value.scheduled === false && value.consumed === true
-}
 
 type OperatorReconciliationDraft = Omit<OperatorReconciliationProposal, "operator" | "approvalReference" | "acceptUnknownRisk">
 type OperatorReconciliationPreviewResult =
@@ -187,6 +174,7 @@ export class Conversation extends DurableObject<Env> {
   private readonly checkpoints: ConversationCheckpoints
   private readonly usage: ConversationUsage
   private readonly controlPlane: ConversationControlPlane
+  private readonly images: ConversationImages
   private jobEpoch = 0
   private readonly activeLifecycleJobs = new Set<ConversationJobKind>()
   private streaming = false
@@ -229,12 +217,12 @@ export class Conversation extends DurableObject<Env> {
       },
       startup: {
         start: () => this.startContainer(),
-        prepareImage: (container) => this.prepareContainerImageVariant(container),
-        options: () => this.startOptions(),
+        prepareImage: (container) => this.images.prepareContainerImageVariant(container),
+        options: () => this.images.startOptions(),
       },
       snapshots: {
-        snapshotHandle: () => this.snapshotHandle(),
-        clearSnapshot: () => this.clearSnapshot(),
+        snapshotHandle: () => this.images.snapshotHandle(),
+        clearSnapshot: () => this.images.clearSnapshot(),
       },
       authorization: { controlToken: () => this.controlPlane.token() },
       observations: {
@@ -266,6 +254,18 @@ export class Conversation extends DurableObject<Env> {
       withAdmissionLock: (task) => this.withAdmissionLock(task),
       hasPendingRuntimeUpgrade: () => this.hasPendingRuntimeUpgrade(),
       scheduleObservation: (at, payload) => this.scheduleConversationJob("turn:observe", at, payload),
+    })
+    this.images = new ConversationImages({
+      storage: ctx.storage,
+      runtime: this.runtime,
+      container: () => this.ctx.container,
+      key: () => this.key,
+      env: () => ({
+        EVENTED_CANARY_KEY: this.env.EVENTED_CANARY_KEY,
+        EVENTED_FRESH_CONVERSATIONS: this.env.EVENTED_FRESH_CONVERSATIONS,
+      }),
+      cachedToken: () => this.controlPlane.cachedToken,
+      count: (name) => this.count(name),
     })
     this.checkpoints = new ConversationCheckpoints({
       conversationID: ctx.id.toString(),
@@ -541,7 +541,7 @@ export class Conversation extends DurableObject<Env> {
         containerRunning: this.ctx.container?.running ?? false,
         runtimeGeneration: this.runtime.generation,
         startMode: this.runtime.startMode,
-        snapshot: Boolean(await this.snapshotHandle()),
+        snapshot: Boolean(await this.images.snapshotHandle()),
         events: Object.fromEntries(this.seenEvents),
       })
     }
@@ -928,7 +928,7 @@ export class Conversation extends DurableObject<Env> {
           { status: 503 },
         )
       }
-      await this.clearSnapshot()
+      await this.images.clearSnapshot()
       try {
         await this.ctx.container?.destroy()
       } catch {
@@ -1015,216 +1015,21 @@ export class Conversation extends DurableObject<Env> {
 
   // ------------------------------------------------------------ container start
 
-  /** Startup options for the scheduling policy in use. */
+  /** Protected seams retained for qualification and subclass tests. */
   protected startOptions(): ContainerStartupOptions {
-    const images = (this.ctx.container as unknown as { images?: Record<string, string> } | undefined)
-      ?.images
-    const eventedCanary = this.runtime.imageVariant === "evented" || this.isEventedCanary()
-    const image = eventedCanary ? images?.evented : images?.base
-    if (eventedCanary && !image) throw new Error("evented canary image is not configured")
-    if (!eventedCanary && !image) throw new Error("base container image is not configured")
-    return {
-      enableInternet: true,
-      image,
-      // `basic` has no exact equivalent on this policy; standard-1 is the
-      // closest size with enough memory for OpenCode plus stow.
-      instance: "standard-1",
-      ...(this.controlPlane.cachedToken ? { env: { CONTROL_TOKEN: this.controlPlane.cachedToken } } : {}),
-    } as ContainerStartupOptions
+    return this.images.startOptions()
   }
 
-  /** A snapshot to restore instead of a fresh start, when supported. */
-  protected async snapshotHandle(): Promise<ContainerSnapshot | undefined> {
-    const binding = await this.ctx.storage.get<unknown>("containerImageVariant")
-    if (binding === "evented" || this.runtime.imageVariant === "evented" || this.isEventedCanary()) return undefined
-    return this.ctx.storage.get<ContainerSnapshot>("snapshot")
+  protected snapshotHandle(): Promise<ContainerSnapshot | undefined> {
+    return this.images.snapshotHandle()
   }
 
-  /** Only one explicitly configured canary conversation may start the evented image. */
-  private isEventedCanary(): boolean {
-    const canaryKey = this.env.EVENTED_CANARY_KEY?.trim()
-    return Boolean(canaryKey && this.key === canaryKey)
+  protected clearSnapshot(): Promise<boolean> {
+    return this.images.clearSnapshot()
   }
 
-  private canRouteFreshConversationsToEvented(): boolean {
-    return this.env.EVENTED_FRESH_CONVERSATIONS === "true"
-  }
-
-  /**
-   * Opt-in image routing for a conversation with no prior runtime/session
-   * history. Only command/dedupe bookkeeping from never-started conversations
-   * is tolerated; any other durable key keeps the conversation on the base image.
-   */
-  private async isFreshUnstartedConversation(container: NonNullable<typeof this.ctx.container>): Promise<boolean> {
-    if (container.running) return false
-    const stored = await this.ctx.storage.list()
-    for (const key of stored.keys()) {
-      if (key === "state") continue
-      if (key === "conversationJobEpoch") {
-        const epoch = await this.ctx.storage.get<number>(key)
-        if (!Number.isSafeInteger(epoch) || (epoch ?? 0) < 1) return false
-        continue
-      }
-      if (key === LEGACY_ALARM_MIGRATION_KEY) {
-        if (!isFreshLegacyAlarmMigration(await this.ctx.storage.get(key))) return false
-        continue
-      }
-      const match = /^tombstones:(\d{4}-\d{2}-\d{2})$/.exec(key)
-      if (!match) return false
-      const date = match[1]!
-      try {
-        if (new Date(`${date}T00:00:00.000Z`).toISOString().slice(0, 10) !== date) return false
-      } catch {
-        return false
-      }
-    }
-
-    const value = await this.ctx.storage.get<unknown>("state")
-    if (value === undefined) return true
-    if (!value || typeof value !== "object" || Array.isArray(value)) return false
-    const state = value as Record<string, unknown>
-    const allowed = new Set([
-      "phase", "seen", "pending", "slackEngaged", "modelOverride",
-      "transport", "slack", "announcedForms", "admissionID", "admissionStartedAt",
-    ])
-    if (Object.entries(state).some(([key, field]) => field !== undefined && !allowed.has(key))) return false
-    if (state.phase !== undefined && state.phase !== "idle" && state.phase !== "admitting") return false
-    if (state.seen !== undefined &&
-      (!Array.isArray(state.seen) || !state.seen.every((id) => typeof id === "string"))) return false
-    if (state.pending !== undefined &&
-      (!state.pending || typeof state.pending !== "object" || Array.isArray(state.pending) ||
-        Object.keys(state.pending).length !== 0)) return false
-    if (state.slackEngaged !== undefined && typeof state.slackEngaged !== "boolean") return false
-    if (state.admissionID !== undefined && (typeof state.admissionID !== "string" || !state.admissionID ||
-      !Number.isSafeInteger(state.admissionStartedAt) || (state.admissionStartedAt as number) <= 0)) return false
-    if (state.admissionStartedAt !== undefined && (typeof state.admissionStartedAt !== "number" ||
-      !Number.isSafeInteger(state.admissionStartedAt) || state.admissionStartedAt <= 0 || !state.admissionID)) return false
-    if (state.modelOverride !== undefined && typeof state.modelOverride !== "string") return false
-    if (state.transport !== undefined && state.transport !== "http" && state.transport !== "slack") return false
-    if (state.slack !== undefined) {
-      if (!state.slack || typeof state.slack !== "object" || Array.isArray(state.slack)) return false
-      const target = state.slack as Record<string, unknown>
-      if (Object.keys(target).some((key) => key !== "channel" && key !== "replyTs") ||
-        typeof target.channel !== "string" || !target.channel ||
-        (target.replyTs !== undefined && typeof target.replyTs !== "string")) return false
-    }
-    if (state.announcedForms !== undefined &&
-      (!Array.isArray(state.announcedForms) || state.announcedForms.length !== 0)) return false
-    return true
-  }
-
-  /** Bind the canary image only on a fresh conversation immediately before first start. */
-  private async prepareContainerImageVariant(container: NonNullable<typeof this.ctx.container>): Promise<void> {
-    const stored = await this.ctx.storage.get<unknown>("containerImageVariant")
-    if (stored !== undefined) {
-      if (stored !== "evented") throw new Error("unknown container image binding; refusing to fall back")
-      this.runtime.bindImage("evented")
-      this.startOptions()
-      return
-    }
-
-    const explicitlySelected = this.isEventedCanary()
-    if (!explicitlySelected && !this.canRouteFreshConversationsToEvented()) {
-      this.runtime.bindImage("base")
-      this.startOptions()
-      return
-    }
-    if (!explicitlySelected && !(await this.isFreshUnstartedConversation(container))) {
-      this.runtime.bindImage("base")
-      this.startOptions()
-      return
-    }
-    this.runtime.bindImage("evented")
-    // Resolve the named image before any durable write. Persist the binding
-    // only after strict freshness validation, but before token/lease creation,
-    // so a capacity retry cannot accidentally retarget this conversation.
-    this.startOptions()
-    if (explicitlySelected) await this.assertFreshEventedCanary()
-    await this.ctx.storage.put("containerImageVariant", "evented")
-  }
-
-  private async assertFreshEventedCanary(): Promise<void> {
-    const keys = await this.ctx.storage.list()
-    // The lifecycle scheduler writes one strictly validated epoch before the
-    // first request. Any other unrecognized key remains evidence of history.
-    for (const key of keys.keys()) {
-      if (key === "state") continue
-      if (key === "conversationJobEpoch") {
-        const epoch = await this.ctx.storage.get<number>(key)
-        if (Number.isSafeInteger(epoch) && (epoch ?? 0) > 0) continue
-      }
-      if (key === LEGACY_ALARM_MIGRATION_KEY &&
-        isFreshLegacyAlarmMigration(await this.ctx.storage.get(key))) continue
-      throw new Error("evented canary requires a fresh conversation with no history or holds")
-    }
-    const state = await this.ctx.storage.get<ConversationState>("state")
-    if (!state) return
-    const allowedKeys = new Set([
-      "phase", "seen", "pending", "slackEngaged", "modelOverride", "transport", "slack",
-      "announcedForms", "admissionID", "admissionStartedAt",
-    ])
-    if (Object.keys(state).some((key) => !allowedKeys.has(key)) ||
-      state.phase !== "admitting" ||
-      (state.seen?.length ?? 0) > 1 ||
-      (state.seen !== undefined && (!Array.isArray(state.seen) || !state.seen.every((id) => typeof id === "string"))) ||
-      Object.keys(state.pending ?? {}).length > 0 ||
-      (state.slackEngaged !== undefined && state.slackEngaged !== true) ||
-      (state.pending !== undefined && (!state.pending || typeof state.pending !== "object" || Array.isArray(state.pending))) ||
-      (state.admissionID !== undefined && (typeof state.admissionID !== "string" || !state.admissionID ||
-        !Number.isSafeInteger(state.admissionStartedAt) || (state.admissionStartedAt ?? 0) <= 0)) ||
-      (state.admissionStartedAt !== undefined && (typeof state.admissionStartedAt !== "number" ||
-        !Number.isSafeInteger(state.admissionStartedAt) || state.admissionStartedAt <= 0 || !state.admissionID)) ||
-      (state.modelOverride !== undefined && typeof state.modelOverride !== "string") ||
-      (state.transport !== undefined && state.transport !== "http" && state.transport !== "slack") ||
-      (state.announcedForms !== undefined && (!Array.isArray(state.announcedForms) || state.announcedForms.length !== 0)) ||
-      (state.slack !== undefined && (!state.slack || Object.keys(state.slack).some((key) => key !== "channel" && key !== "replyTs") ||
-        typeof state.slack.channel !== "string" || !state.slack.channel ||
-        (state.slack.replyTs !== undefined && typeof state.slack.replyTs !== "string")))) {
-      throw new Error("evented canary requires a fresh conversation with no history or holds")
-    }
-  }
-
-  private async loadContainerImageVariant(container?: NonNullable<typeof this.ctx.container>): Promise<void> {
-    const stored = await this.ctx.storage.get<unknown>("containerImageVariant")
-    if (stored !== undefined) {
-      if (stored !== "evented") throw new Error("unknown container image binding; refusing to fall back")
-      if (!container?.images?.evented) throw new Error("evented canary image is not configured")
-      this.runtime.bindImage("evented")
-      return
-    }
-    if (this.isEventedCanary() && container?.running) {
-      throw new Error("running evented canary container has no durable image binding")
-    }
-    this.runtime.bindImage(undefined)
-  }
-
-  /** Drop a snapshot that cannot be used (image change, corruption). */
-  protected async clearSnapshot(): Promise<boolean> {
-    const existing = await this.ctx.storage.get<ContainerSnapshot>("snapshot")
-    await this.ctx.storage.delete("snapshot")
-    return Boolean(existing)
-  }
-
-  /**
-   * Capture a filesystem snapshot after a durable checkpoint. Snapshots are a
-   * fast restore cache: they are bound to the image they were taken from, so
-   * the R2 archive remains the portable source of truth.
-   */
-  protected async captureSnapshot(): Promise<void> {
-    return withSpan("container.snapshot", async (span) => {
-      try {
-        const snapshot = await this.ctx.container?.snapshotContainer({ name: "turn" })
-        if (!snapshot) return
-        await this.ctx.storage.put("snapshot", snapshot)
-        span.setAttribute("snapshot.bytes", snapshot.size)
-        logEvent("snapshot.saved", { bytes: snapshot.size })
-        await this.count("snapshot.saved")
-      } catch (error) {
-        span.recordException(error as Error)
-        logEvent("snapshot.failed")
-        void this.count("snapshot.failed")
-      }
-    })
+  protected captureSnapshot(): Promise<void> {
+    return this.images.captureSnapshot()
   }
 
   private async acquireLease(): Promise<void> {
@@ -1269,7 +1074,7 @@ export class Conversation extends DurableObject<Env> {
     if (imageBinding === "evented") this.runtime.bindImage("evented")
     // Resolve and durably bind the selected image before token creation or
     // lease acquisition. A canary capacity retry then reuses this binding.
-    await this.prepareContainerImageVariant(container)
+    await this.images.prepareContainerImageVariant(container)
     try {
       // The token must exist before the container process starts, because it is
       // passed in the container environment.
@@ -3803,7 +3608,7 @@ export class Conversation extends DurableObject<Env> {
     }
     if (this.leaseHeld) void this.acquireLease().catch(() => {})
     if (this.ctx.container?.running) this.runtime.applyInactivity(this.ctx.container)
-    await this.loadContainerImageVariant(this.ctx.container)
+    await this.images.loadContainerImageVariant(this.ctx.container)
     if (upgradePending && this.ctx.container?.images?.evented !== upgradePending.targetImage) {
       throw new Error("configured evented image does not match the pending upgrade")
     }
@@ -3844,7 +3649,7 @@ export class Conversation extends DurableObject<Env> {
       // a fresh portable archive is safely stored.
       const saved = await this.checkpoints.capture()
       if (!saved) throw new Error("settings changed but checkpoint failed; keeping the current container")
-      await this.clearSnapshot()
+      await this.images.clearSnapshot()
       await container.destroy()
       await this.releaseLease()
       this.runtime.resetAfterStop()
