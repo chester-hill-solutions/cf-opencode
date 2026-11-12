@@ -471,3 +471,8 @@ prove these contracts; the review is not runtime qualification.
   High-level restore/readiness, image policy and lease orchestration still need
   extraction/integration. Passive debug now distinguishes actual container
   running state from verified readiness for the no-inference benchmark.
+- `ConversationUsage` now owns ledger validation, acknowledged log replay,
+  cursor/terminal fences and the serialization tail shared with lifecycle and
+  operator work. Coordinator integration removed 341 implementation lines;
+  82 focused Worker tests and full typecheck passed. Budget admission and its
+  dispatch-marker/job transaction remain at their existing owner boundary.

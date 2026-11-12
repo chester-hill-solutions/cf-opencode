@@ -53,8 +53,7 @@ describe("durable usage ledger", () => {
       }
       const target = instance as unknown as {
         withClient<T>(fn: (client: any) => Promise<T>): Promise<T>
-        recordContextUsage(messages: unknown[]): Promise<void>
-        refreshUsageFromLog(sessionID: string): Promise<void>
+        usage: { recordContext(messages: unknown[]): Promise<void>; refresh(sessionID: string): Promise<void> }
       }
       target.withClient = async (fn) => fn({
         experimental: { session: { log: ({ after }: { after?: number }) => iterable(after) } },
@@ -62,14 +61,14 @@ describe("durable usage ledger", () => {
       const messages = [{ id: "assistant-2", type: "assistant", cost: 0, finish: "stop" }]
       // A warm replay can cross the terminal step before settlement sees the
       // same log. Its persisted terminal id must let settlement prove it.
-      await target.refreshUsageFromLog("ses_1")
-      await target.recordContextUsage(messages)
-      await target.recordContextUsage(messages)
+      await target.usage.refresh("ses_1")
+      await target.usage.recordContext(messages)
+      await target.usage.recordContext(messages)
       rows.push(durableEvent("late-title", 9, "session.usage.recorded", {
         source: "title", cost: 0.25, tokens: { input: 5, output: 1 },
       }))
       watermark = 9
-      await target.refreshUsageFromLog("ses_1")
+      await target.usage.refresh("ses_1")
       return state.storage.get<{ usageCursor: { sessionID: string; seq: number }; usageTerminal: { assistantMessageID: string } }>("state")
     })
 
@@ -95,14 +94,14 @@ describe("durable usage ledger", () => {
       const iterable = async function* () { yield* rows }
       const target = instance as unknown as {
         withClient<T>(fn: (client: any) => Promise<T>): Promise<T>
-        recordContextUsage(messages: unknown[]): Promise<void>
+        usage: { recordContext(messages: unknown[]): Promise<void>; refresh(sessionID: string): Promise<void> }
       }
       target.withClient = async (fn) => fn({
         experimental: { session: { log: () => iterable() } },
       })
       let error = ""
       try {
-        await target.recordContextUsage([{ id: "assistant-x", type: "assistant" }])
+        await target.usage.recordContext([{ id: "assistant-x", type: "assistant" }])
       } catch (caught) {
         error = String(caught)
       }
@@ -124,7 +123,7 @@ describe("durable usage ledger", () => {
       ]
       const target = instance as unknown as {
         withClient<T>(fn: (client: any) => Promise<T>): Promise<T>
-        recordContextUsage(messages: unknown[]): Promise<void>
+        usage: { recordContext(messages: unknown[]): Promise<void>; refresh(sessionID: string): Promise<void> }
       }
       const iterable = async function* () {
         yield* rows
@@ -135,7 +134,7 @@ describe("durable usage ledger", () => {
       })
       let error = ""
       try {
-        await target.recordContextUsage([{ id: "assistant-terminal", type: "assistant", cost: 0, finish: "stop" }])
+        await target.usage.recordContext([{ id: "assistant-terminal", type: "assistant", cost: 0, finish: "stop" }])
       } catch (caught) {
         error = String(caught)
       }
@@ -175,7 +174,7 @@ describe("durable usage ledger", () => {
       const afterCalls: number[] = []
       const target = instance as unknown as {
         withClient<T>(fn: (client: any) => Promise<T>): Promise<T>
-        recordContextUsage(messages: unknown[]): Promise<void>
+        usage: { recordContext(messages: unknown[]): Promise<void>; refresh(sessionID: string): Promise<void> }
         withUsageLifecycle(cleanup: () => Promise<Response>): Promise<Response>
       }
       target.withClient = async (fn) => fn({
@@ -201,7 +200,7 @@ describe("durable usage ledger", () => {
       })
 
       const messages = [{ id: "assistant-2", type: "assistant", cost: 0.2, finish: "stop" }]
-      await target.recordContextUsage(messages).catch(() => {})
+      await target.usage.recordContext(messages).catch(() => {})
       const afterCrash = await state.storage.get<{
         usageCursor?: { seq: number }
         usageExecution?: unknown
@@ -209,7 +208,7 @@ describe("durable usage ledger", () => {
       }>("state")
       let settlementError = ""
       try {
-        await target.recordContextUsage(messages)
+        await target.usage.recordContext(messages)
       } catch (error) {
         settlementError = String(error)
       }
@@ -260,7 +259,7 @@ describe("durable usage ledger", () => {
       })
       const target = instance as unknown as {
         withClient<T>(fn: (client: any) => Promise<T>): Promise<T>
-        recordContextUsage(messages: unknown[]): Promise<void>
+        usage: { recordContext(messages: unknown[]): Promise<void>; refresh(sessionID: string): Promise<void> }
       }
       const iterable = async function* () {
         yield { type: "log.synced", aggregateID: "ses_1" }
@@ -270,7 +269,7 @@ describe("durable usage ledger", () => {
       })
       let error = ""
       try {
-        await target.recordContextUsage([{ id: "assistant-4", type: "assistant" }])
+        await target.usage.recordContext([{ id: "assistant-4", type: "assistant" }])
       } catch (caught) {
         error = String(caught)
       }
@@ -287,7 +286,7 @@ describe("durable usage ledger", () => {
       const target = instance as unknown as {
         ctx: { id: { toString(): string } }
         withClient<T>(fn: (client: any) => Promise<T>): Promise<T>
-        recordContextUsage(messages: unknown[]): Promise<void>
+        usage: { recordContext(messages: unknown[]): Promise<void>; refresh(sessionID: string): Promise<void> }
       }
       const seed = await env.SETTINGS.getByName("global").fetch("https://settings/usage", {
         method: "POST",
@@ -316,7 +315,7 @@ describe("durable usage ledger", () => {
       })
       let error = ""
       try {
-        await target.recordContextUsage([{ id: "assistant-rejected", type: "assistant" }])
+        await target.usage.recordContext([{ id: "assistant-rejected", type: "assistant" }])
       } catch (caught) {
         error = String(caught)
       }
@@ -358,14 +357,13 @@ describe("durable usage ledger", () => {
       }
       const target = instance as unknown as {
         withClient<T>(fn: (client: any) => Promise<T>): Promise<T>
-        refreshUsageFromLog(sessionID: string): Promise<void>
-        recordContextUsage(messages: unknown[]): Promise<void>
+        usage: { recordContext(messages: unknown[]): Promise<void>; refresh(sessionID: string): Promise<void> }
       }
       target.withClient = async (fn) => fn({
         experimental: { session: { log: ({ after }: { after?: number }) => iterable(after) } },
       })
-      await target.refreshUsageFromLog("ses_1")
-      await target.recordContextUsage([{ id: "fresh-assistant", type: "assistant", cost: 0.3 }])
+      await target.usage.refresh("ses_1")
+      await target.usage.recordContext([{ id: "fresh-assistant", type: "assistant", cost: 0.3 }])
       return state.storage.get<{ usageCursor: { seq: number }; usageTerminal: { assistantMessageID: string } }>("state")
     })
     const after = await todayUsage()
@@ -403,7 +401,7 @@ describe("durable usage ledger", () => {
       const target = instance as unknown as {
         ctx: { id: { toString(): string } }
         withClient<T>(fn: (client: any) => Promise<T>): Promise<T>
-        recordContextUsage(messages: unknown[]): Promise<void>
+        usage: { recordContext(messages: unknown[]): Promise<void>; refresh(sessionID: string): Promise<void> }
       }
       const iterable = async function* (after = 0) {
         for (const row of oldRows) {
@@ -416,8 +414,8 @@ describe("durable usage ledger", () => {
         experimental: { session: { log: ({ after }: { after?: number }) => iterable(after) } },
       })
       const conversationID = target.ctx.id.toString()
-      await target.recordContextUsage([{ id: "old-terminal", type: "assistant" }])
-      await target.recordContextUsage([{ id: "old-terminal", type: "assistant" }])
+      await target.usage.recordContext([{ id: "old-terminal", type: "assistant" }])
+      await target.usage.recordContext([{ id: "old-terminal", type: "assistant" }])
       return { conversationID, cursor: await state.storage.get<{ usageCursor: { sessionID: string; seq: number } }>("state") }
     })
     expect(first.cursor?.usageCursor).toEqual({ sessionID: oldSession, seq: 5 })
@@ -426,7 +424,7 @@ describe("durable usage ledger", () => {
       const target = instance as unknown as {
         withClient<T>(fn: (client: any) => Promise<T>): Promise<T>
         checkpoints: { deleteAll(): Promise<void> }
-        refreshUsageFromLog(sessionID: string): Promise<void>
+        usage: { recordContext(messages: unknown[]): Promise<void>; refresh(sessionID: string): Promise<void> }
       }
       let logCalls = 0
       let cleanupEntered!: () => void
@@ -445,7 +443,7 @@ describe("durable usage ledger", () => {
       }
       const resetPromise = instance.fetch(new Request("https://conversation/reset", { method: "POST" }))
       await cleanupStarted
-      const lateRefresh = target.refreshUsageFromLog(oldSession)
+      const lateRefresh = target.usage.refresh(oldSession)
       await Promise.resolve()
       expect(logCalls).toBe(1)
       releaseCleanup()
@@ -477,7 +475,7 @@ describe("durable usage ledger", () => {
       await state.storage.put("state", { sessionID: newSession, seen: [], pending: {} })
       const target = instance as unknown as {
         withClient<T>(fn: (client: any) => Promise<T>): Promise<T>
-        recordContextUsage(messages: unknown[]): Promise<void>
+        usage: { recordContext(messages: unknown[]): Promise<void>; refresh(sessionID: string): Promise<void> }
       }
       const iterable = async function* (after = 0) {
         for (const row of newRows) {
@@ -489,8 +487,8 @@ describe("durable usage ledger", () => {
       target.withClient = async (fn) => fn({
         experimental: { session: { log: ({ after }: { after?: number }) => iterable(after) } },
       })
-      await target.recordContextUsage([{ id: "new-terminal", type: "assistant" }])
-      await target.recordContextUsage([{ id: "new-terminal", type: "assistant" }])
+      await target.usage.recordContext([{ id: "new-terminal", type: "assistant" }])
+      await target.usage.recordContext([{ id: "new-terminal", type: "assistant" }])
       expect(await state.storage.get("usageCursor")).toBeUndefined()
     })
 

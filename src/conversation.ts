@@ -33,6 +33,7 @@ import type { ConversationEvent } from "./events"
 import { ConversationEventStream } from "./conversation/event-stream"
 import { ConversationCheckpoints } from "./conversation/checkpoints"
 import { ConversationRuntime } from "./conversation/runtime"
+import { ConversationUsage, type UsageCutoverLedger } from "./conversation/usage"
 import { createSseParser } from "./sse"
 import { parseModelRef, type Env } from "./env"
 import { retryAfterSeconds } from "./backoff"
@@ -45,7 +46,6 @@ import { CAPACITY_RETRY_MS, isCapacityRejection } from "./queue"
 import { GITHUB_TOKEN_KEY, workspaceID } from "./vault"
 import { accountStateKey, LEGACY_ACCOUNT_STATE_KEY, parseConversationKey } from "./tenancy"
 import { plaintextArchivesAllowed } from "./archive-policy"
-import { durableUsageEvent } from "./usage"
 import { ACCOUNTING_POLICY_ID, AccountingPolicyError, assertAccountingPolicy } from "./accounting-policy"
 import { classifyRecovery, recoverySnapshotID, type RecoveryAuthority, type RecoveryHold, type RecoveryRetirement } from "./recovery"
 import { proveRuntimeQuiescence } from "./runtime-quiescence"
@@ -95,27 +95,6 @@ function isFreshLegacyAlarmMigration(value: unknown): value is LegacyAlarmMigrat
   if (!isRecord(value)) return false
   return Object.keys(value).length === 4 && value.version === 1 && value.dueAt === null &&
     value.scheduled === false && value.consumed === true
-}
-
-interface UsageCutoverReceipt {
-  cutoverID: string
-  sessionID: string
-  throughSeq: number
-  expectedSnapshotID: string
-  openingBalances: unknown
-  createdAt: number
-  historicalUsageUnreconciled: true
-}
-
-interface UsageCutoverLedger {
-  conversationID: string
-  rows: UnknownRecord[]
-  legacyRows: UnknownRecord[]
-  holds: RecoveryHold[]
-  blockers: unknown[]
-  receipt?: UsageCutoverReceipt
-  snapshotID: string
-  retirement?: RecoveryRetirement & { operatorReceiptID?: string }
 }
 
 type OperatorReconciliationDraft = Omit<OperatorReconciliationProposal, "operator" | "approvalReference" | "acceptUnknownRisk">
@@ -218,10 +197,9 @@ export class Conversation extends DurableObject<Env> {
   private readonly store: ConversationStore
   private readonly eventStream: ConversationEventStream
   private readonly checkpoints: ConversationCheckpoints
+  private readonly usage: ConversationUsage
   private jobEpoch = 0
   private readonly activeLifecycleJobs = new Set<ConversationJobKind>()
-  /** Serialize durable usage replays (settlement may race the alarm pump). */
-  private usageTail: Promise<void> = Promise.resolve()
   private streaming = false
   private pumping = false
   private consecutiveFailures = 0
@@ -248,6 +226,12 @@ export class Conversation extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
     this.store = new ConversationStore(ctx.storage)
+    this.usage = new ConversationUsage({
+      conversationID: ctx.id.toString(),
+      store: this.store,
+      settings: { fetch: (input, init) => this.env.SETTINGS.getByName("global").fetch(input, init) },
+      withClient: (fn) => this.withClient(fn),
+    })
     this.runtime = new ConversationRuntime({
       network: {
         transport: () => this.transport,
@@ -1001,11 +985,11 @@ export class Conversation extends DurableObject<Env> {
 
   /** Keep the usage queue locked through cleanup so a late replay cannot resurrect state. */
   private withUsageLifecycle(cleanup: () => Promise<Response>): Promise<Response> {
-    return this.enqueueUsageReplay(async () => {
+    return this.usage.serialize(async () => {
       try {
         const state = await this.store.get()
         if (state.sessionID) {
-          await this.replayUsageLog(state.sessionID)
+          await this.usage.replayLogLocked(state.sessionID)
           const refreshed = await this.store.get()
           const execution = refreshed.usageExecution
           if (execution?.sessionID === state.sessionID &&
@@ -1882,7 +1866,7 @@ export class Conversation extends DurableObject<Env> {
       // Drain the durable log before admission. The verified foreground policy
       // disables title generation and background compaction, so settled
       // sessions have no permitted auxiliary writer after their terminal fence.
-      await this.refreshUsageFromLog(state.sessionID)
+      await this.usage.refresh(state.sessionID)
       // The durable choice is authoritative even if a cold start restored an
       // archive captured before !model. Switching models makes no model call.
       const override = parseModelRef(state.modelOverride ?? (await this.settings()).model)
@@ -2088,7 +2072,7 @@ export class Conversation extends DurableObject<Env> {
         ) {
           // Warm events only trigger the same durable replay path; their
           // cumulative snapshots are never sent directly to Settings.
-          this.ctx.waitUntil(this.refreshUsageFromLog(sessionID).catch(() => {}))
+          this.ctx.waitUntil(this.usage.refresh(sessionID).catch(() => {}))
         }
       })
       for (;;) {
@@ -2233,7 +2217,7 @@ export class Conversation extends DurableObject<Env> {
     // cannot prove that provider usage was zero.
     if (messages) {
       try {
-        await this.recordContextUsage(messages)
+        await this.usage.recordContext(messages)
       } catch (error) {
         await this.pauseSettlement(`usage report failed: ${errorMessage(error)}`)
         return
@@ -2301,94 +2285,6 @@ export class Conversation extends DurableObject<Env> {
     }
   }
 
-  private async usageCutoverLedger(reservationID?: string): Promise<UsageCutoverLedger> {
-    const query = new URLSearchParams({ conversationID: this.ctx.id.toString() })
-    if (reservationID) query.set("reservationID", reservationID)
-    const response = await this.env.SETTINGS.getByName("global").fetch(
-      `https://settings/usage/cutover?${query.toString()}`,
-    )
-    if (!response.ok) throw new Error(`usage cutover status was rejected: ${response.status}`)
-    const value: unknown = await response.json()
-    if (!isRecord(value) || value.conversationID !== this.ctx.id.toString() ||
-      typeof value.snapshotID !== "string" || !/^[a-f0-9]{64}$/.test(value.snapshotID) || !Array.isArray(value.rows) ||
-      !Array.isArray(value.legacyRows) || !Array.isArray(value.holds) || !Array.isArray(value.blockers) ||
-      !value.rows.every(isRecord) || !value.legacyRows.every(isRecord)) {
-      throw new Error("usage cutover status is unreadable")
-    }
-    const holds: RecoveryHold[] = value.holds.map((hold): RecoveryHold => {
-      if (!isRecord(hold) || typeof hold.key !== "string" ||
-        (hold.kind !== "reservation" && hold.kind !== "legacy-reservation") ||
-        !(typeof hold.conversationID === "string" || hold.conversationID === null) ||
-        !(typeof hold.reservationID === "string" || hold.reservationID === null) ||
-        !(typeof hold.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(hold.date) || hold.date === null) ||
-        !(typeof hold.costUSD === "number" && Number.isFinite(hold.costUSD) && hold.costUSD >= 0 || hold.costUSD === null) ||
-        (hold.updatedAt !== undefined &&
-          !(typeof hold.updatedAt === "number" && Number.isFinite(hold.updatedAt) || hold.updatedAt === null)) ||
-        (hold.invalidFields !== undefined && (!Array.isArray(hold.invalidFields) ||
-          !hold.invalidFields.every((field) => typeof field === "string"))) ||
-        (hold.kind === "legacy-reservation" && typeof hold.reserved !== "boolean")) {
-        throw new Error("usage cutover hold inventory is unreadable")
-      }
-      const invalidFields = Array.isArray(hold.invalidFields) ? [...hold.invalidFields as string[]] : []
-      if (hold.kind === "reservation") {
-        if (typeof hold.conversationID !== "string") invalidFields.push("conversationID")
-        if (typeof hold.reservationID !== "string") invalidFields.push("reservationID")
-        if (typeof hold.date !== "string") invalidFields.push("date")
-        if (typeof hold.costUSD !== "number") invalidFields.push("costUSD")
-      }
-      return {
-        kind: hold.kind,
-        ...(typeof hold.conversationID === "string" ? { conversationID: hold.conversationID } : {}),
-        ...(typeof hold.reservationID === "string" ? { reservationID: hold.reservationID } : {}),
-        ...(typeof hold.date === "string" ? { date: hold.date } : {}),
-        ...(typeof hold.costUSD === "number" ? { costUSD: hold.costUSD } : {}),
-        ...(invalidFields.length ? { invalidFields } : {}),
-      }
-    })
-    let retirement: (RecoveryRetirement & { operatorReceiptID?: string }) | undefined
-    if (value.retirement !== undefined) {
-      const raw = value.retirement
-      if (!isRecord(raw) || typeof raw.conversationID !== "string" ||
-        typeof raw.reservationID !== "string" ||
-        (raw.date !== undefined && (typeof raw.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(raw.date))) ||
-        (raw.reason !== "released" && raw.reason !== "cancelled_before_dispatch") ||
-        typeof raw.retiredAt !== "number" || !Number.isFinite(raw.retiredAt) ||
-        (raw.released !== undefined && typeof raw.released !== "boolean")) {
-        throw new Error("usage reservation retirement is unreadable")
-      }
-      retirement = {
-        conversationID: raw.conversationID,
-        reservationID: raw.reservationID,
-        ...(typeof raw.date === "string" ? { date: raw.date } : {}),
-        reason: raw.reason,
-        retiredAt: raw.retiredAt,
-        ...(typeof raw.released === "boolean" ? { released: raw.released } : {}),
-        ...(typeof raw.operatorReceiptID === "string" ? { operatorReceiptID: raw.operatorReceiptID } : {}),
-      }
-    }
-    let receipt: UsageCutoverReceipt | undefined
-    if (value.receipt !== undefined) {
-      const raw = value.receipt
-      if (!isRecord(raw) || typeof raw.cutoverID !== "string" || typeof raw.sessionID !== "string" ||
-        !Number.isSafeInteger(raw.throughSeq) || (raw.throughSeq as number) < 0 ||
-        typeof raw.expectedSnapshotID !== "string" || typeof raw.createdAt !== "number" ||
-        raw.historicalUsageUnreconciled !== true) {
-        throw new Error("usage cutover receipt is unreadable")
-      }
-      receipt = raw as unknown as UsageCutoverReceipt
-    }
-    return {
-      conversationID: value.conversationID,
-      rows: value.rows,
-      legacyRows: value.legacyRows,
-      holds,
-      blockers: value.blockers,
-      ...(receipt ? { receipt } : {}),
-      snapshotID: value.snapshotID,
-      ...(retirement ? { retirement } : {}),
-    }
-  }
-
   private async recoveryStatus(): Promise<UnknownRecord> {
     const state = await this.store.get()
     const localReservation = isRecord(state.budgetReservation) &&
@@ -2399,7 +2295,7 @@ export class Conversation extends DurableObject<Env> {
     let authority: RecoveryAuthority | undefined
     let authorityError: string | undefined
     try {
-      ledger = await this.usageCutoverLedger(localReservation)
+      ledger = await this.usage.ledger(localReservation)
       authority = {
         conversationID: ledger.conversationID,
         snapshotID: ledger.snapshotID,
@@ -2591,7 +2487,7 @@ export class Conversation extends DurableObject<Env> {
           }
         }
       }
-      return action === "cancel_before_dispatch" ? this.enqueueUsageReplay(act) : act()
+      return action === "cancel_before_dispatch" ? this.usage.serialize(act) : act()
     })
   }
 
@@ -2602,7 +2498,7 @@ export class Conversation extends DurableObject<Env> {
       }
       this.recoveryAction = true
       try {
-        return await this.enqueueUsageReplay(async () => {
+        return await this.usage.serialize(async () => {
           const result = await this.buildOperatorReconciliationDraft(kind)
           if (!result.ok) return Response.json({ error: result.error, ...(result.blockers ? { blockers: result.blockers } : {}) }, { status: result.status })
           return Response.json(result.body)
@@ -2630,7 +2526,7 @@ export class Conversation extends DurableObject<Env> {
     let authorityLedger: UsageCutoverLedger
     let central: UnknownRecord
     try {
-      authorityLedger = await this.usageCutoverLedger(reservation.reservationID)
+      authorityLedger = await this.usage.ledger(reservation.reservationID)
       central = await this.operatorReconciliationSnapshot(conversationID, sessionID, reservation.reservationID)
     } catch {
       return { ok: false, status: 503, error: "reconciliation authority is unavailable" }
@@ -2713,7 +2609,7 @@ export class Conversation extends DurableObject<Env> {
     }
 
     const reviewState = await this.store.get()
-    const reviewLedger = await this.usageCutoverLedger(reservation.reservationID).catch(() => undefined)
+    const reviewLedger = await this.usage.ledger(reservation.reservationID).catch(() => undefined)
     const reviewCentral = await this.operatorReconciliationSnapshot(conversationID, sessionID, reservation.reservationID).catch(() => undefined)
     if (!reviewLedger || !reviewCentral || reviewState.sessionID !== sessionID || reviewState.queued ||
       reviewState.budgetReservation?.reservationID !== reservation.reservationID ||
@@ -2911,7 +2807,7 @@ export class Conversation extends DurableObject<Env> {
       }
       this.recoveryAction = true
       try {
-        return await this.enqueueUsageReplay(async () => {
+        return await this.usage.serialize(async () => {
           const digest = await operatorReconciliationDigest(proposal)
           const central = await this.operatorReconciliationSnapshot(
             proposal.conversationID, proposal.sessionID, proposal.reservationID,
@@ -2919,7 +2815,7 @@ export class Conversation extends DurableObject<Env> {
           if (!central) return Response.json({ error: "reconciliation authority is unavailable" }, { status: 503 })
           const existingReceipt = isRecord(central.existingReceipt) ? central.existingReceipt as unknown as OperatorReconciliationReceipt : undefined
           const completeRetirement = async (): Promise<RecoveryRetirement & { operatorReceiptID?: string } | undefined> => {
-            const ledger = await this.usageCutoverLedger(proposal.reservationID).catch(() => undefined)
+            const ledger = await this.usage.ledger(proposal.reservationID).catch(() => undefined)
             const retirement = ledger?.retirement
             return retirement?.conversationID === proposal.conversationID &&
               retirement.reservationID === proposal.reservationID && retirement.date === proposal.originDate &&
@@ -3017,7 +2913,7 @@ export class Conversation extends DurableObject<Env> {
 
     let ledger: UsageCutoverLedger | undefined
     try {
-      ledger = await this.usageCutoverLedger()
+      ledger = await this.usage.ledger()
     } catch (error) {
       blockers.push("settings_ledger_unavailable")
     }
@@ -3201,9 +3097,9 @@ export class Conversation extends DurableObject<Env> {
   }
 
   private async applyAccountingCutover(expectedPlanID: string): Promise<Response> {
-    return this.withAdmissionLock(async () => this.enqueueUsageReplay(async () => {
+    return this.withAdmissionLock(async () => this.usage.serialize(async () => {
       try {
-        const ledger = await this.usageCutoverLedger()
+        const ledger = await this.usage.ledger()
         if (ledger.receipt?.cutoverID === expectedPlanID) {
           return Response.json({ ok: true, recovered: true, receipt: ledger.receipt })
         }
@@ -3230,187 +3126,6 @@ export class Conversation extends DurableObject<Env> {
         return Response.json({ error: errorMessage(error) }, { status: 503 })
       }
     }))
-  }
-
-  /** Replay durable actuals; only acknowledged reports may advance the cursor. */
-  private recordContextUsage(messages: MessageInfo[]): Promise<void> {
-    const task = async () => {
-      try {
-        if (!Array.isArray(messages)) throw new Error("terminal usage context is unreadable")
-        const state = await this.store.get()
-        const terminal = turnMessages(messages, state.turnBaseline)
-          .filter((message) => message.type === "assistant")
-          .at(-1)
-        if (!state.sessionID || !terminal?.id) throw new Error("terminal assistant id is unavailable")
-        await this.replayUsageLog(state.sessionID, terminal.id)
-      } catch (error) {
-        await this.store.patch({ usageError: errorMessage(error) }).catch(() => {})
-        throw error
-      }
-    }
-    return this.enqueueUsageReplay(task)
-  }
-
-  /** Warm events and the next admission drain late auxiliary rows through the same cursor. */
-  private refreshUsageFromLog(sessionID: string): Promise<void> {
-    const task = async () => {
-      try {
-        const state = await this.store.get()
-        if (state.sessionID !== sessionID) return
-        await this.replayUsageLog(sessionID)
-      } catch (error) {
-      await this.store.patch({ usageError: errorMessage(error) }).catch(() => {})
-        throw error
-      }
-    }
-    return this.enqueueUsageReplay(task)
-  }
-
-  private enqueueUsageReplay<T>(task: () => Promise<T>): Promise<T> {
-    const run = this.usageTail.then(task, task)
-    this.usageTail = run.then(() => undefined, () => undefined)
-    return run
-  }
-
-  private async replayUsageLog(sessionID: string, terminalMessageID?: string): Promise<void> {
-    const state = await this.store.get()
-    const ledger = await this.usageCutoverLedger()
-    const receipt = ledger.receipt
-    const sessionReceipt = receipt?.sessionID === sessionID ? receipt : undefined
-    const previousCursor = state.usageCursor?.sessionID === sessionID ? state.usageCursor.seq : 0
-    const storedExecution = state.usageExecution?.sessionID === sessionID ? state.usageExecution : undefined
-    const receiptBaseline = sessionReceipt && (!storedExecution || sessionReceipt.throughSeq > previousCursor)
-      ? sessionReceipt.throughSeq
-      : 0
-    const reconstructing = storedExecution === undefined || receiptBaseline > 0
-    const replayAfter = storedExecution
-      ? Math.max(previousCursor, sessionReceipt?.throughSeq ?? 0)
-      : receiptBaseline
-    const requiredWatermark = Math.max(previousCursor, sessionReceipt?.throughSeq ?? 0)
-    let execution = receiptBaseline > 0
-      ? { sessionID, startedSeq: 0, terminalSeq: receiptBaseline, latestStepSeq: 0 }
-      : storedExecution
-        ? { ...storedExecution }
-        : { sessionID, startedSeq: 0, terminalSeq: 0, latestStepSeq: 0 }
-    let reconstructedTerminal: ConversationState["usageTerminal"]
-    let synced = false
-    let logWatermark = replayAfter
-    const log = await this.withClient(async (client) =>
-      client.experimental.session.log({ sessionID, after: replayAfter, follow: false }),
-    )
-    let latestSeq = replayAfter
-    for await (const item of log) {
-      if (!item || typeof item !== "object") throw new Error("durable session log is unreadable")
-      if ((item as { type?: string }).type === "log.synced") {
-        const marker = item as { aggregateID?: string; seq?: number }
-        if (synced || marker.aggregateID !== sessionID ||
-          (marker.seq === undefined
-            ? latestSeq > 0 || requiredWatermark > 0
-            : typeof marker.seq !== "number" || !Number.isSafeInteger(marker.seq) ||
-              marker.seq < latestSeq || marker.seq < requiredWatermark)) {
-          throw new Error("durable session log sync marker is invalid")
-        }
-        if (marker.seq !== undefined) logWatermark = marker.seq
-        synced = true
-        continue
-      }
-      if (synced) throw new Error("durable session log has rows after log.synced")
-      const raw = item as Record<string, unknown>
-      const durable = raw.durable as Record<string, unknown> | undefined
-      const data = raw.data as Record<string, unknown> | undefined
-      const seq = durable?.seq
-      if (typeof seq !== "number" || !Number.isSafeInteger(seq) || seq < 1) {
-        throw new Error("durable event sequence is unreadable")
-      }
-      if (durable?.aggregateID !== sessionID ||
-        (data?.sessionID !== undefined && data.sessionID !== sessionID)) {
-        throw new Error("durable event session does not match")
-      }
-      if ((raw.type === "session.execution.started" || raw.type === "session.execution.succeeded" ||
-        raw.type === "session.execution.failed" || raw.type === "session.execution.interrupted") &&
-        (typeof raw.id !== "string" || raw.id.length === 0 || data?.sessionID !== sessionID)) {
-        throw new Error("durable execution fence is unreadable")
-      }
-      if (seq <= latestSeq) throw new Error("durable event sequence is out of order")
-
-      const usage = durableUsageEvent(raw, sessionID)
-      if (raw.type === "session.execution.started") execution.startedSeq = seq
-      if (raw.type === "session.execution.succeeded" || raw.type === "session.execution.failed" ||
-        raw.type === "session.execution.interrupted") execution.terminalSeq = seq
-      if (usage) {
-        const today = new Date().toISOString().slice(0, 10)
-        const usageDate = Date.parse(`${usage.date}T00:00:00.000Z`)
-        const todayStart = Date.parse(`${today}T00:00:00.000Z`)
-        if (usageDate > todayStart) throw new Error("durable usage event is in the future")
-        // OpenCode can retain log rows beyond Settings' 30 day accounting
-        // window. Those expired rows are the only events that may be skipped.
-        const expired = usageDate < todayStart - 30 * 24 * 60 * 60 * 1000
-        if (expired && terminalMessageID !== undefined &&
-          usage.assistantMessageID === terminalMessageID) {
-          throw new Error("terminal assistant usage is outside the accounting window")
-        }
-        if (!expired) await this.reportUsage(usage, receipt?.cutoverID)
-        if (raw.type === "session.step.ended" || raw.type === "session.step.failed") {
-          if (!usage.assistantMessageID) throw new Error("durable step has no assistant message id")
-          execution.latestStepSeq = seq
-          if (reconstructing) {
-            reconstructedTerminal = { sessionID, assistantMessageID: usage.assistantMessageID, seq }
-          }
-        }
-      }
-      // Advancing after each event is safe: usage reports are acknowledged
-      // first, and replaying from an earlier cursor is deduped centrally.
-      if (!reconstructing) {
-        await this.store.patch({
-          usageCursor: { sessionID, seq: Math.max(previousCursor, seq, sessionReceipt?.throughSeq ?? 0) },
-          usageExecution: execution,
-          ...(usage?.assistantMessageID && (raw.type === "session.step.ended" || raw.type === "session.step.failed")
-            ? { usageTerminal: { sessionID, assistantMessageID: usage.assistantMessageID, seq } }
-            : {}),
-          usageError: undefined,
-        })
-      }
-      latestSeq = seq
-    }
-    if (!synced) throw new Error("durable session log ended without log.synced")
-    if (logWatermark < requiredWatermark) throw new Error("durable log watermark fell behind the acknowledged cursor")
-    const acknowledgedCursor = Math.max(logWatermark, latestSeq, previousCursor, sessionReceipt?.throughSeq ?? 0)
-    const currentState = await this.store.get()
-    if (reconstructing || acknowledgedCursor > (currentState.usageCursor?.sessionID === sessionID
-      ? currentState.usageCursor.seq
-      : 0)) {
-      await this.store.patch({
-        usageCursor: { sessionID, seq: acknowledgedCursor },
-        usageExecution: execution,
-        ...(reconstructing ? { usageTerminal: reconstructedTerminal } : {}),
-        usageError: undefined,
-      })
-    }
-    if (!terminalMessageID) return
-    const latest = await this.store.get()
-    const terminal = latest.usageTerminal
-    const fences = latest.usageExecution
-    if (terminal?.sessionID !== sessionID || terminal.assistantMessageID !== terminalMessageID ||
-      terminal.seq !== fences?.latestStepSeq || fences.sessionID !== sessionID ||
-      fences.terminalSeq <= terminal.seq || fences.startedSeq > fences.terminalSeq) {
-      throw new Error("terminal assistant usage is not acknowledged in the durable log")
-    }
-  }
-
-  /** Append one durable event to Settings' deduplicated ledger. */
-  private async reportUsage(
-    usage: NonNullable<ReturnType<typeof durableUsageEvent>>,
-    cutoverID?: string,
-  ): Promise<void> {
-    const response = await this.env.SETTINGS.getByName("global").fetch("https://settings/usage", {
-      method: "POST",
-      body: JSON.stringify({ conversationID: this.ctx.id.toString(), ...usage, ...(cutoverID ? { cutoverID } : {}) }),
-    })
-    if (!response.ok) {
-      const detail = await response.json().catch(() => undefined) as { error?: unknown } | undefined
-      const reason = typeof detail?.error === "string" ? ` (${detail.error.slice(0, 160)})` : ""
-      throw new Error(`usage report was rejected: ${response.status}${reason}`)
-    }
   }
 
   /**
@@ -3927,11 +3642,11 @@ export class Conversation extends DurableObject<Env> {
       }
       this.recoveryAction = true
       try {
-        return await this.enqueueUsageReplay(async () => {
+        return await this.usage.serialize(async () => {
           const pending = await this.readRuntimeUpgradePending()
           if (pending) {
             const state = await this.store.get()
-            const ledger = await this.usageCutoverLedger().catch(() => undefined)
+            const ledger = await this.usage.ledger().catch(() => undefined)
             if (!ledger || ledger.conversationID !== this.ctx.id.toString() || ledger.holds.length || ledger.blockers.length ||
               state.sessionID !== pending.sessionID || state.queued || state.budgetReservation || state.checkpointPending ||
               (state.phase ?? "idle") !== "idle") {
@@ -3970,7 +3685,7 @@ export class Conversation extends DurableObject<Env> {
     if ((await this.ctx.storage.get<unknown>("containerImageVariant")) === "evented") blockers.push("runtime_already_evented")
     let ledger: UsageCutoverLedger | undefined
     try {
-      ledger = await this.usageCutoverLedger()
+      ledger = await this.usage.ledger()
       if (ledger.conversationID !== this.ctx.id.toString() || ledger.blockers.length || ledger.holds.length) {
         blockers.push("central_usage_hold_or_ledger_blocker")
       }
@@ -4095,7 +3810,7 @@ export class Conversation extends DurableObject<Env> {
       }
       this.recoveryAction = true
       try {
-        return await this.enqueueUsageReplay(async () => {
+        return await this.usage.serialize(async () => {
           const completed = await this.ctx.storage.get<RuntimeUpgradeCompletion>("runtimeUpgradeCompletion")
           if (completed?.planID === expectedPlanID && completed.conversationID === this.ctx.id.toString()) {
             return Response.json({ ok: true, completed: true, replayed: true, receipt: completed })
@@ -4127,7 +3842,7 @@ export class Conversation extends DurableObject<Env> {
             return Response.json({ error: "another runtime upgrade is pending" }, { status: 409 })
           }
           const current = await this.store.get()
-          const ledger = await this.usageCutoverLedger().catch(() => undefined)
+          const ledger = await this.usage.ledger().catch(() => undefined)
           if (!ledger || ledger.conversationID !== this.ctx.id.toString() || ledger.holds.length || ledger.blockers.length ||
             current.sessionID !== pending.sessionID || current.queued || current.budgetReservation || current.checkpointPending ||
             (current.phase ?? "idle") !== "idle" || this.admitting || this.pumping) {
