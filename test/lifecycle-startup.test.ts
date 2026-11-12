@@ -12,6 +12,11 @@ type JobRow = { id: string; fn: string; capability: string; time: number; payloa
 type LegacyAlarmMarker = { version: number; dueAt: number | null; scheduled: boolean; consumed: boolean }
 
 function jobs(storage: DurableObjectStorage): JobRow[] {
+  // A native cold alarm may not have entered Lifecycle yet while we poll.
+  const installed = storage.sql.exec<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", "cf_agents_jobs",
+  ).toArray().length > 0
+  if (!installed) return []
   return storage.sql.exec<JobRow>(
     "SELECT id, fn, capability, time, payload FROM cf_agents_jobs ORDER BY id",
   ).toArray()
@@ -359,7 +364,9 @@ describe("Conversation Lifecycle startup recovery", () => {
           bootstrap: jobs(runtime.storage).filter((job) => job.id === "legacy:bootstrap"),
           alarm: await runtime.storage.getAlarm(),
         }))
-        if (observed.marker?.consumed && observed.observation) break
+        // getAlarm() may be null while the native handler is still running.
+        // Wait for its physical rearm as well as the durable job publication.
+        if (observed.marker?.consumed && observed.observation && observed.alarm !== null) break
         await new Promise((resolve) => setTimeout(resolve, 15))
       }
       // For fetch-after-due, wait for the native alarm handoff before issuing

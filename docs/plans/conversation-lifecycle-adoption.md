@@ -27,6 +27,20 @@ Observable results:
 
 ## Current evidence
 
+Execution snapshot (the detailed assignments and release gates remain below):
+
+| Slice | State |
+|---|---|
+| LC-0 | SDK pin/SQLite compatibility and earlier native smoke verified. |
+| LC-1a | Full alarm cutover committed; local integrated gate passed. Native startup fixture now waits for SDK schema/publication and physical rearm; corrected CI pending. |
+| LC-1b | EventStream/heartbeat complete. Durable lease renewal/release recovery in implementation. |
+| LC-2 | Checkpoints, private runtime cache/ports, usage replay extracted. Control-plane module prepared; coordinator wiring in progress. High-level readiness, image policy, turns and recovery still open. |
+| LC-3 | Runtime-use gate, no-inference measurement tool and isolated qualification fixture prepared. Close/reopen policy and actual measurements pending. |
+| LC-4 | Allowlisted envelope and tests complete; transition wiring pending. |
+| LC-5 | Existing replay/dedupe retained; optional further work not started. |
+
+### Research baseline
+
 Read `src/conversation.ts`, `src/state.ts`, `src/lifecycle.ts`,
 `src/recovery.ts`, `src/leases.ts`, alarm/lease call sites and related tests.
 The coordinator has 4,833 lines. Important seams in the inspected baseline:
