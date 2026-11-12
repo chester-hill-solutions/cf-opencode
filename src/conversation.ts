@@ -37,6 +37,7 @@ import { ConversationUsage, type UsageCutoverLedger } from "./conversation/usage
 import { ConversationControlPlane } from "./conversation/control-plane"
 import { ConversationImages } from "./conversation/images"
 import { ConversationLease } from "./conversation/lease"
+import { ConversationBudgetReservations, type BudgetReservationResult } from "./conversation/budget-reservations"
 import { LEGACY_ALARM_MIGRATION_KEY, isFreshLegacyAlarmMigration, type LegacyAlarmMigration } from "./conversation/job-state"
 import type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
 export type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
@@ -153,12 +154,7 @@ export interface SlackEventRequest {
   event: NonNullable<SlackEventEnvelope["event"]>
 }
 
-export type BudgetReservationResult =
-  | { kind: "granted"; reservation: BudgetReservation }
-  | { kind: "denied"; message: string; spentUSD: number; reservedUSD: number; budgetUSD: number }
-  | { kind: "conflict"; message: string }
-  | { kind: "already-dispatched"; message: string; reservation: BudgetReservation }
-  | { kind: "unavailable"; message: string }
+export type { BudgetReservationResult } from "./conversation/budget-reservations"
 
 /**
  * One Durable Object per conversation. Transport-neutral: every event is
@@ -175,6 +171,7 @@ export class Conversation extends DurableObject<Env> {
   private readonly controlPlane: ConversationControlPlane
   private readonly images: ConversationImages
   private readonly leases: ConversationLease
+  private readonly budgetReservations: ConversationBudgetReservations
   private jobEpoch = 0
   private readonly activeLifecycleJobs = new Set<ConversationJobKind>()
   private streaming = false
@@ -280,6 +277,17 @@ export class Conversation extends DurableObject<Env> {
         schedule: (at, reason) => this.scheduleConversationJob("lease:renew", at, { reason }),
         cancel: () => this.jobs.cancel("lease:renew"),
       },
+    })
+    this.budgetReservations = new ConversationBudgetReservations({
+      conversationID: ctx.id.toString(),
+      storage: ctx.storage,
+      store: this.store,
+      settings: () => this.env.SETTINGS.getByName("global"),
+      jobs: {
+        cancelQueuedAdmission: () => this.jobs.cancel("admission:retry"),
+        observe: (at, payload) => this.scheduleConversationJob("turn:observe", at, payload),
+      },
+      beforeDispatch: () => this.leases.ensureHeld(),
     })
     this.checkpoints = new ConversationCheckpoints({
       conversationID: ctx.id.toString(),
@@ -2847,87 +2855,7 @@ export class Conversation extends DurableObject<Env> {
   async acquireBudgetReservation(): Promise<BudgetReservationResult> {
     await this.captureLegacyAlarmMigration(false)
     await this.lifecycle.start()
-    let proposed: BudgetReservation
-    try {
-      proposed = await this.store.ensureBudgetReservation(crypto.randomUUID())
-    } catch (error) {
-      return { kind: "unavailable", message: errorMessage(error) }
-    }
-    if (proposed.dispatched) {
-      return {
-        kind: "already-dispatched",
-        message: "this conversation already has a dispatched reservation",
-        reservation: proposed,
-      }
-    }
-
-    let response: Response
-    try {
-      response = await this.env.SETTINGS.getByName("global").fetch(
-        "https://settings/usage/reserve",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            conversationID: this.ctx.id.toString(),
-            reservationID: proposed.reservationID,
-            costUSD: 0.1,
-          }),
-        },
-      )
-    } catch (error) {
-      return { kind: "unavailable", message: errorMessage(error) }
-    }
-
-    let result: unknown
-    try {
-      result = await response.json()
-    } catch {
-      return { kind: "unavailable", message: "budget authority returned an unreadable response" }
-    }
-    const body = result && typeof result === "object" ? result as Record<string, unknown> : {}
-    if (response.status === 429) {
-      const spentUSD = finiteBudgetValue(body.spentUSD)
-      const reservedUSD = finiteBudgetValue(body.reservedUSD)
-      const budgetUSD = finiteBudgetValue(body.budgetUSD)
-      await this.store.clearDeniedBudgetProposal(proposed.reservationID).catch(() => false)
-      return {
-        kind: "denied",
-        message: `daily budget reached ($${spentUSD.toFixed(2)} spent + $${reservedUSD.toFixed(2)} reserved of $${budgetUSD.toFixed(2)})`,
-        spentUSD,
-        reservedUSD,
-        budgetUSD,
-      }
-    }
-    if (response.status === 409) {
-      if (body.code === "legacy_usage_requires_migration" || body.code === "reservation_retired") {
-        await this.store.clearDeniedBudgetProposal(proposed.reservationID).catch(() => false)
-      }
-      return {
-        kind: "conflict",
-        message: typeof body.error === "string" ? body.error : "budget reservation ownership conflict",
-      }
-    }
-    if (!response.ok) {
-      return {
-        kind: "unavailable",
-        message: typeof body.error === "string" ? body.error : `budget authority returned ${response.status}`,
-      }
-    }
-    if (
-      body.ok !== true ||
-      body.reservationID !== proposed.reservationID ||
-      typeof body.date !== "string" ||
-      !/^\d{4}-\d{2}-\d{2}$/.test(body.date)
-    ) {
-      return { kind: "unavailable", message: "budget authority returned an invalid reservation reference" }
-    }
-    const saved = await this.store.setBudgetReservationDate(proposed.reservationID, body.date).catch(() => false)
-    if (!saved) return { kind: "unavailable", message: "local reservation ownership changed" }
-    return {
-      kind: "granted",
-      reservation: { reservationID: proposed.reservationID, date: body.date, dispatched: false },
-    }
+    return await this.budgetReservations.acquire()
   }
 
   /** Persist dispatch ambiguity immediately before making a provider request. */
@@ -2938,78 +2866,14 @@ export class Conversation extends DurableObject<Env> {
   ): Promise<boolean> {
     await this.captureLegacyAlarmMigration(false)
     await this.lifecycle.start()
-    if (!reservation.date) return false
-    try {
-      await this.leases.ensureHeld()
-      return await this.ctx.storage.transaction(async () => {
-        const marked = await this.store.markBudgetReservationDispatched(
-          reservation.reservationID,
-          reservation.date!,
-          turnBaseline,
-          fromQueue,
-        )
-        if (!marked) return false
-        // A crash after commit must always recover an ambiguous prompt send.
-        const state = await this.store.get()
-        await this.jobs.cancel("admission:retry")
-        await this.scheduleConversationJob("turn:observe", Date.now() + POLL_MS, {
-          reservationID: reservation.reservationID,
-          reservationDate: reservation.date,
-          sessionID: state.sessionID,
-          reason: fromQueue ? "queued-prompt-dispatched" : "prompt-dispatched",
-        })
-        return true
-      })
-    } catch {
-      return false
-    }
+    return await this.budgetReservations.markDispatched(reservation, turnBaseline, fromQueue)
   }
 
   /** Release a known hold; keep local ownership unless Settings acknowledges it. */
   async releaseBudgetReservation(reservation: BudgetReservation): Promise<boolean> {
     await this.captureLegacyAlarmMigration(false)
     await this.lifecycle.start()
-    if (!reservation.date) return false
-    const current = await this.store.get().then((state) => state.budgetReservation).catch(() => undefined)
-    if (
-      !current ||
-      current.reservationID !== reservation.reservationID ||
-      current.date !== reservation.date
-    ) return false
-    let response: Response
-    try {
-      response = await this.env.SETTINGS.getByName("global").fetch(
-        "https://settings/usage/release",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            conversationID: this.ctx.id.toString(),
-            reservationID: reservation.reservationID,
-            date: reservation.date,
-          }),
-        },
-      )
-    } catch {
-      return false
-    }
-    if (!response.ok) return false
-    let result: unknown
-    try {
-      result = await response.json()
-    } catch {
-      return false
-    }
-    if (!isRecord(result) || result.ok !== true || typeof result.released !== "boolean" ||
-      !isRecord(result.retirement) || result.retirement.conversationID !== this.ctx.id.toString() ||
-      result.retirement.reservationID !== reservation.reservationID || result.retirement.reason !== "released" ||
-      typeof result.retirement.retiredAt !== "number" || !Number.isFinite(result.retirement.retiredAt) ||
-      (result.retirement.date !== undefined && typeof result.retirement.date !== "string") ||
-      (reservation.date !== undefined && typeof result.retirement.date === "string" &&
-        result.retirement.date !== reservation.date)) {
-      return false
-    }
-    return this.store.clearBudgetReservation(reservation.reservationID, reservation.date).catch(() => false)
+    return await this.budgetReservations.release(reservation)
   }
 
   /** Platform alarms are dispatched only by the Lifecycle-owned SQLite queue. */
@@ -4139,10 +4003,6 @@ function errorMessage(err: unknown): string {
   } catch {
     return String(err)
   }
-}
-
-function finiteBudgetValue(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0
 }
 
 /** Pass a stream through unchanged while counting its bytes. */

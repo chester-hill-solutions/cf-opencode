@@ -522,3 +522,8 @@ prove these contracts; the review is not runtime qualification.
   resolution is emitted after upstream acknowledgement and local clearing;
   unknown/stale/failed attempts retain their original behavior. No request IDs,
   resource paths, tokens or raw errors enter those events.
+- Budget reservations now have a narrow finance service. The three public RPC
+  wrappers still initialize Lifecycle; proposal/ACK handling and the single
+  dispatch-marker/queue/job transaction remain unchanged inside the owner.
+  Forty-three focused Worker tests and full typecheck passed; 140 coordinator
+  lines were removed. The service has no provider-prompt capability.
