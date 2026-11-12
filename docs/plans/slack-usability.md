@@ -38,7 +38,7 @@ setup with the operator and verify the deployed behavior.
 | S5 | Independent consequential review | Bounded reviewer after integration | No unresolved lifecycle/accounting or authorization finding |
 | S6 | Build, deploy, operator provider connection, live verification | Parent + operator | Commands respond; connected model replies; question/permission paths checked where reproducible |
 | S7 | Preserve connected credentials during settings restart | Reuse S1 Luna owner; bounded Terra review | Checkpoint both archive parts before destruction; preserve running/held work and concurrent onboarding; fail closed if saving fails |
-| S8 | Operator reconciliation and idle runtime migration — implemented, reviewed and locally verified | S8b/S8c/S8d source and focused regressions accepted; operator approvals and live actions remain pending | [Receipt, quiescence, migration and approval contract](operator-reconciliation.md). Both holds remain unchanged; keep the temporary third slot until safe. |
+| S8 | Operator reconciliation and idle runtime migration — complete | Both exact decisions applied; original DM history and final `READY` verified; configured container limit 2 with one slot free | [Receipt, quiescence, migration and approval contract](operator-reconciliation.md). Permanent unknown-history marker remains. |
 | S9a | Native event persistence with actual `@opencode/server` package — implemented and locally verified | Existing command-dispatch owner, Luna / high | Preserve process initialization, CLI layers and accounting policy |
 | S9b | Persistent-event runtime and named image — ARM and AMD64 builds/smokes passed | Same owner, Luna / high | Preserve Global/AppProcess layers, database path, policy, environment and agent UID |
 | S9c | Isolated canary routing — deployed; canary 02 passed | Inventory owner, Luna / medium | Pin base and evented image digests; durable image binding selects only the explicit canary or enabled fresh conversations |
@@ -170,11 +170,38 @@ subscription. Testing outside the operator's DM requires an agreed destination.
   config, UI, diff and dry-run deployment checks. A prior pruning test timeout
   was fixed by forcing five-object pages against real R2 with fewer fixture
   objects; pagination and retention assertions remain, and the test timeout was
-  not increased. The HTTP observed-actual GET preview returns `canApply:true`;
-  the exact operator decision is pending. A fresh DM unknown-amount preview has
-  not yet been taken. The GET-only script is in
+  not increased. The HTTP observed-actual decision was approved and applied via
+  `call_2a0e410c0bbf4d229fb8953999c00e53`; receipt
+  `operator-876c3eba6014c49aa687a8724b6e757dd6fddd3d` records `$0.0017703` on
+  November 11 UTC and retires the exact HTTP reservation. The HTTP conversation
+  is idle with no hold; checkpoint/recycle completed with HTTP 200. A fresh DM preview
+  returned `canApply:true` for `acknowledged_unknown`, actual `null`, and proposed
+  release of `$0.10`. The operator approved and applied it via
+  `call_e53ecc24d691493b9565e2718dd40254`; receipt
+  `operator-9a943abf0a815dcb8dc2c36647e2fd400436dcae` retires exact reservation
+  `1f331927-e11e-4b65-9831-d72729eb19cc` with actual `null` and no usage date.
+  The unknown marker remains visible; no zero-cost claim is made. The
+  GET-only script is in
   `/tmp/cf-opencode-prepare-reconciliation.mjs`; it validates full reservation
   IDs and contains no POST/apply operation.
+- The original DM migration completed under plan
+  `f986f4cb283df8e651a6087ab5e09b7c179502625ade4164b0a6cb3a71b692d7`. Session
+  `ses_e33354e0effeRpcilJlpFgel4b` and all three history entries were preserved;
+  the verified context digest is
+  `ecb88dc0f8bfd5f277f8345d866a5ab513ccdc4379a392e82f3aab0a89df4453`. Both
+  encrypted checkpoint parts were verified before switching to pinned evented
+  image `826337168d6d3820181d39c69764787da6e934217889370c0a91399adc5da431`.
+  Limit is restored to two at settings version 8. Final verification on that
+  runtime preserved the original session and returned `READY`: assistant
+  `msg_1ce191b42001rDs3TJH5raq91t`, cost `$0.0018723` (6,225 input / 4 output),
+  with native start seq 8, step seq 15 and terminal seq 16. The runtime was idle
+  without hold/queue under generation `Kh7PbjuKuFhHHLyTfqxFn6QsiVYPgg7O`.
+  `!usage` reports `$0.0065` rounded, `$0.0000` reserved and the historical
+  warning; exact November 12 total is `$0.00648105` (20,566 input / 164 output)
+  with one acknowledged-unknown marker. Lease cap 2 has only the original DM
+  active, one free slot; the old HTTP lease is gone. The DM is warm and ready.
+  Evidence: `/tmp/aboiteau-slack-dm-recovered.png` and private
+  `/tmp/cf-opencode-s8-final-live-proof.json`.
 - S10 source routing, authenticated bounded file download, capability refusal,
   app manifest `files:read` declaration and Worker regressions are deployed and
   live-verified. Commit `15a916aabc5fa78211802bb584b612abd225b85e` passed CI run
@@ -188,8 +215,9 @@ subscription. Testing outside the operator's DM requires an agreed destination.
   `787346c995f49c4ef8106925334d9db57832e74983dbda186d063f9e0783ddc4`) with
   assistant message `msg_1ce08ea22001BgEgLxLeNzOgJZ`; actual cost was `$0.00073241`
   (2,350 input / 3 output tokens, 3,968 cached input). The session settled idle
-  at cursor 40 with no hold. UTC November 12 spend is `$0.00460875`; the two
-  existing `$0.10` reservations remain unchanged. Evidence: refusal
+  at cursor 40 with no hold. Before the final migrated-DM reply, UTC November 12
+  spend was `$0.00460875`; both reservations are now closed, one with measured
+  actual and one unknown. Evidence: refusal
   `/tmp/aboiteau-slack-image-refusal.png`, success
   `/tmp/aboiteau-slack-image-success.png`.
 
@@ -238,9 +266,9 @@ subscription. Testing outside the operator's DM requires an agreed destination.
   assistant cost was `$0.00210574` (6,105 input and 153 output tokens). The
   canary plus Slack turns add to `$0.00387634` in today's ledger. UI evidence is
   `/tmp/aboiteau-slack-reply-proof.png`.
-- The two earlier `$0.10` holds remain unchanged for S8 manual reconciliation;
-  their IDs, amounts, sessions and statuses were verified unchanged. Neither
-  prior hold implies zero charges. The first canary key `01` failed at capacity
+- The HTTP `$0.10` hold was retired after its exact approved actual was recorded;
+  the older DM `$0.10` hold was retired as unknown after separate approval. The
+  unknown marker remains visible, and no zero amount is inferred. The first canary key `01` failed at capacity
   before runtime/session/reservation or provider dispatch; preserve its evidence
   and do not reset/delete it.
 - S9 source research confirmed the published
@@ -270,16 +298,18 @@ subscription. Testing outside the operator's DM requires an agreed destination.
   recheck after canary restore; there was no blocker and no ledger change. Capacity
   was restored to 2 at settings version 6 after the Slack checks. The operator
   subsequently approved a temporary third slot, including its incremental runtime
-  cost, until the two older holds are reconciled. The live limit is now 3 at
-  settings version 7. Verification found the two held runtimes occupying two
-  slots, with one slot available; both held reservations and sessions were
-  unchanged. Restore the limit to 2 after S8 safely frees the held runtimes.
+  cost, until the two older holds were reconciled. The limit is restored from 3
+  to 2 at settings version 8 after the idle original DM migration. Final `READY`
+  reply verification and confirmation that the expired HTTP lease no longer
+  occupies capacity remain open.
 - Slack `!help`, `!new`, `!model`, text reply, question Continue and permission
   approval are verified in the approved `#arfin-test` thread.
-- The old Slack server-side session history was not recovered after upgrade;
-  Slack messages remain. Do not describe the old DM as a restored server session.
+- The original DM session `ses_e33354e0effeRpcilJlpFgel4b` and its three native
+  history entries were preserved through migration. The prior Slack test-thread
+  server session history remains separate and was not restored; Slack messages
+  remain available.
 - S1/S2/S3/S4, isolated canary, fresh-conversation routing, Slack text/button
-  evidence and S10 image support are complete. S8 manual reconciliation for the
-  two older holds remains open; the wider product goal is not closed.
-  The temporary third slot provides capacity for new work until S8 is resolved.
-  Preserve held containers and their evidence; do not force-recycle them.
+  evidence, S10 image support, both S8 decisions and the idle DM migration are
+  complete. No S8/S10 release gate remains. Multi-image uploads and durable
+  image queueing remain deferred broader-roadmap work. Keep the permanent
+  unknown-history warning visible; it records accepted uncertainty, not a zero.

@@ -2,10 +2,10 @@
 
 ## Outcome and boundary
 
-Resolve the two identified test holds through individually approved decisions,
-preserve their evidence, then migrate the idle original DM to the verified evented
-image. Return the temporary container limit to two once the held runtimes can
-safely stop. No manual decision has been approved or applied yet.
+Both identified holds have been resolved through separately approved decisions,
+with their evidence preserved. The idle original DM was migrated to the verified
+evented image with history intact, and the configured container limit is back to
+two. Final DM reply verification and free-capacity confirmation remain open.
 
 Existing F1/F2 recovery remains unchanged. It cannot infer missing charges or
 accept external evidence. This is a separate operator-only path using the existing
@@ -61,7 +61,7 @@ Settings transaction and permanent reservation retirement mechanisms.
 | S8c | Same Luna owner — complete and reviewed | Fenced Conversation preview/apply, authenticated HTTP forwarding, local compare-clear, native wait/inbox proof and crash-retry tests; first-turn undefined baseline accepted with regression |
 | S8d | Existing dispatch owner, `gpt-6-luna` / high — complete and reviewed | Idle migration controller, verified split checkpoints, durable image binding and original-session restore barrier; fail closed on restore/proof failure |
 | S8e | Existing Terra/high reviewer, read-only — complete | Contract, lifecycle, security and accounting findings resolved; integrated gate passed |
-| S8f | Operator + parent — pending | Obtain separate approval for each exact preview; apply only approved decisions, verify receipts and idle state, then migrate and stop only safely reconciled runtimes |
+| S8f | Operator + parent — complete | Both receipts verified; original DM `READY` and history verified after migration; configured cap 2, one free slot, unknown marker preserved |
 
 S10 image helper work can run independently. Shared Conversation edits are
 sequenced between S10 routing and S8c. Routine implementation stays on Luna;
@@ -73,8 +73,8 @@ Test null versus zero, no fabricated usage row, day rollover, late actuals once,
 source conflicts, stale snapshots, wrong ownership, queued/live work, runtime
 generation changes, unreadable inbox/wait failure, atomic receipt/ledger/retirement,
 lost acknowledgement, duplicate/conflicting decisions and no decreasing totals.
-Run the existing integrated checks after source integration. Keep both live holds
-until their concrete proposals have been approved.
+Run the existing integrated checks after source integration. Keep every
+unapproved live hold until its concrete proposal has been approved.
 
 Migration is a distinct step after reconciliation: preview the exact idle
 conversation, verify both checkpoint parts, select the pinned evented image,
@@ -89,13 +89,51 @@ in `src/runtime-upgrade.ts`, plus the Durable Object migration controller,
 checkpoint capture/verification and crash recovery, passed independent review
 and local verification. The integrated gate passed 562 tests (307 Bun, including
 5 runtime tests, and 255 Worker), all five typechecks, config, UI, diff and dry-run
-deployment checks. No live hold has been changed and no reconciliation approval
-has been applied.
+deployment checks. Both live reservations were retired by approved decisions;
+the unknown marker remains visible and does not mean zero spend.
 
-Current approval state: the HTTP observed-actual GET preview returns
-`canApply:true`, but its exact operator decision is still pending. The DM
-unknown-amount case needs a fresh preview before any decision. No reconciliation
-POST has been issued; both existing holds remain unchanged.
+Current approval state: the operator approved HTTP observed actual via
+`call_2a0e410c0bbf4d229fb8953999c00e53`. The apply returned HTTP 200,
+`replayed:false`, and `localCleared:true`; permanent receipt
+`operator-876c3eba6014c49aa687a8724b6e757dd6fddd3d` retired and released exact
+reservation `1ce57c48-32e1-4b4f-aa11-692216542498`. It recorded `$0.0017703` on
+November 11 UTC. The HTTP conversation is idle with no recovery action or hold;
+checkpoint/recycle completed with HTTP 200. Current November 12 spend remains
+`$0.00460875`.
+
+The fresh DM unknown-amount preview returned HTTP 200 and `canApply:true`, with
+actual amount `null` and proposed release of its `$0.10` hold. The operator
+approved via `call_e53ecc24d691493b9565e2718dd40254`; apply returned HTTP 200,
+`replayed:false`, and `localCleared:true`. Receipt
+`operator-9a943abf0a815dcb8dc2c36647e2fd400436dcae` retired and released exact
+reservation `1f331927-e11e-4b65-9831-d72729eb19cc` with `actualCostUSD:null` and
+no usage date. Settings now reports `unknownReconciliationCount:1` and
+`historicalUsageUnreconciled:true`; this is not a zero-cost finding. Both holds
+are closed. Immediately after both approvals, November 12 spend was `$0.00460875`.
+
+The idle original DM migration completed under plan
+`f986f4cb283df8e651a6087ab5e09b7c179502625ade4164b0a6cb3a71b692d7`. Original
+session `ses_e33354e0effeRpcilJlpFgel4b` remains present with all three original
+history entries identical; verified context digest is
+`ecb88dc0f8bfd5f277f8345d866a5ab513ccdc4379a392e82f3aab0a89df4453`. Workspace
+and state checkpoint parts (181 and 1,671,410 bytes, encrypted) were verified
+before switching to pinned evented image digest
+`826337168d6d3820181d39c69764787da6e934217889370c0a91399adc5da431`; new runtime
+generation is `pV140CxssNghF_XRLC-bInylwhHJW-1A`. Original archives remain intact.
+The configured max-concurrent-container limit is restored to two at settings
+version 8. After that safe settings restart, the original session was still
+present and idle (`timeBusy:false`) under runtime generation
+`Kh7PbjuKuFhHHLyTfqxFn6QsiVYPgg7O`. Its final `READY` reply is assistant
+`msg_1ce191b42001rDs3TJH5raq91t`, cost `$0.0018723` (6,225 input / 4 output
+tokens); durable usage acknowledgement is exact at start seq 8, step seq 15 and
+terminal seq 16. `!usage` reports `$0.0065` rounded, `$0.0000` reserved, and the
+historical-usage warning. Exact November 12 spend is `$0.00648105` (20,566 input
+/ 164 output); `unknownReconciliationCount` remains 1. The max-2 lease check
+shows only the original DM active, with one free slot; the old HTTP lease expired
+and HTTP/Slack/admin test workspaces are stopped. The DM is warm and ready.
+Evidence: `/tmp/aboiteau-slack-dm-recovered.png` and private
+`/tmp/cf-opencode-s8-final-live-proof.json`. S8 is complete; retain the permanent
+unknown-history warning as accepted uncertainty.
 
 S8c first-turn evidence: the original HTTP conversation can have an undefined
 local `turnBaseline` on its first accepted turn; that is a valid pre-turn state.
