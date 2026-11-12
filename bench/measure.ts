@@ -115,6 +115,8 @@ export type IdleBenchmarkFetch = (
 ) => Promise<Response>
 
 export interface IdleCloseSample {
+  /** Includes passive polling interval and checkpoint/stop work, not just policy delay. */
+  observedIdleMs: number
   warmMs: number
   coldMs: number
   coldDeltaMs: number
@@ -249,7 +251,9 @@ export async function measureIdleCloseReopen(options: IdleCloseMeasureOptions): 
     if (warm.sessionID !== expectedSessionID) {
       throw new Error("timed warm context returned a different sessionID")
     }
+    const idleStartedAt = performance.now()
     await waitForContainerClose(options, fetcher)
+    const observedIdleMs = performance.now() - idleStartedAt
     const cold = await readContext(options, fetcher)
     if (cold.sessionID !== expectedSessionID) {
       throw new Error("cold reopen returned a different sessionID; same-session restore was not proven")
@@ -257,7 +261,7 @@ export async function measureIdleCloseReopen(options: IdleCloseMeasureOptions): 
     if (!(await readContainerRunning(options, fetcher))) {
       throw new Error("container was not running after cold context; runtime reopen could not be confirmed")
     }
-    samples.push({ warmMs: warm.elapsedMs, coldMs: cold.elapsedMs, coldDeltaMs: cold.elapsedMs - warm.elapsedMs })
+    samples.push({ observedIdleMs, warmMs: warm.elapsedMs, coldMs: cold.elapsedMs, coldDeltaMs: cold.elapsedMs - warm.elapsedMs })
   }
 
   return {

@@ -115,11 +115,17 @@ export class LifecycleIdleQualificationConversation extends BaseConversation {
 
     // Write a one-shot claim only after startup has passed the fresh-image
     // guard. A failed/ambiguous session create is never retried as a duplicate.
-    await this.ctx.storage.put(RECEIPT_KEY, {
-      stage: "creating",
-      runtimeGeneration: debug.runtimeGeneration,
-      image: inspected.image,
-    } satisfies Receipt)
+    const runtimeGeneration = debug.runtimeGeneration
+    const claimed = await this.ctx.storage.transaction(async (txn) => {
+      if (await txn.get(RECEIPT_KEY)) return false
+      await txn.put(RECEIPT_KEY, {
+        stage: "creating",
+        runtimeGeneration,
+        image: inspected.image,
+      } satisfies Receipt)
+      return true
+    })
+    if (!claimed) return jsonError("session preparation is already claimed", 409)
     const token = await this.ctx.storage.get<string>("controlToken")
     if (!token) return jsonError("runtime control authorization is unavailable", 503)
     const rawControlPort = container.getTcpPort(4001)

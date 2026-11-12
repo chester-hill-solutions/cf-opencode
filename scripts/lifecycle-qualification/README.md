@@ -1,9 +1,9 @@
 # Isolated lifecycle idle qualification preparation
 
 This Worker is a staging-only fixture for measuring idle container close and
-same-session reopen. It is not a production deployment, and the core idle-close
-policy is not implemented yet. Run the timing benchmark only after that policy
-passes its integration gates and the isolated resources are ready.
+same-session reopen for the implemented checkpointed idle policy. Run it only
+after the current branch passes its integration gates and the isolated resources
+are ready. It has no production bindings.
 
 The fixed DO key is `lifecycle-idle-qualification`. The Worker exposes only:
 
@@ -34,15 +34,15 @@ namespaces for Conversation and Settings and binds only the new R2 bucket.
 
 Use a fresh staging API token and fresh 64-character `VAULT_MASTER_KEY` as
 Worker secrets. Never copy production secrets, namespace IDs, or bucket names.
-Set secrets interactively with Wrangler, then run the dry run against the filled
-private config. Keep the config and any local secret material out of version
+Use a private JSON secrets file with `wrangler deploy --secrets-file`; the
+installed CLI accepts JSON without dotenv interpolation. Run the dry run against
+the filled private config first. Keep the config and any local secret material out of version
 control. The first prepare attempt fails closed unless the entire bucket is
 empty; cleanup proves it is empty again after core deletion.
 
-## Future measurement gate
+## Measurement
 
-After the idle-close policy and its core debug fields are integrated, prepare the
-fixed DO with an authenticated empty-body `POST /prepare`. Then run
+After the current branch passes its checks, prepare the fixed DO with an authenticated empty-body `POST /prepare`. Then run
 `bench/measure.ts` against the staging Worker with:
 
 ```sh
@@ -54,7 +54,8 @@ bun run bench/measure.ts lifecycle-idle-qualification
 
 The benchmark requires the existing session, checks close using
 `containerRunning === false`, and confirms the same session after context
-reopens the runtime. It does not send a turn. Report measurements only after an
+reopens the runtime. Raw samples include observed idle duration, which also
+includes passive polling and checkpoint/stop work. It does not send a turn. Report measurements only after an
 actual successful run, with its platform and evidence limits. After recording
 the evidence, call authenticated `POST /cleanup` and remove only the exact
 staging Worker, its container application, and its bucket.

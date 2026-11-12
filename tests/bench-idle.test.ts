@@ -39,6 +39,7 @@ describe("idle close/reopen benchmark", () => {
     })
 
     expect(result.samples).toHaveLength(1)
+    expect(result.samples[0]?.observedIdleMs).toBeGreaterThanOrEqual(0)
     expect(result.samples[0]?.warmMs).toBeGreaterThanOrEqual(0)
     expect(result.samples[0]?.coldMs).toBeGreaterThanOrEqual(0)
     expect(harness.requests.map(({ method, path }) => [method, path])).toEqual([

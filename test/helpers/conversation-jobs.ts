@@ -1,12 +1,13 @@
 import type { ConversationState } from "../../src/state"
+import { isContainerIdleRecord } from "../../src/conversation/idle-state"
 
-export type ConversationJobID = "turn:observe" | "admission:retry" | "checkpoint:retry" | "recovery:wake" | "legacy:bootstrap" | "lease:renew"
+export type ConversationJobID = "turn:observe" | "admission:retry" | "checkpoint:retry" | "recovery:wake" | "legacy:bootstrap" | "lease:renew" | "container:idle"
 
 /** Test-only clock seam: advance named conversation jobs, never every future job. */
 export async function makeConversationJobsDue(
   storage: DurableObjectStorage,
   ids: readonly ConversationJobID[],
-  options: { queued?: boolean; checkpoint?: boolean } = {},
+  options: { queued?: boolean; checkpoint?: boolean; idle?: boolean } = {},
 ): Promise<void> {
   const now = Date.now()
   for (const id of ids) {
@@ -18,6 +19,12 @@ export async function makeConversationJobsDue(
     )
   }
   const state = await storage.get<ConversationState>("state")
+  if (ids.includes("container:idle") && options.idle) {
+    const idle = await storage.get<unknown>("containerIdle")
+    if (isContainerIdleRecord(idle) && idle.phase === "waiting") {
+      await storage.put("containerIdle", { ...idle, dueAt: now })
+    }
+  }
   if (!state) return
   if (options.queued && state.queued) {
     await storage.put("state", { ...state, queued: { ...state.queued, nextAttemptAt: now } })
@@ -31,7 +38,7 @@ export async function startConversationJobs(
   instance: { alarm(): Promise<void>; fetch(request: Request): Promise<Response> },
   storage: DurableObjectStorage,
   ids: readonly ConversationJobID[],
-  options: { queued?: boolean; checkpoint?: boolean } = {},
+  options: { queued?: boolean; checkpoint?: boolean; idle?: boolean } = {},
 ): Promise<{ completion: Promise<void> }> {
   await instance.fetch(new Request("https://conversation/health"))
   await makeConversationJobsDue(storage, ids, options)
@@ -57,7 +64,7 @@ export async function driveConversationJobs(
   instance: { alarm(): Promise<void>; fetch(request: Request): Promise<Response> },
   storage: DurableObjectStorage,
   ids: readonly ConversationJobID[],
-  options: { queued?: boolean; checkpoint?: boolean } = {},
+  options: { queued?: boolean; checkpoint?: boolean; idle?: boolean } = {},
 ): Promise<void> {
   const started = await startConversationJobs(instance, storage, ids, options)
   await started.completion
