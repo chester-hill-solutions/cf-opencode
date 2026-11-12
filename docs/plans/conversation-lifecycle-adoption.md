@@ -34,7 +34,7 @@ Execution snapshot (the detailed assignments and release gates remain below):
 | LC-0 | SDK pin/SQLite compatibility and earlier native smoke verified. |
 | LC-1a | Full alarm cutover verified locally and in CI/native smoke at `8661766` (run 43286834935). |
 | LC-1b | EventStream and durable lease renewal/release recovery wired; integrated local checks pass. Runtime-use/idle-close gating remains LC-3. |
-| LC-2 | Checkpoints, private runtime cache/ports, image/snapshot policy, usage replay and control plane extracted. High-level readiness, turns and recovery still open. |
+| LC-2 | Checkpoints, runtime cache/ports, image/snapshot policy, readiness, usage, reservations, recovery actions, reconciliation, cutover, control plane and turn execution extracted. Scheduler kernel, admission/queue and upgrade coordinator moves remain. |
 | LC-3 | Runtime-use gate, no-inference measurement tool and isolated qualification fixture prepared. Close/reopen policy and actual measurements pending. |
 | LC-4 | Checkpoint, lease and permission outcome events wired/tested. Recovery-action module prepared; turn/admission/runtime categories pending. |
 | LC-5 | Existing replay/dedupe retained; optional further work not started. |
@@ -550,3 +550,8 @@ prove these contracts; the review is not runtime qualification.
   verification are preserved. Sixty-three affected Worker tests and full
   typecheck pass. Runtime-use exclusion is the next behavior integration, not
   implied by this mechanical move.
+- Operator reconciliation and explicit accounting cutover now have separate
+  owners with the same approval, unknown-cost, quiescence, snapshot and receipt
+  checks. Routing still validates proposals before delegating. Seventy-two
+  focused Worker tests and full typecheck pass; 674 inline coordinator lines
+  were removed. Pure policy/Settings implementations remain unchanged.
