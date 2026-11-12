@@ -60,9 +60,13 @@ data: {"type":"settled"}
 
 `API_TOKEN` is a Worker secret. Without it the API returns 503.
 
-Every frame carries an SSE `id`; reconnect with `Last-Event-ID` to replay the
-last 200 events (per conversation). Idle connections get a `: heartbeat` comment
-every 15s.
+Replayable event frames carry an SSE `id`; reconnect with `Last-Event-ID` to
+receive retained events after that ID, up to the last 200 events per conversation.
+If the cursor predates retained history, the stream sends an id-less `reset`
+control frame before replaying retained events. Inspect `/api/conversations/:key`
+for current persisted state after a reset; that inspection is separate from replay
+and is not an atomic snapshot with a cursor. Heartbeat comments also have no ID.
+Idle connections get a `: heartbeat` comment every 15s.
 
 ## Slack adapter
 

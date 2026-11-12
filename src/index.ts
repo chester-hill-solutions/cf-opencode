@@ -463,8 +463,11 @@ async function handleApi(
 
   if (request.method === "GET" && suffix.length === 1 && suffix[0] === "events") {
     recordConversation()
+    const headers = new Headers({ accept: "text/event-stream" })
+    const lastEventID = request.headers.get("last-event-id")
+    if (lastEventID !== null) headers.set("last-event-id", lastEventID)
     return conversation.fetch("https://conversation/events", {
-      headers: { accept: "text/event-stream" },
+      headers,
     })
   }
 

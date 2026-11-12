@@ -120,11 +120,64 @@ describe("worker surface", () => {
     expect(await res.text()).toBe("invalid json")
   })
 
-  it("serves an SSE stream", async () => {
-    const res = await SELF.fetch(`${BASE}/api/conversations/demo/events`, { headers: API })
-    expect(res.status).toBe(200)
-    expect(res.headers.get("content-type")).toContain("text/event-stream")
-    await res.body?.cancel()
+  it("forwards the public SSE cursor, resets expired cursors, and exposes legacy state inspection", async () => {
+    const key = "public-events-replay"
+    const stub = env.CONVERSATION.getByName(key)
+    await runInDurableObject(stub, async (_instance, state) => {
+      await state.storage.put("seq", 9)
+      await state.storage.put("events", [
+        { seq: 7, event: { type: "assistant", text: "seven" } },
+        { seq: 8, event: { type: "settled" } },
+        { seq: 9, event: { type: "assistant", text: "nine" } },
+      ])
+      await state.storage.put("state", {
+        sessionID: "ses_current",
+        phase: "idle",
+        seen: [],
+        pending: {},
+      })
+    })
+
+    async function readStream(headers: Record<string, string> = {}): Promise<string> {
+      const response = await SELF.fetch(`${BASE}/api/conversations/${key}/events`, {
+        headers: { ...API, ...headers },
+      })
+      expect(response.status).toBe(200)
+      expect(response.headers.get("content-type")).toContain("text/event-stream")
+      const reader = response.body!.getReader()
+      const decoder = new TextDecoder()
+      let result = ""
+      try {
+        while (!result.includes(": connected\n\n")) {
+          const next = await reader.read()
+          if (next.done) break
+          result += decoder.decode(next.value, { stream: true })
+        }
+      } finally {
+        await reader.cancel()
+      }
+      return result
+    }
+
+    const resumed = await readStream({ "last-event-id": "8" })
+    expect(resumed).toContain("id: 9\nevent: assistant\ndata: {\"type\":\"assistant\",\"text\":\"nine\"}")
+    expect(resumed).not.toContain("id: 8\n")
+    expect(resumed).not.toContain("\"text\":\"seven\"")
+
+    const fromStart = await readStream()
+    expect(fromStart).toContain("id: 7\n")
+    expect(fromStart).toContain("id: 8\n")
+    expect(fromStart).toContain("id: 9\n")
+
+    const expired = await readStream({ "last-event-id": "1" })
+    expect(expired.indexOf("event: reset\ndata: {\"type\":\"reset\"}")).toBeGreaterThanOrEqual(0)
+    expect(expired).not.toMatch(/id: \d+\nevent: reset/)
+    expect(expired.indexOf("event: reset")).toBeLessThan(expired.indexOf("id: 7\n"))
+    expect(expired).toContain(": connected\n\n")
+
+    const stateResponse = await SELF.fetch(`${BASE}/api/conversations/${key}`, { headers: API })
+    expect(stateResponse.status).toBe(200)
+    expect(await stateResponse.json()).toMatchObject({ sessionID: "ses_current", phase: "idle" })
   })
 
   it("rejects interactivity with an unknown action", async () => {

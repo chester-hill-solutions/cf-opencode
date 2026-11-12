@@ -1,6 +1,7 @@
 # Stow workspace integration and resource adoption
 
-Status: planned; source-level gap identified, no implementation or runtime verification.
+Status: bounded A characterization implemented and verified on the pinned Linux
+image under emulation; startup and recovery repair in B–D remain planned.
 Decision date: 2026-11-11. Owner: Aboiteau. Roadmap: R0-15, then R2-4/R3-4.
 
 ## Problem and boundary
@@ -31,6 +32,119 @@ live-prompt restrictions remain in force.
 | B. Own and serve | Use Stow's existing prepare/open/resume and `workspace serve --id` or supported thin launcher. Retain trusted workspace/registry identity and consume versioned readiness. | OpenCode receives the reported endpoint, region, bucket and credentials; do not assume port 9000, fixed credentials or that a health response proves correct backend/root. Readiness failure prevents prompt dispatch and cleans up children. |
 | C. Recover | Define identity reconstruction and data preservation across the existing R2 restore. Preserve OpenCode's separate state archive, Git state, permissions and encryption/manifest checks. | A new container with no prior disk/registry recovers the intended workspace and can serve it again; unknown or missing identity/data fails visibly. No live process-memory recovery claim. |
 | D. Verify and document | Run bidirectional same-byte and cold-recovery checks on the selected native Linux artifact, then update README/runbook and operating evidence. | Direct file write → S3 read, S3 write → direct file read, overwrite, delete, binary/range read and post-restore equality all pass. Record source/artifact hashes and preserve macOS versus Linux evidence boundaries. |
+
+### A assignment — disposable characterization
+
+Prepared and executed 2026-11-12. The existing dispatch owner,
+`gpt-6-luna` / high, implemented one bounded fixture and its evidence. Files:
+`scripts/characterize-stow-workspace.sh` and `scripts/stow-s3-probe.ts`.
+Keep production `Dockerfile`, `control-server.ts`, startup, archives and the
+sibling Stow checkout unchanged during this assignment.
+
+Read-only baseline facts at `69c98f0`: the Dockerfile defaults to Stow `0.3.7`,
+selects `stow-linux-${TARGETARCH}.tar.gz`, checks the release's downloaded
+`SHA256SUMS.txt` and deletes those download files. The resolved archive/binary
+hash is not recorded in this repository. The deployment runbook targets
+`linux/amd64`; source defaults and macOS/arm64 results do not prove the actual
+deployed artifact or Workspace CLI availability.
+
+1. Use the selected pinned evented image from `wrangler.jsonc` as the initial
+   disposable subject on `linux/amd64`, rather than rebuilding/changing the
+   production image. Record image/platform, Stow version and binary SHA-256,
+   CLI help and emulation status. Record a release-archive hash if actually
+   obtained; do not invent one from the version or image digest. If the artifact
+   cannot be accessed, report the blocked qualification rather than substitute
+   a different binary silently.
+2. Reuse the container/control pattern in `scripts/smoke-container.sh`, with a
+   unique temporary name, synthetic credentials/data, bounded waits and cleanup.
+   Make no model/provider calls and mount no production workspace or credentials.
+   The installed Bun types expose `S3Client` with custom endpoint/path-style
+   configuration; preflight the actual image's support and use that existing
+   signed client for PUT/GET. No hand-written SigV4 implementation or unpinned
+   host CLI is required. Report unsupported client behavior explicitly.
+3. Write one direct file and a separate S3-only object. Confirm that the current
+   generic server does not expose the direct file as the object and does not
+   create the S3-only object as a normal `/workspace` file. A health response
+   alone cannot pass this check.
+4. Obtain the workspace checkpoint and verify the direct file is present while
+   `.stow` and its object-only content are absent. Then write another S3 object
+   and request a workspace checkpoint using the previous fingerprint; confirm
+   the current implementation returns 204 despite the object-only mutation.
+   Record that as the reproduced recovery gap, not successful preservation.
+
+Stop after capturing those facts and checking whether the actual released
+artifact offers the required Workspace prepare/open/resume/serve and readiness
+contract. Missing commands or schema compatibility block B. This fixture does
+not inventory every existing store, qualify a replacement artifact or close
+R0-15: durable workspace/registry identity, supported key/metadata/multipart
+preservation and real existing-data inventory remain prerequisites before
+startup or migration work. Record results here rather than create a second
+storage roadmap.
+
+#### A characterization results — 2026-11-12
+
+The runner initially stopped before container creation because Docker's client
+reported an unavailable daemon despite returning success from `docker info`.
+After the local engine became available, one run exceeded an initial 10-second
+`/start` limit; the bounded limit was corrected to 120 seconds to cover the
+control server's existing startup waits. Two later runs proved that the empty
+generic filesystem store returns `NoSuchBucket` until a bucket exists. Each
+failed attempt is retained below. The first timed-out attempt has partial
+evidence rather than a structured result; later runs captured structured failure
+receipts. Created containers were removed, and the initial daemon failure
+created none.
+Their private evidence is in `/tmp/stow-workspace-characterization-20261112T054437Z/`,
+`/tmp/stow-workspace-characterization-20261112T055505Z.HjG8Al/`,
+`/tmp/stow-workspace-characterization-20261112T055801Z.ndSh2a/` and
+`/tmp/stow-workspace-characterization-20261112T060141Z.lOZjOi/`.
+
+The successful run used the exact configured evented digest, already cached as
+image ID
+`sha256:1c8228f73527ebf419bb153e6a9fe689dbf5fc858ac31d6d9db781e2fef27ed7`.
+The selected image platform was `linux/amd64`; the host was `arm64`, so this run
+used emulation. The installed binary reported Stow `0.3.7` and had SHA-256
+`780c3ccf89abdb4355e1b943ab686693d7436bd08cefdffd0f315226815f27da`. The
+release archive hash remains unknown (`null`): Dockerfile deletes the download,
+and this fixture did not rebuild the image. The workspace archive SHA-256 was
+`43d05f35a9c2b081f29b157c10dcfda083745c1daff1384334614b8c67dfab6a`.
+
+Using the in-container Bun `S3Client`, the signed PUT and GET round-tripped the
+synthetic object. The direct `/workspace` file was absent from S3, and the
+S3-only object was absent as a normal workspace file. The workspace tar included
+the direct file's exact bytes and excluded `.stow` and the object-only key. After
+the archive fingerprint was captured, a second signed S3 object PUT left the
+workspace unchanged, and the conditional workspace checkpoint returned 204.
+This reproduces the generic-store/recovery gap for this fixture. The object
+bucket was bootstrapped before server start via the pinned Stow MCP CLI's
+documented `--object-dir /workspace/.stow --bucket stow-characterization
+--create-bucket` path. This is setup for the test, not evidence that an S3
+CreateBucket request was exercised. Full private evidence is in
+`/tmp/stow-workspace-characterization-20261112T060859Z.6SNbcZ/`.
+
+Actual image help lists Workspace `prepare`, `adopt`, `resume` and `serve`, but
+no standalone `open` subcommand. The `serve` help advertises `--ready-fd` for a
+readiness JSON object. `prepare --help` takes a versioned manifest; `resume`
+accepts a workspace ID or handoff; `serve` accepts an ID and registry options.
+`adopt` is a bundle-import operation, not a standalone `open` command. The Go
+flag parser exits 1 for several `--help` calls after printing valid help; exit
+1 is not evidence that those commands are missing. No readiness payload was
+invoked or validated. The checked-out source tag is not sufficient provenance
+for this image, so the captured binary hash and image digest are the artifact
+evidence; readiness-schema compatibility, full Workspace ownership/cold restore
+behavior and release-source correspondence remain unqualified. Do not treat
+this characterization as a migration or as an inventory of every existing
+`.stow` store.
+
+The disposable runner is `scripts/characterize-stow-workspace.sh`; its signed
+S3 operations are in `scripts/stow-s3-probe.ts`. It resolves the exact pinned
+evented digest, targets `linux/amd64`, exposes only an ephemeral loopback
+control port, uses synthetic data/credentials and creates no host mounts. The
+successful run's container ID was
+`e31b9866b22c39d9c424cd130970f4ffbb7bc5c20043c8ec7f100c4716a27278`; a later
+Docker inspect returned `No such container`, confirming cleanup. A is complete
+for this bounded characterization. Stop before B: durable Workspace identity,
+readiness-schema compatibility, supported data preservation and cold restore
+still require qualification.
 
 Before changing startup, classify the existing generic S3 store's contents. Preserve
 object-only data through a verified export/mapping or explicit separate recovery
