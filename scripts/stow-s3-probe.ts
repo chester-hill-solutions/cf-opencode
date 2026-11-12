@@ -41,6 +41,9 @@ const directKey = "b1-direct.txt"
 const s3Key = "b1-s3-write.txt"
 const directMarker = "synthetic-b1-direct-workspace-bytes-v1\n"
 const s3Marker = "synthetic-b1-s3-object-bytes-v1\n"
+const metadataKey = "b1-metadata.json"
+const metadataMarker = '{"fixture":"c1-supported-content-type"}\n'
+const metadataType = "application/vnd.aboiteau.synthetic+json"
 
 function asObject(value: unknown): JsonObject | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -340,6 +343,7 @@ async function workspaceCheck(
   preparedPath: string,
   readyPath: string,
   phase: "first" | "restart",
+  checkMetadata = false,
 ): Promise<void> {
   operation = "validate-readiness-before-client"
   const [manifestValue, preparedValue, readyValue] = await Promise.all([
@@ -385,13 +389,28 @@ async function workspaceCheck(
   if (phase === "first") {
     operation = "put-s3-object"
     await client.file(s3Key).write(s3Bytes)
+    if (checkMetadata) {
+      operation = "put-object-with-content-type"
+      await client.file(metadataKey).write(metadataMarker, { type: metadataType })
+    }
   }
   operation = phase === "first" ? "read-s3-put-from-workspace" : "read-preserved-s3-put-from-workspace"
   const workspaceBytes = new Uint8Array(await Bun.file(s3Path).arrayBuffer())
   s3WriteMatches = workspaceBytes.length === s3Bytes.length && workspaceBytes.every((value, index) => value === s3Bytes[index])
 
+  let metadataBytesMatch: boolean | undefined
+  let metadataTypeMatches: boolean | undefined
+  if (checkMetadata) {
+    operation = "read-metadata-object"
+    const metadataFile = client.file(metadataKey)
+    const [metadataText, metadataStats] = await Promise.all([metadataFile.text(), metadataFile.stat()])
+    metadataBytesMatch = metadataText === metadataMarker
+    metadataTypeMatches = metadataStats.type === metadataType
+  }
+
   const identityFlags = safeIdentityFlags(checked.identity, manifestValue)
-  const ok = directReadMatches && s3WriteMatches && Object.values(identityFlags).every(Boolean)
+  const ok = directReadMatches && s3WriteMatches && Object.values(identityFlags).every(Boolean) &&
+    (checkMetadata ? metadataBytesMatch === true && metadataTypeMatches === true : true)
   process.stdout.write(`${JSON.stringify({
     mode,
     phase,
@@ -401,6 +420,7 @@ async function workspaceCheck(
     endpointLoopback: true,
     directFileToS3GetMatches: directReadMatches,
     s3PutToWorkspaceFileMatches: s3WriteMatches,
+    ...(checkMetadata ? { metadataBytesMatch, metadataTypeMatches } : {}),
     s3ClientConstructed: true,
   })}\n`)
   if (!ok) process.exit(2)
@@ -414,9 +434,11 @@ const expectedArguments: Record<string, number> = {
   "workspace-validation-selftest": 3,
   "workspace-first": 3,
   "workspace-restart": 3,
+  "workspace-recovery-first": 3,
+  "workspace-recovery-restored": 3,
 }
 if (!mode || expectedArguments[mode] === undefined || args.length !== expectedArguments[mode]) {
-  process.stderr.write("usage: bun stow-s3-probe.ts characterize|mutate|workspace-prepare-check|workspace-validation-selftest|workspace-first|workspace-restart [private files]\n")
+  process.stderr.write("usage: bun stow-s3-probe.ts characterize|mutate|workspace-prepare-check|workspace-validation-selftest|workspace-first|workspace-restart|workspace-recovery-first|workspace-recovery-restored [private files]\n")
   process.exit(64)
 }
 
@@ -482,6 +504,10 @@ try {
     await workspaceCheck(args[0], args[1], args[2], "first")
   } else if (mode === "workspace-restart") {
     await workspaceCheck(args[0], args[1], args[2], "restart")
+  } else if (mode === "workspace-recovery-first") {
+    await workspaceCheck(args[0], args[1], args[2], "first", true)
+  } else if (mode === "workspace-recovery-restored") {
+    await workspaceCheck(args[0], args[1], args[2], "restart", true)
   }
 } catch (error) {
   const errorFields = error && typeof error === "object"

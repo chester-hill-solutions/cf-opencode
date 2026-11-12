@@ -8,6 +8,8 @@ umask 077
 #
 #   bash scripts/characterize-stow-workspace.sh          # R0-15A regression
 #   bash scripts/characterize-stow-workspace.sh workspace # native Stow B1
+#   bash scripts/characterize-stow-workspace.sh recovery-baseline # C1 archive gap
+#   bash scripts/characterize-stow-workspace.sh recovery # C1 split archive recovery
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="${1:-generic}"
@@ -15,6 +17,9 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 if [[ "$MODE" == "workspace" ]]; then
   LOG_DIR="$(mktemp -d "/tmp/stow-workspace-b1-${STAMP}.XXXXXX")"
   NAME="stow-b1-${STAMP}-$$"
+elif [[ "$MODE" == "recovery-baseline" || "$MODE" == "recovery" ]]; then
+  LOG_DIR="$(mktemp -d "/tmp/stow-workspace-c1-${STAMP}.XXXXXX")"
+  NAME="stow-c1-${STAMP}-$$"
 else
   LOG_DIR="$(mktemp -d "/tmp/stow-workspace-characterization-${STAMP}.XXXXXX")"
   NAME="stow-char-${STAMP}-$$"
@@ -72,6 +77,50 @@ cleanup() {
       echo "warning: container identity did not match; left it untouched" >&2
     fi
   fi
+}
+
+stop_workspace_serve() {
+  local label="$1"
+  local pids_file="$LOG_DIR/serve-${label}-pids.txt"
+  local supervisor_pid
+  local serve_pid
+  supervisor_pid="$(awk 'NR==1 {print; exit}' "$pids_file")"
+  serve_pid="$(awk 'NR==2 {print; exit}' "$pids_file")"
+  [[ "$supervisor_pid" =~ ^[0-9]+$ && "$serve_pid" =~ ^[0-9]+$ ]] \
+    || fail "native Workspace process identifiers were invalid"
+  bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+    "test -r '/proc/$supervisor_pid/cmdline' && tr '\\000' ' ' <'/proc/$supervisor_pid/cmdline' | grep -F 'serve-supervisor.sh' >/dev/null && test -r '/proc/$serve_pid/cmdline' && tr '\\000' ' ' <'/proc/$serve_pid/cmdline' | grep -F 'stow-s3 workspace serve' >/dev/null && kill -TERM '$serve_pid'" \
+    || fail "refused to stop an unverified Workspace serve process"
+  local stopped=0
+  for _ in $(seq 1 80); do
+    if bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+      "test -s /tmp/stow-b1/serve-${label}.exit" >/dev/null 2>&1; then
+      stopped=1
+      break
+    fi
+    sleep 0.25
+  done
+  [[ "$stopped" == 1 ]] || fail "native Workspace serve did not stop within its bounded wait"
+  bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+    "test \"\$(cat /tmp/stow-b1/serve-${label}.exit)\" = 0" \
+    || fail "native Workspace serve did not exit cleanly after SIGTERM"
+}
+
+overlay_control_server() {
+  local expected_hash actual_hash
+  if [[ ! -f "$LOG_DIR/control-server-overlay.ts" ]]; then
+    cp "$ROOT/control-server.ts" "$LOG_DIR/control-server-overlay.ts"
+    chmod 600 "$LOG_DIR/control-server-overlay.ts"
+  fi
+  expected_hash="$(shasum -a 256 "$LOG_DIR/control-server-overlay.ts" | awk '{print $1}')"
+  bounded docker cp "$LOG_DIR/control-server-overlay.ts" "$CONTAINER_ID:/app/control-server.ts" \
+    || fail "could not apply the candidate control-server overlay to the stopped test container"
+  bounded docker cp "$CONTAINER_ID:/app/control-server.ts" "$LOG_DIR/control-server-overlay-copied.ts" \
+    || fail "could not read back the candidate controller from the stopped test container"
+  chmod 600 "$LOG_DIR/control-server-overlay-copied.ts"
+  actual_hash="$(shasum -a 256 "$LOG_DIR/control-server-overlay-copied.ts" | awk '{print $1}')"
+  [[ "$actual_hash" == "$expected_hash" ]] || fail "control-server overlay hash did not match source"
+  printf '%s\n' "$expected_hash" >"$LOG_DIR/control-server-overlay-sha256.txt"
 }
 
 run_workspace_b1() {
@@ -185,36 +234,240 @@ EOF
 
   PHASE="workspace-first-serve"
   start_workspace_serve first
+  local first_probe_mode=workspace-first
+  if [[ "$MODE" == "recovery" ]]; then
+    first_probe_mode=workspace-recovery-first
+  fi
   if ! BOUNDED_TIMEOUT_MS=15000 bounded docker exec --user 1001:1001 "$CONTAINER_ID" \
-    bun /tmp/stow-b1/stow-s3-probe.ts workspace-first \
+    bun "/tmp/stow-b1/stow-s3-probe.ts" "$first_probe_mode" \
     /tmp/stow-b1/manifest.json /tmp/stow-b1/prepared.json /tmp/stow-b1/readiness-first.json \
     >"$LOG_DIR/workspace-first.json"; then
     fail "native Workspace first S3/file round trip failed; see workspace-first.json"
   fi
-  jq -e '.ok == true and .readinessValid and .endpointLoopback and .directFileToS3GetMatches and .s3PutToWorkspaceFileMatches' \
+  jq -e '.ok == true and .readinessValid and .endpointLoopback and .directFileToS3GetMatches and .s3PutToWorkspaceFileMatches and (if .mode == "workspace-recovery-first" then .metadataBytesMatch and .metadataTypeMatches else true end)' \
     "$LOG_DIR/workspace-first.json" >/dev/null || fail "native Workspace first round trip did not match"
 
-  PHASE="workspace-serve-stop"
-  local supervisor_pid
-  supervisor_pid="$(awk 'NR==1 {print; exit}' "$LOG_DIR/serve-first-pids.txt")"
-  serve_pid="$(awk 'NR==2 {print; exit}' "$LOG_DIR/serve-first-pids.txt")"
-  [[ "$supervisor_pid" =~ ^[0-9]+$ && "$serve_pid" =~ ^[0-9]+$ ]] || fail "native Workspace process identifiers were invalid"
-  bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
-    "test -r '/proc/$supervisor_pid/cmdline' && tr '\\000' ' ' <'/proc/$supervisor_pid/cmdline' | grep -F 'serve-supervisor.sh' >/dev/null && test -r '/proc/$serve_pid/cmdline' && tr '\\000' ' ' <'/proc/$serve_pid/cmdline' | grep -F 'stow-s3 workspace serve' >/dev/null && kill -TERM '$serve_pid'" \
-    || fail "refused to stop an unverified Workspace serve process"
-  local stopped=0
-  for _ in $(seq 1 80); do
-    if bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
-      "test -s /tmp/stow-b1/serve-first.exit" >/dev/null 2>&1; then
-      stopped=1
-      break
+  if [[ "$MODE" == "recovery-baseline" ]]; then
+    PHASE="recovery-baseline-observe"
+    if ! bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+      'test -d /workspace/stow-workspace/.stow && find /workspace/stow-workspace/.stow -type f -print | sed "s#^/workspace/stow-workspace/##" | LC_ALL=C sort' \
+      >"$LOG_DIR/native-stow-files.txt"; then
+      fail "native Stow did not create its workspace object metadata"
     fi
-    sleep 0.25
-  done
-  [[ "$stopped" == 1 ]] || fail "native Workspace serve did not stop within its bounded wait"
-  bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
-    'test "$(cat /tmp/stow-b1/serve-first.exit)" = 0' \
-    || fail "native Workspace serve did not exit cleanly after SIGTERM"
+    [[ -s "$LOG_DIR/native-stow-files.txt" ]] || fail "native Stow metadata directory had no files"
+    curl --max-time 20 -fsS "${AUTH[@]}" -D "$LOG_DIR/workspace-archive.headers" \
+      "$BASE/checkpoint?part=workspace" -o "$LOG_DIR/workspace.tar.gz" \
+      || fail "split workspace checkpoint failed or timed out"
+    curl --max-time 20 -fsS "${AUTH[@]}" -D "$LOG_DIR/state-archive.headers" \
+      "$BASE/checkpoint?part=state" -o "$LOG_DIR/state.tar.gz" \
+      || fail "split state checkpoint failed or timed out"
+    [[ -s "$LOG_DIR/workspace.tar.gz" && -s "$LOG_DIR/state.tar.gz" ]] \
+      || fail "split checkpoint returned an empty archive"
+    tar -tzf "$LOG_DIR/workspace.tar.gz" >"$LOG_DIR/workspace-archive-members.txt"
+    tar -tzf "$LOG_DIR/state.tar.gz" >"$LOG_DIR/state-archive-members.txt"
+    local metadata_in_workspace_archive=false
+    if rg -q '(^|/)\.stow(/|$)' "$LOG_DIR/workspace-archive-members.txt"; then
+      metadata_in_workspace_archive=true
+    fi
+    local registry_in_state_archive=false
+    if rg -q '(^|/)stow/registry(/|$)' "$LOG_DIR/state-archive-members.txt"; then
+      registry_in_state_archive=true
+    fi
+    if [[ "$metadata_in_workspace_archive" != false || "$registry_in_state_archive" != true ]]; then
+      fail "split archive baseline did not show the expected native metadata omission and registry inclusion"
+    fi
+    local native_metadata_count
+    native_metadata_count="$(wc -l <"$LOG_DIR/native-stow-files.txt" | tr -d ' ')"
+    jq -n \
+      --arg status "baseline_gap_reproduced" \
+      --arg image "$EVENTED_IMAGE" \
+      --arg platform "$IMAGE_PLATFORM" \
+      --arg hostArch "$HOST_ARCH" \
+      --arg stowSHA256 "$(awk 'length($1)==64 && $1 ~ /^[0-9a-f]+$/ {print $1; exit}' "$LOG_DIR/stow-binary.txt")" \
+      --arg containerID "$CONTAINER_ID" \
+      --arg containerName "$NAME" \
+      --argjson nativeMetadataCount "$native_metadata_count" \
+      --argjson nativeMetadataExcluded true \
+      --argjson registryIncludedInState true \
+      --argjson recoveryPerformed false \
+      '{status:$status,mode:"c1_archive_baseline",image:$image,platform:$platform,hostArch:$hostArch,stowBinarySHA256:$stowSHA256,containerID:$containerID,containerName:$containerName,nativeMetadataCount:$nativeMetadataCount,nativeMetadataExcludedFromWorkspaceArchive:$nativeMetadataExcluded,registryIncludedInStateArchive:$registryIncludedInState,recoveryPerformed:$recoveryPerformed}' \
+      >"$LOG_DIR/result.json"
+    echo "C1 archive omission baseline reproduced; evidence: $LOG_DIR"
+    cat "$LOG_DIR/result.json"
+    return 0
+  fi
+
+  if [[ "$MODE" == "recovery" ]]; then
+    PHASE="workspace-quiesce-before-checkpoint"
+    stop_workspace_serve first
+    bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+      'jq -c "{version,workspace_id,root,working_directory,registry_dir,bucket}" /tmp/stow-b1/prepared.json' \
+      >"$LOG_DIR/prepared-reference.json" \
+      || fail "could not retain the nonsecret fixture reference"
+    chmod 600 "$LOG_DIR/prepared-reference.json"
+    local workspace_id
+    workspace_id="$(jq -r '.workspace_id' "$LOG_DIR/prepared-reference.json")"
+    [[ "$workspace_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || fail "fixture workspace identity was invalid"
+    bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+      'find /workspace/stow-workspace/.stow -type f -print | sed "s#^/workspace/stow-workspace/##" | LC_ALL=C sort' \
+      >"$LOG_DIR/native-stow-files.txt" || fail "could not inventory native Workspace metadata"
+    rg -q '^\.stow/index\.json$' "$LOG_DIR/native-stow-files.txt" \
+      || fail "quiesced native metadata omitted index.json"
+    rg -q '^\.stow/manifest\.json$' "$LOG_DIR/native-stow-files.txt" \
+      || fail "quiesced native metadata omitted manifest.json"
+
+    PHASE="split-checkpoint"
+    curl --max-time 20 -fsS "${AUTH[@]}" -D "$LOG_DIR/workspace-archive.headers" \
+      "$BASE/checkpoint?part=workspace" -o "$LOG_DIR/workspace.tar.gz" \
+      || fail "split workspace checkpoint failed or timed out"
+    curl --max-time 20 -fsS "${AUTH[@]}" -D "$LOG_DIR/state-archive.headers" \
+      "$BASE/checkpoint?part=state" -o "$LOG_DIR/state.tar.gz" \
+      || fail "split state checkpoint failed or timed out"
+    [[ -s "$LOG_DIR/workspace.tar.gz" && -s "$LOG_DIR/state.tar.gz" ]] \
+      || fail "split checkpoint returned an empty archive"
+    tar -tzf "$LOG_DIR/workspace.tar.gz" >"$LOG_DIR/workspace-archive-members.txt"
+    tar -tzf "$LOG_DIR/state.tar.gz" >"$LOG_DIR/state-archive-members.txt"
+    rg -q '(^|/)stow-workspace/\.stow/index\.json$' "$LOG_DIR/workspace-archive-members.txt" \
+      || fail "candidate workspace archive omitted native index metadata"
+    rg -q '(^|/)stow-workspace/\.stow/manifest\.json$' "$LOG_DIR/workspace-archive-members.txt" \
+      || fail "candidate workspace archive omitted native manifest metadata"
+    rg -q '(^|/)stow/registry/[^/]+\.json$' "$LOG_DIR/state-archive-members.txt" \
+      || fail "candidate state archive omitted the native registry record"
+
+    local original_container_id original_container_name overlay_sha
+    original_container_id="$CONTAINER_ID"
+    ORIGINAL_CONTAINER_ID="$CONTAINER_ID"
+    original_container_name="$NAME"
+    overlay_sha="$(cat "$LOG_DIR/control-server-overlay-sha256.txt")"
+    printf '%s\n' "$workspace_id" >"$LOG_DIR/workspace-id-reference.txt"
+    chmod 600 "$LOG_DIR/workspace-id-reference.txt"
+    shasum -a 256 "$LOG_DIR/workspace.tar.gz" "$LOG_DIR/state.tar.gz" >"$LOG_DIR/archive-sha256.txt"
+
+    PHASE="remove-original-container"
+    local actual_name
+    actual_name="$(bounded docker inspect "$original_container_id" --format '{{.Name}}')" \
+      || fail "could not verify original container ownership before removal"
+    [[ "$actual_name" == "/$original_container_name" ]] \
+      || fail "original container name did not match; refusing removal"
+    bounded docker rm -f "$original_container_id" >/dev/null \
+      || fail "could not remove original synthetic container"
+    if bounded docker inspect "$original_container_id" >/dev/null 2>&1; then
+      fail "original container still exists after removal"
+    fi
+    CREATED=0
+    CONTAINER_ID=""
+    NAME="${original_container_name}-restore"
+    if bounded docker container inspect "$NAME" >/dev/null 2>&1; then
+      fail "generated restore container name already exists; refusing to touch it"
+    fi
+    CONTAINER_ID="$(BOUNDED_TIMEOUT_MS=30000 bounded docker create --platform linux/amd64 --name "$NAME" \
+      --env "CONTROL_TOKEN=$CONTROL_TOKEN" --env STOW_ACCESS_KEY=stow --env STOW_SECRET_KEY=stow-secret \
+      -p 127.0.0.1::4001 "$EVENTED_IMAGE")" || fail "could not create fresh empty restore container"
+    CREATED=1
+    printf '%s\n' "$CONTAINER_ID" >"$LOG_DIR/restore-container-id.txt"
+    printf '%s\n' "$NAME" >"$LOG_DIR/restore-container-name.txt"
+    overlay_control_server
+    BOUNDED_TIMEOUT_MS=30000 bounded docker start "$CONTAINER_ID" >/dev/null \
+      || fail "could not start fresh restore container"
+    HOST_PORT="$(bounded docker port "$CONTAINER_ID" 4001/tcp | awk -F: 'NR==1 {print $NF}')" \
+      || fail "could not resolve fresh restore control port"
+    [[ "$HOST_PORT" =~ ^[0-9]+$ ]] || fail "fresh restore control port was not assigned"
+    BASE="http://127.0.0.1:${HOST_PORT}"
+    PHASE="restore-control-readiness"
+    ready=0
+    for _ in $(seq 1 120); do
+      if curl --max-time 2 -fsS "$BASE/health" >/dev/null 2>&1; then ready=1; break; fi
+      sleep 0.5
+    done
+    [[ "$ready" == 1 ]] || fail "fresh restore control server readiness timed out"
+    PHASE="fresh-container-empty-check"
+    bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+      'test ! -e /workspace/stow-workspace && test ! -e /var/lib/aboiteau/state/stow/registry' \
+      || fail "fresh restore container unexpectedly contains a workspace or native registry before restore"
+    printf '%s\n' '{"nativeRootAbsentBeforeRestore":true,"registryAbsentBeforeRestore":true}' \
+      >"$LOG_DIR/fresh-container-empty-check.json"
+
+    PHASE="split-restore"
+    curl --max-time 30 -fsS "${AUTH[@]}" -X POST "$BASE/restore?part=workspace" \
+      -H 'content-type: application/gzip' --data-binary "@$LOG_DIR/workspace.tar.gz" \
+      -o "$LOG_DIR/workspace-restore-response.json" \
+      || fail "workspace archive restore failed or timed out"
+    curl --max-time 30 -fsS "${AUTH[@]}" -X POST "$BASE/restore?part=state&final=1" \
+      -H 'content-type: application/gzip' --data-binary "@$LOG_DIR/state.tar.gz" \
+      -o "$LOG_DIR/state-restore-response.json" \
+      || fail "state archive restore failed or timed out"
+    jq -e '.ok == true and .part == "workspace"' "$LOG_DIR/workspace-restore-response.json" >/dev/null \
+      || fail "workspace restore response did not confirm success"
+    jq -e '.ok == true and .part == "state"' "$LOG_DIR/state-restore-response.json" >/dev/null \
+      || fail "state restore response did not confirm success"
+
+    PHASE="restore-fixture-inputs"
+    bounded docker exec "$CONTAINER_ID" sh -lc \
+      'mkdir -p /tmp/stow-b1 && chown 1001:1001 /tmp/stow-b1 && chmod 700 /tmp/stow-b1' \
+      || fail "could not create private restore probe directory"
+    for fixture in manifest.json seed.txt; do
+      local fixture_source="$LOG_DIR/workspace-manifest.json"
+      [[ "$fixture" == "seed.txt" ]] && fixture_source="$LOG_DIR/seed.txt"
+      bounded docker cp "$fixture_source" "$CONTAINER_ID:/tmp/stow-b1/$fixture" \
+        || fail "could not copy fixture input $fixture into restored container"
+    done
+    bounded docker cp "$ROOT/scripts/stow-s3-probe.ts" "$CONTAINER_ID:/tmp/stow-b1/stow-s3-probe.ts" \
+      || fail "could not copy probe into restored container"
+    bounded docker cp "$LOG_DIR/serve-supervisor.sh" "$CONTAINER_ID:/tmp/stow-b1/serve-supervisor.sh" \
+      || fail "could not copy supervisor into restored container"
+    bounded docker cp "$LOG_DIR/prepared-reference.json" "$CONTAINER_ID:/tmp/stow-b1/prepared.json" \
+      || fail "could not copy fixture descriptor reference into restored container"
+    bounded docker cp "$LOG_DIR/workspace-id-reference.txt" "$CONTAINER_ID:/tmp/stow-b1/workspace-id" \
+      || fail "could not copy fixture identity reference into restored container"
+    bounded docker exec "$CONTAINER_ID" sh -lc \
+      'chown 1001:1001 /tmp/stow-b1/* && chmod 600 /tmp/stow-b1/*' \
+      || fail "could not protect fixture reference files in restored container"
+    bounded docker exec --user 1001:1001 "$CONTAINER_ID" sh -lc \
+      'cmp -s /workspace/stow-workspace/seed.txt /tmp/stow-b1/seed.txt' \
+      || fail "restored workspace seed bytes did not match the synthetic fixture"
+
+    PHASE="native-resume-without-prepare"
+    # Add a distinct readiness path for the fresh container. The same prepared
+    # descriptor is only an identity reference; no native prepare is invoked.
+    start_workspace_serve restored
+    if ! BOUNDED_TIMEOUT_MS=15000 bounded docker exec --user 1001:1001 "$CONTAINER_ID" \
+      bun /tmp/stow-b1/stow-s3-probe.ts workspace-recovery-restored \
+      /tmp/stow-b1/manifest.json /tmp/stow-b1/prepared.json /tmp/stow-b1/readiness-restored.json \
+      >"$LOG_DIR/restored-verification.json"; then
+      fail "restored native workspace did not serve the same ID/data/metadata; see restored-verification.json"
+    fi
+    jq -e '.ok == true and .readinessValid and .endpointLoopback and .directFileToS3GetMatches and .s3PutToWorkspaceFileMatches and .metadataBytesMatch and .metadataTypeMatches' \
+      "$LOG_DIR/restored-verification.json" >/dev/null \
+      || fail "restored workspace bytes or content-type metadata did not match"
+    stop_workspace_serve restored
+    jq -n \
+      --arg status "split_archive_recovery_verified" \
+      --arg image "$EVENTED_IMAGE" \
+      --arg imageID "$(awk '{print $1}' "$LOG_DIR/image-inspect.txt")" \
+      --arg platform "$IMAGE_PLATFORM" \
+      --arg hostArch "$HOST_ARCH" \
+      --arg emulation "$EMULATION" \
+      --arg stowSHA256 "$(awk 'length($1)==64 && $1 ~ /^[0-9a-f]+$/ {print $1; exit}' "$LOG_DIR/stow-binary.txt")" \
+      --arg controllerOverlaySHA256 "$overlay_sha" \
+      --arg originalContainerID "$original_container_id" \
+      --arg restoredContainerID "$CONTAINER_ID" \
+      --arg workspaceArchiveSHA256 "$(awk 'NR==1 {print $1}' "$LOG_DIR/archive-sha256.txt")" \
+      --arg stateArchiveSHA256 "$(awk 'NR==2 {print $1}' "$LOG_DIR/archive-sha256.txt")" \
+      --argjson prepareCount 1 \
+      --argjson nativeResumeWithoutPrepare true \
+      --argjson splitArchivesRestored true \
+      --argjson objectBytesPreserved true \
+      --argjson contentTypePreserved true \
+      --argjson originalRemovedBeforeRestore true \
+      '{status:$status,mode:"c1_split_archive_recovery",image:$image,imageID:$imageID,platform:$platform,hostArch:$hostArch,emulation:$emulation,stowBinarySHA256:$stowSHA256,controllerOverlaySHA256:$controllerOverlaySHA256,originalContainerID:$originalContainerID,restoredContainerID:$restoredContainerID,workspaceArchiveSHA256:$workspaceArchiveSHA256,stateArchiveSHA256:$stateArchiveSHA256,prepareCount:$prepareCount,nativeResumeWithoutPrepare:$nativeResumeWithoutPrepare,splitArchivesRestored:$splitArchivesRestored,objectBytesPreserved:$objectBytesPreserved,contentTypePreserved:$contentTypePreserved,originalRemovedBeforeRestore:$originalRemovedBeforeRestore,sameContainerRestart:false,freshContainerReplacement:true,r2ColdRestore:false,multipartRecoveryQualified:false}' \
+      >"$LOG_DIR/result.json"
+    echo "C1 split archive recovery passed; evidence: $LOG_DIR"
+    cat "$LOG_DIR/result.json"
+    return 0
+  fi
+
+  PHASE="workspace-serve-stop"
+  stop_workspace_serve first
 
   PHASE="workspace-serve-restart"
   start_workspace_serve restart
@@ -256,7 +509,7 @@ trap cleanup EXIT INT TERM
 for command in docker curl jq tar rg awk openssl bun node; do
   command -v "$command" >/dev/null 2>&1 || fail "missing host command: $command"
 done
-[[ "$MODE" == "generic" || "$MODE" == "workspace" ]] || fail "mode must be generic or workspace"
+[[ "$MODE" == "generic" || "$MODE" == "workspace" || "$MODE" == "recovery-baseline" || "$MODE" == "recovery" ]] || fail "mode must be generic, workspace, recovery-baseline or recovery"
 
 # Resolve the image from wrangler.jsonc instead of accepting a mutable tag or
 # caller-provided replacement.
@@ -324,6 +577,9 @@ CONTAINER_ID="$(BOUNDED_TIMEOUT_MS=30000 bounded docker create --platform linux/
   -p 127.0.0.1::4001 \
   "$EVENTED_IMAGE")" || fail "could not create disposable container"
 CREATED=1
+if [[ "$MODE" == "recovery" ]]; then
+  overlay_control_server
+fi
 printf '%s\n' "$CONTAINER_ID" >"$LOG_DIR/container-id.txt"
 printf '%s\n' "$NAME" >"$LOG_DIR/container-name.txt"
 PHASE="container-start"
@@ -375,7 +631,7 @@ done
 # B1 deliberately bypasses generic /configure, MCP bucket bootstrap and /start.
 # The native Workspace service owns its own readiness endpoint/credentials, so
 # port 9000 and the generic filesystem server remain unused in this mode.
-if [[ "$MODE" == "workspace" ]]; then
+if [[ "$MODE" == "workspace" || "$MODE" == "recovery-baseline" || "$MODE" == "recovery" ]]; then
   run_workspace_b1
   exit 0
 fi

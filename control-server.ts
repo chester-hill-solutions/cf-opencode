@@ -36,6 +36,7 @@ import {
   chownSync,
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   rmSync,
@@ -150,67 +151,79 @@ function cloneArgs(repo: string): string[] {
   ]
 }
 
-async function waitFor(url: string, attempts = 150, headers?: Record<string, string>): Promise<void> {
+export async function waitFor(url: string, attempts = 150, headers?: Record<string, string>): Promise<void> {
+  const deadline = performance.now() + attempts * 200
   for (let attempt = 0; attempt < attempts; attempt++) {
+    const remaining = deadline - performance.now()
+    if (remaining <= 0) break
     try {
-      const res = await fetch(url, { headers })
+      const res = await fetch(url, {
+        headers,
+        signal: AbortSignal.timeout(Math.max(1, Math.min(1000, Math.ceil(remaining)))),
+      })
       if (res.ok) return
     } catch {
       /* not ready */
     }
-    await Bun.sleep(200)
+    const pause = Math.min(200, deadline - performance.now())
+    if (attempt + 1 < attempts && pause > 0) await Bun.sleep(pause)
   }
   throw new Error(`${url} did not become ready`)
 }
 
 async function startStow(): Promise<void> {
-  if (stow && stow.exitCode === null) return
-  if (stow) stow = undefined
-  mkdirSync(STOW_DIR, { recursive: true })
-  // The control server creates this directory as root; stow runs as agent.
-  chownTree(STOW_DIR, AGENT_UID, AGENT_GID)
-  stow = spawn(
-    asAgentCommand([
-      "stow-s3",
-      "serve",
-      "--port",
-      String(STOW_PORT),
-      "--host",
-      "127.0.0.1",
-      "--data-dir",
-      STOW_DIR,
-      "--backend",
-      "filesystem",
-      "--access-key",
-      STOW_ACCESS_KEY,
-      "--secret-key",
-      STOW_SECRET_KEY,
-    ]),
-    { cwd: WORKSPACE, env: process.env, stdout: "inherit", stderr: "inherit" },
-  )
+  if (!stow || stow.exitCode !== null) {
+    if (stow) stow = undefined
+    mkdirSync(STOW_DIR, { recursive: true })
+    // The control server creates this directory as root; stow runs as agent.
+    chownTree(STOW_DIR, AGENT_UID, AGENT_GID)
+    stow = spawn(
+      asAgentCommand([
+        "stow-s3",
+        "serve",
+        "--port",
+        String(STOW_PORT),
+        "--host",
+        "127.0.0.1",
+        "--data-dir",
+        STOW_DIR,
+        "--backend",
+        "filesystem",
+        "--access-key",
+        STOW_ACCESS_KEY,
+        "--secret-key",
+        STOW_SECRET_KEY,
+      ]),
+      { cwd: WORKSPACE, env: process.env, stdout: "inherit", stderr: "inherit" },
+    )
+  }
   await waitFor(`http://127.0.0.1:${STOW_PORT}/_stow/health`)
 }
 
 async function startOpencode(): Promise<void> {
-  if (opencode && opencode.exitCode === null) return
-  if (opencode) {
-    opencode = undefined
-    opencodeGeneration = undefined
-    opencodeEventPersistence = false
+  if (!opencode || opencode.exitCode !== null) {
+    if (opencode) {
+      opencode = undefined
+      opencodeGeneration = undefined
+      opencodeEventPersistence = false
+    }
+    // OpenCode v2 requires a password. Use the configured one if present so the
+    // Worker and container can share it; otherwise generate a per-start secret.
+    opencodePassword = process.env.OPENCODE_PASSWORD ?? randomBytes(32).toString("base64url")
+    opencodeGeneration = randomBytes(24).toString("base64url")
+    opencode = spawn(
+      asAgentCommand(["bun", "/app/runtime/opencode/server.ts"]),
+      {
+        cwd: WORKSPACE,
+        env: buildOpencodeEnv(process.env, opencodePassword),
+        stdout: "inherit",
+        stderr: "inherit",
+      },
+    )
   }
-  // OpenCode v2 requires a password. Use the configured one if present so the
-  // Worker and container can share it; otherwise generate a per-start secret.
-  opencodePassword = process.env.OPENCODE_PASSWORD ?? randomBytes(32).toString("base64url")
-  opencodeGeneration = randomBytes(24).toString("base64url")
-  opencode = spawn(
-    asAgentCommand(["bun", "/app/runtime/opencode/server.ts"]),
-    {
-      cwd: WORKSPACE,
-      env: buildOpencodeEnv(process.env, opencodePassword),
-      stdout: "inherit",
-      stderr: "inherit",
-    },
-  )
+  // A surviving process still needs a fresh health proof after a previous
+  // readiness timeout before readiness is advertised again.
+  opencodeEventPersistence = false
   await waitFor(`http://127.0.0.1:${OPENCODE_PORT}/api/info`, 300, basicAuth(opencodePassword))
   opencodeEventPersistence = true
 }
@@ -292,15 +305,49 @@ export async function workspaceFingerprint(workspace = WORKSPACE): Promise<strin
     const untracked = await runCapture(["git", "-C", workspace, "ls-files", "--others", "--exclude-standard", "-z"])
     const ignored = await runCapture(["git", "-C", workspace, "ls-files", "--others", "--ignored", "--exclude-standard", "-z"])
     const paths = new Set([...untracked.split("\0").filter(Boolean), ...ignored.split("\0").filter(Boolean)])
-    const files: string[] = []
-    for (const path of [...paths].sort()) {
-      // Derived harness data: the source diff already covers workspace edits.
-      // tar excludes node_modules and .stow at any depth, so match that here.
-      // Listing node_modules is cheap: the filter runs before any hash.
+    const trackedGitlinks = new Set<string>()
+    const stagedPaths = await runCapture(["git", "-C", workspace, "ls-files", "--stage", "-z"])
+    for (const record of stagedPaths.split("\0").filter(Boolean)) {
+      const tab = record.indexOf("\t")
+      if (tab < 0) throw new Error("cannot parse staged workspace path")
+      const mode = record.slice(0, tab).split(" ", 1)[0]
+      if (mode === "160000") {
+        const path = record.slice(tab + 1)
+        paths.add(path)
+        trackedGitlinks.add(path)
+      }
+    }
+    const filesToHash = new Set<string>()
+    for (const listedPath of [...paths].sort()) {
+      const path = listedPath.replace(/\/+$/, "")
+      // node_modules is excluded at any depth; only the legacy workspace-root
+      // .stow store is excluded. A nested native Stow workspace owns its .stow.
       const parts = path.split("/")
-      if (parts.includes(".stow") || parts.includes("node_modules")) continue
+      if (parts[0] === ".stow" || parts.includes("node_modules")) continue
+      const absolutePath = `${workspace}/${path}`
+      let info
+      try {
+        info = lstatSync(absolutePath)
+      } catch (error) {
+        if (trackedGitlinks.has(path) && isENOENT(error)) continue
+        throw new Error(`cannot fingerprint listed workspace path ${path}: ${String(error)}`)
+      }
+      if (info.isDirectory()) {
+        for (const file of workspaceFileEntries(workspace, absolutePath)) {
+          filesToHash.add(relative(workspace, file))
+        }
+      } else {
+        filesToHash.add(path)
+      }
+    }
+    const files: string[] = []
+    for (const path of [...filesToHash].sort()) {
       const hash = await runCapture(["git", "-C", workspace, "hash-object", "--", path])
-      files.push(`${path}:${hash.trim()}`)
+      const digest = hash.trim()
+      if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(digest)) {
+        throw new Error(`cannot fingerprint listed workspace file ${path}`)
+      }
+      files.push(`${path}:${digest}`)
     }
     return createHash("sha256").update(`${head}\n${status}\n${diff}\n${files.join("\n")}`).digest("hex")
   }
@@ -318,21 +365,69 @@ export async function workspaceFingerprint(workspace = WORKSPACE): Promise<strin
   return hash.digest("hex")
 }
 
-/** Every archived path under a non-Git workspace, minus the tar excludes. */
+function isENOENT(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"
+}
+
+/** Every archived file under a non-Git workspace, minus the tar excludes. */
 function workspaceFileEntries(root: string, base = root, out: string[] = []): string[] {
-  let entries
-  try {
-    entries = readdirSync(base, { withFileTypes: true })
-  } catch {
-    return out
-  }
+  const entries = readdirSync(base, { withFileTypes: true })
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    if (entry.name === "node_modules" || entry.name === ".stow") continue
+    if (entry.name === "node_modules" || (base === root && entry.name === ".stow")) continue
     const path = `${base}/${entry.name}`
     if (entry.isDirectory()) workspaceFileEntries(root, path, out)
     else out.push(path)
   }
   return out
+}
+
+/**
+ * Archive the workspace while excluding only its legacy root-level object store
+ * and node_modules directories. Build an explicit NUL-delimited member list so
+ * nested native Stow `.stow` metadata is included without following directory
+ * recursion a second time.
+ */
+export async function archiveWorkspace(archive: string, root = WORKSPACE): Promise<number> {
+  // On BSD tar, `--exclude=./.stow` also excludes nested `.stow` paths, so use an
+  // explicit member list to omit only the legacy workspace-root store.
+  const entries: string[] = ["."]
+  let failedToList = false
+  const walk = (base: string): void => {
+    let children
+    try {
+      children = readdirSync(base, { withFileTypes: true })
+    } catch {
+      failedToList = true
+      return
+    }
+    for (const child of children.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (child.name === "node_modules" || (base === root && child.name === ".stow")) continue
+      const path = `${base}/${child.name}`
+      entries.push(relative(root, path))
+      if (child.isDirectory()) walk(path)
+    }
+  }
+  walk(root)
+  if (failedToList) return 1
+
+  const members = `${archive}.members`
+  try {
+    if (entries.length > 0) writeFileSync(members, `${entries.join("\0")}\0`, { mode: 0o644 })
+    else writeFileSync(members, "", { mode: 0o644 })
+    return await run([
+      "tar",
+      "czf",
+      archive,
+      "-C",
+      root,
+      "--no-recursion",
+      "--null",
+      "--files-from",
+      members,
+    ])
+  } finally {
+    rmSync(members, { force: true })
+  }
 }
 
 /**
@@ -787,18 +882,7 @@ if (import.meta.main) Bun.serve({
         // not accept an unknown-length stream.
         const archive = "/tmp/cf-opencode-workspace.tar.gz"
         rmSync(archive, { force: true })
-        const code = await run([
-          "tar",
-          "czf",
-          archive,
-          "-C",
-          WORKSPACE,
-          "--exclude",
-          "node_modules",
-          "--exclude",
-          ".stow",
-          ".",
-        ])
+        const code = await archiveWorkspace(archive, WORKSPACE)
         if (code !== 0) return Response.json({ error: "checkpoint failed" }, { status: 500 })
         const file = Bun.file(archive)
         return new Response(file, {

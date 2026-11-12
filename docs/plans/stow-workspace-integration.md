@@ -1,7 +1,7 @@
 # Stow workspace integration and resource adoption
 
-Status: bounded A characterization implemented and verified on the pinned Linux
-image under emulation; startup and recovery repair in B–D remain planned.
+Status: A, B1 and local C1 verified on the pinned Linux image under emulation;
+production startup, migration and Cloudflare/R2 recovery remain open.
 Decision date: 2026-11-11. Owner: Aboiteau. Roadmap: R0-15, then R2-4/R3-4.
 
 ## Problem and boundary
@@ -126,6 +126,11 @@ container was verified absent after cleanup. The rerun evidence is in
 `/tmp/stow-workspace-characterization-20261112T065015Z.IgINSo/`; the original
 successful evidence remains in
 `/tmp/stow-workspace-characterization-20261112T060859Z.6SNbcZ/`.
+The generic A regression passed again after C1 at
+`/tmp/stow-workspace-characterization-20261112T071357Z.JMrnLB/`; its
+conditional checkpoint returned 204, archive SHA-256 was
+`06f8923d05e72a3713792c22adbb50574c40c82c8f6c6037787d10cfea7dcdef`, and the
+container was verified absent.
 
 Actual image help lists Workspace `prepare`, `adopt`, `resume` and `serve`, but
 no standalone `open` subcommand. The `serve` help advertises `--ready-fd` for a
@@ -198,13 +203,95 @@ second serve start without another prepare read the same bytes. The disposable
 container (`05cd70cf00caac05021e9383b81358a63d7bea9c4064da427d437d149646e07b`)
 was verified absent after cleanup. Redacted evidence is in
 `/tmp/stow-workspace-b1-20261112T064905Z.vaAqcK/`.
+After C1 was added, the B1 runner passed again with the same image and binary
+at `/tmp/stow-workspace-b1-20261112T071326Z.Hkl59m/`; its container was also
+verified absent. This rerun confirms the script modes remain independent; it
+does not close the separate container smoke issue below.
 
 B1 qualifies only this manifest/prepare/readiness/S3-byte-parity and
 same-container serve-process restart path. It does not qualify a container
 restart, `.stow` object metadata or multipart recovery, checkpoint restoration,
 or R2 cold restore. Preserve the initial failed attempt as part of the record.
 Do not change production startup or archive behavior based on this bounded
-result.
+result. Commit `d36bcec` passed application checks, but the container smoke
+failed twice at restore/start boundaries. Diagnostic commit `fddce34` reproduced
+an initial `/start` stall lasting over 110 seconds even though Stow health was
+200 and OpenCode reported ready; it did not prove that any individual health
+fetch was the cause. The frozen controller now bounds Stow/OpenCode readiness
+to 30/60 seconds, limits each probe to at most one second, and re-probes an
+existing OpenCode child. The local native fixture does not close the separate
+container CI issue; CI for this frozen source remains pending.
+
+## C1 split-archive recovery qualification
+
+C1 adds a disposable `recovery-baseline` mode and a `recovery` candidate mode to
+the same bounded runner. The baseline used the pinned image's unmodified
+controller, prepared and served a synthetic native Workspace, then captured the
+existing `/checkpoint?part=workspace` and `/checkpoint?part=state` endpoints.
+The live native tree had `.stow/index.json`, `.stow/manifest.json` and
+`.stow/session.lock`; the workspace archive omitted all three while including
+the completed object bytes and seed. The split state archive included the
+workspace registry record. Baseline evidence and archive hashes are in
+`/tmp/stow-workspace-c1-20261112T070441Z.jpH1I0/`. The disposable container was
+removed and verified absent; no recovery was attempted in this baseline.
+
+The candidate runner overlays a copied, hash-verified `control-server.ts` into
+each stopped disposable container before start. It quiesces the native serve
+process, checkpoints both parts, removes the original container, confirms the
+replacement has no workspace root or registry, restores both archives at the
+same absolute paths, and serves the saved ID without another prepare. It tests
+completed object bytes and nondefault content type via Bun's public `S3File`
+`stat()` surface; it does not parse Stow's private index format. The seed,
+manifest and prepared descriptor are synthetic fixture references only; the
+descriptor is not used to recreate native metadata or registry state.
+
+Four candidate runs passed with their respective controller overlays. The
+first overlay hash was
+`79b691095cef153881159afad9b884be84f34586098731501038ccd1da5bc9a7`; its
+receipt is `/tmp/stow-workspace-c1-20261112T071209Z.7kzyeD/`. A later overlay
+hash
+`7656a8cc2942e7ef56e8f125836afe8a5dd420fa61aa617204046b06c93ab1df` also
+passed and is recorded at
+`/tmp/stow-workspace-c1-20261112T071541Z.B4jAip/`. A third overlay hash
+`6ae673034f4fd65a794c54c87b2d06c65a5ea98e8388cfee74a712181e4de1f9` passed at
+`/tmp/stow-workspace-c1-20261112T071753Z.zPAuE3/`. Each receipt restored the
+same registry/workspace identity into a fresh container and passed byte and
+content-type checks without reprepare. The later runs also asserted the empty
+workspace and registry before restore. Their replacement containers were
+removed, and the copied overlay SHA matched the intended hash.
+
+The final frozen controller hash
+`b9ede64c69599945d48b1ad22bd0a161cdc48d9cc3301f3c05cb77d7caaeea76` passed at
+`/tmp/stow-workspace-c1-20261112T072309Z.4laibN/`. It includes nested tracked
+repository and deinitialized-gitlink fingerprint handling. The workspace
+archive SHA-256 was
+`fdc82ab05ec1b1da2ee1e7fe0e3f203321da92f0721c4b9d8a2f7f37357185be`; the
+state archive SHA-256 was
+`5e9990c539453e1c9088675892cfa0820c66c8703bd8e97c289dc397cdf6d917`. The
+same-ID registry/workspace identity restored into a fresh empty container,
+served without another prepare, and passed byte and content-type checks. Its
+replacement container was verified absent, and the copied overlay SHA matched.
+The earlier successful receipts are retained as hash-bound historical runs.
+
+C1 qualifies this local split-archive path in disposable containers, not
+Cloudflare/R2 recovery or production startup. Multipart recovery, generic
+object-only migration and cold restore remain unqualified. The separate
+container CI issue above also remains pending the new revision's run.
+
+Diagnostic commit `fddce34` reproduced a stall in the initial `/start`, with
+Stow health returning 200 and OpenCode logging ready. This rules out treating
+child termination as the established cause of every failure. The controller's
+health probe had no per-request deadline; the new revision bounds it by a
+monotonic 30/60-second startup budget with per-request aborts and bounded sleeps.
+A retry rechecks a surviving child before asserting readiness or event
+persistence. Real HTTP regressions cover a hung probe followed by success and
+all probes hanging until bounded failure. This repairs a demonstrated missing
+bound without claiming the original individual fetch was conclusively observed.
+
+The final local gate passed 314 Bun/runtime tests, 255 Worker tests, typechecks,
+configuration consistency, UI build and diff checks. The native C1 proof uses
+the exact unchanged Stow binary with a separately recorded controller overlay;
+it does not qualify a rebuilt or deployed image.
 
 Before changing startup, classify the existing generic S3 store's contents. Preserve
 object-only data through a verified export/mapping or explicit separate recovery
