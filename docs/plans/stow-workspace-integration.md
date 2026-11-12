@@ -1,12 +1,13 @@
 # Stow workspace integration and resource adoption
 
-Status: A, B1 and local C1 verified on the pinned Linux image under emulation;
-production startup and Cloudflare/R2 recovery remain open.
+Status: A, B1, local C1 and B2 startup integration verified. B2 passed the full
+rebuilt-container smoke on native amd64 CI. Cloudflare/R2 recovery and production
+cutover remain open.
 Decision date: 2026-11-11. Owner: Aboiteau. Roadmap: R0-15, then R2-4/R3-4.
 
 ## Problem and boundary
 
-`startStow()` currently launches `stow-s3 serve --backend filesystem` with
+The original `startStow()` launched `stow-s3 serve --backend filesystem` with
 `--data-dir /workspace/.stow`. That opens Stow's object-record store, not its
 registered shared-directory Workspace. `cwd: /workspace` does not change the
 backend. Objects held only in `.stow` are excluded from the R2 workspace tar.
@@ -275,6 +276,65 @@ receipt includes the corrected parent ownership and probe assertion. This
 preflight supports keeping the `/workspace` path for subsequent integration
 design; it does not prove production startup, restore, R2 cold recovery or
 multi-tenant behavior.
+
+## B2 integrated startup and recovery — 2026-11-12
+
+Implemented in `0c43bda`, with a test-whitespace-only follow-up in `cea4967`.
+Persistent Luna owners split the controller/container work (`gpt-6-luna`, high)
+from contracts, lifecycle and smoke fixtures (`gpt-6-luna`, medium). Independent
+`gpt-6.1-terra`, high review resolved the consequential lifecycle and archive
+boundaries; routine fixes returned to Luna.
+
+The controller now prepares only a fresh empty `/workspace`, retains the native
+identity/registry, and serves that identity as UID/GID 1001. It validates fresh
+versioned readiness before starting OpenCode with its actual S3 endpoint and
+ephemeral credentials. Unsupported old state fails visibly. Conversation
+archives preserve native metadata and registry identity; account seed archives
+exclude them so a recipient creates its own empty Workspace. A FIFO gate covers
+whole startup, restore, seed, configure and checkpoint operations, including
+streamed request bodies. Bounded process cleanup retains failed-stop handles.
+
+The integrated gate passed 347 root tests, five runtime tests and 255 Worker
+tests (607 total), typechecks, config validation and UI build. The complete
+rebuilt-container smoke passed on native amd64 in
+[CI run 43249175159](https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43249175159).
+It verifies exact process identity/UID/S3 environment, bidirectional bytes,
+checkpoint exclusions, missing-registry refusal, distinct account-seed identity,
+streamed seed/restore serialization with startup, and same-ID recovery into a
+new local container after removing the original. No provider inference ran.
+
+Source controller SHA-256:
+`e70c25065a74c2d5384df19dd8c1612949b1b08d790b368a72cd0f5212cdd3a3`.
+The local rebuilt amd64 image ID is
+`sha256:8ae47350f2de6630c1dad9625fd686898c685855ca7f8da8689a4bf09cd09284`;
+its Stow binary remains the pinned `780c3ccf…815f27da` recorded above.
+An image ID is not an OCI registry manifest digest.
+
+Local arm64/QEMU runs reached the account-seed checks but did not complete the
+full smoke: the recipient reported running while its OpenCode info endpoint
+returned 500 and the peer command-line matcher saw no OpenCode process. Native
+amd64 success does not turn that local failure into a pass. Logs are retained in
+`/tmp/cf-opencode-b2-native-host.log` and
+`/tmp/cf-opencode-b2-native-ci.log`; the narrow diagnostic must distinguish its
+observations from an established cause.
+
+B2 closes source integration and native local-container qualification. It does
+not close actual Cloudflare/R2 recovery, production deployment, arbitrary active
+writer consistency, multipart or escaped/reserved-key preservation, or the
+broader G0/G1 release gates.
+
+### C2 next: isolated Cloudflare/R2-only recovery
+
+Use a unique test Worker/DO namespace, newly created empty R2 bucket and new
+test secrets. Pin the verified B2 image by its uploaded OCI digest. Reuse the
+actual Conversation startup, encrypted split-checkpoint, recycle and restore
+paths with synthetic markers; create no model session or provider prompt.
+Require the entire bucket empty before startup, not merely a conversation
+prefix, since startup can consume a shared account seed. Limit the deployment
+to one container. After recycle, require both encrypted R2 parts, no snapshot,
+an absent disk-only sentinel, unchanged identity and recovered bytes/content
+type. Record exact source/image evidence and remove only these test resources.
+Existing production settings, buckets and conversation keys are outside scope.
 
 ## C1 split-archive recovery qualification
 
