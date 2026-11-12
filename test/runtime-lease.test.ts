@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
-import { env, runInDurableObject } from "cloudflare:test"
+import { env, evictDurableObject, runInDurableObject } from "cloudflare:test"
+import { driveConversationJobs } from "./helpers/conversation-jobs"
 import { ConversationLease } from "../src/conversation/lease"
 
 function deferred<T = void>() {
@@ -225,5 +226,131 @@ describe("ConversationLease", () => {
     expect(result.error).toBe("container lease state is unreadable")
     expect(result.calls).toBe(0)
     expect(result.state).toMatchObject({ desired: "held", status: "acknowledged" })
+  })
+})
+
+
+describe("Conversation lease job integration", () => {
+  it("renews from the durable job after eviction while runtime ports are unavailable", async () => {
+    const stub = env.CONVERSATION.getByName("C1:lease-job-after-eviction")
+    const first = await runInDurableObject(stub, async (instance, runtime) => {
+      const container = { running: true, async destroy() { this.running = false }, async setInactivityTimeout() {} }
+      Object.defineProperty((instance as unknown as { ctx: object }).ctx, "container", { configurable: true, value: container })
+      const internal = instance as unknown as {
+        key?: string
+        leases: ConversationLease
+      }
+      internal.key = "native-lease-job"
+      await instance.fetch(new Request("https://conversation/state", {
+        headers: { "x-conversation-key": "native-lease-job" },
+      }))
+      await internal.leases.ensureHeld()
+      return {
+        id: runtime.id.toString(),
+        lease: await runtime.storage.get<Awaited<ReturnType<ConversationLease["status"]>>>("containerLease"),
+        job: runtime.storage.sql.exec<{ id: string; capability: string }>(
+          "SELECT id, capability FROM cf_agents_jobs WHERE id = ?", "lease:renew",
+        ).toArray()[0],
+      }
+    })
+    expect(first.lease).toMatchObject({ desired: "held", status: "acknowledged" })
+    expect(first.job).toEqual({ id: "lease:renew", capability: "conversation-jobs" })
+
+    await evictDurableObject(stub)
+    const second = await runInDurableObject(stub, async (instance, runtime) => {
+      const container = {
+        running: true,
+        async destroy() { this.running = false },
+        async setInactivityTimeout() {},
+        getTcpPort() { throw new Error("runtime port should not be used by lease renewal") },
+      }
+      Object.defineProperty((instance as unknown as { ctx: object }).ctx, "container", { configurable: true, value: container })
+      const internal = instance as unknown as {
+        key?: string
+        leases: ConversationLease
+        runtime: { stop(): Promise<boolean> }
+      }
+      internal.key = "native-lease-job"
+      await instance.fetch(new Request("https://conversation/state", {
+        headers: { "x-conversation-key": "native-lease-job" },
+      }))
+      await driveConversationJobs(instance, runtime.storage, ["lease:renew"])
+      const renewed = await runtime.storage.get<Awaited<ReturnType<ConversationLease["status"]>>>("containerLease")
+      const job = runtime.storage.sql.exec<{ id: string; time: number }>(
+        "SELECT id, time FROM cf_agents_jobs WHERE id = ?", "lease:renew",
+      ).toArray()[0]
+      container.running = false
+      const didStop = await internal.runtime.stop()
+      const released = didStop && await internal.leases.releaseAfterStop()
+      const remainingJob = runtime.storage.sql.exec<{ id: string }>(
+        "SELECT id FROM cf_agents_jobs WHERE id = ?", "lease:renew",
+      ).toArray()[0]
+      return { renewed, job, released, remainingJob }
+    })
+    expect(second.renewed?.requestStartedAt).toBeGreaterThan(first.lease!.requestStartedAt)
+    expect(second.job?.id).toBe("lease:renew")
+    expect(second.released).toBe(true)
+    expect(second.remainingJob).toBeUndefined()
+  }, 12000)
+
+  it("adopts a pre-service running native container without an old lease record", async () => {
+    const stub = env.CONVERSATION.getByName("C1:lease-job-adoption")
+    const result = await runInDurableObject(stub, async (instance, runtime) => {
+      const container = { running: true, async destroy() { this.running = false }, async setInactivityTimeout() {} }
+      Object.defineProperty((instance as unknown as { ctx: object }).ctx, "container", { configurable: true, value: container })
+      const internal = instance as unknown as {
+        leases: ConversationLease
+        runtime: { stop(): Promise<boolean> }
+      }
+      const state = await instance.fetch(new Request("https://conversation/state", {
+        headers: { "x-conversation-key": "old-native-conversation" },
+      }))
+      const before = await runtime.storage.get("containerLease")
+      const pendingJob = runtime.storage.sql.exec<{ id: string; capability: string }>(
+        "SELECT id, capability FROM cf_agents_jobs WHERE id = ?", "lease:renew",
+      ).toArray()[0]
+      await driveConversationJobs(instance, runtime.storage, ["lease:renew"])
+      const adopted = await runtime.storage.get<Awaited<ReturnType<ConversationLease["status"]>>>("containerLease")
+      container.running = false
+      const stopped = await internal.runtime.stop()
+      const released = stopped && await internal.leases.releaseAfterStop()
+      return { stateStatus: state.status, before, pendingJob, adopted, released,
+        remainingJob: runtime.storage.sql.exec("SELECT id FROM cf_agents_jobs WHERE id = ?", "lease:renew").toArray()[0] }
+    })
+    expect(result.stateStatus).toBe(200)
+    expect(result.before).toBeUndefined()
+    expect(result.pendingJob).toEqual({ id: "lease:renew", capability: "conversation-jobs" })
+    expect(result.adopted).toMatchObject({ desired: "held", status: "acknowledged" })
+    expect(result.released).toBe(true)
+    expect(result.remainingJob).toBeUndefined()
+  })
+
+  it("keeps local state and the held lease when container destruction fails", async () => {
+    const stub = env.CONVERSATION.getByName("C1:lease-stop-failure")
+    const result = await runInDurableObject(stub, async (instance, runtime) => {
+      const container = { running: true, async destroy() { throw new Error("destroy failed") }, async setInactivityTimeout() {} }
+      Object.defineProperty((instance as unknown as { ctx: object }).ctx, "container", { configurable: true, value: container })
+      const internal = instance as unknown as { key?: string; leases: ConversationLease }
+      internal.key = "native-lease-stop-failure"
+      await runtime.storage.put("state", { phase: "idle", sessionID: "ses_keep", marker: "keep", seen: [], pending: {} })
+      await instance.fetch(new Request("https://conversation/state", {
+        headers: { "x-conversation-key": "native-lease-stop-failure" },
+      }))
+      await internal.leases.ensureHeld()
+      const beforeLease = await runtime.storage.get<Awaited<ReturnType<ConversationLease["status"]>>>("containerLease")
+      const response = await instance.fetch(new Request("https://conversation/reset", {
+        method: "POST",
+        headers: { "x-conversation-key": "native-lease-stop-failure" },
+      }))
+      return {
+        status: response.status,
+        state: await runtime.storage.get<Record<string, unknown>>("state"),
+        beforeLease,
+        afterLease: await runtime.storage.get<Awaited<ReturnType<ConversationLease["status"]>>>("containerLease"),
+      }
+    })
+    expect(result.status).toBe(503)
+    expect(result.state).toMatchObject({ sessionID: "ses_keep", marker: "keep" })
+    expect(result.afterLease).toEqual(result.beforeLease)
   })
 })

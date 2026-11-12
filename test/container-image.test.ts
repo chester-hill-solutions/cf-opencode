@@ -17,8 +17,7 @@ type Internal = {
   startContainer(): Promise<boolean>
   startBoundContainer(container: unknown): Promise<boolean>
   doEnsureReady(): Promise<unknown>
-  acquireLease(): Promise<void>
-  releaseLease(): Promise<void>
+  leases: { ensureHeld(): Promise<void> }
 }
 
 function installContainer(instance: unknown, images: Record<string, string>) {
@@ -541,11 +540,10 @@ describe("isolated evented container image selection", () => {
       const fake = installMessagePorts(instance, { eventPersistence: true })
       const internal = instance as unknown as Internal
       let leaseAttempts = 0
-      internal.acquireLease = async () => {
+      internal.leases.ensureHeld = async () => {
         leaseAttempts++
         if (leaseAttempts === 1) throw new Error("container capacity reached")
       }
-      internal.releaseLease = async () => {}
 
       const first = await instance.fetch(new Request("https://conversation/message", {
         method: "POST",
@@ -595,7 +593,7 @@ describe("isolated evented container image selection", () => {
     expect(result.firstPrompts).toBe(0)
     expect(result.sessionsCreated).toBe(1)
     expect(result.bindingAfterRetry).toBe("evented")
-    expect(result.leaseAttempts).toBe(2)
+    expect(result.leaseAttempts).toBeGreaterThanOrEqual(4)
     expect(result.imageStarts).toHaveLength(1)
     expect(result.imageStarts[0]?.image).toBe(EVENTED_IMAGE)
     expect(result.prompts).toBe(1)

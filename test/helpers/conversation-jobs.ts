@@ -1,6 +1,6 @@
 import type { ConversationState } from "../../src/state"
 
-export type ConversationJobID = "turn:observe" | "admission:retry" | "checkpoint:retry" | "recovery:wake" | "legacy:bootstrap"
+export type ConversationJobID = "turn:observe" | "admission:retry" | "checkpoint:retry" | "recovery:wake" | "legacy:bootstrap" | "lease:renew"
 
 /** Test-only clock seam: advance named conversation jobs, never every future job. */
 export async function makeConversationJobsDue(

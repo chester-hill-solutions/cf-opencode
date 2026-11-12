@@ -5,7 +5,7 @@ import {
   type LifecycleJobOutcome,
 } from "agents/lifecycle"
 
-export type ConversationJobKind = "turn:observe" | "admission:retry" | "checkpoint:retry" | "recovery:wake" | "legacy:bootstrap"
+export type ConversationJobKind = "turn:observe" | "admission:retry" | "checkpoint:retry" | "recovery:wake" | "legacy:bootstrap" | "lease:renew"
 
 export interface ConversationJobPayload {
   epoch?: number
@@ -29,6 +29,7 @@ export interface ConversationJobHandlers {
   checkpointRetry(payload: ConversationJobPayload): Promise<LifecycleJobOutcome>
   recoveryWake(payload: ConversationJobPayload): Promise<LifecycleJobOutcome>
   legacyBootstrap(payload: ConversationJobPayload): Promise<LifecycleJobOutcome>
+  leaseRenew(payload: ConversationJobPayload): Promise<LifecycleJobOutcome>
   onJobError(kind: ConversationJobKind, payload: ConversationJobPayload, error: unknown): Promise<LifecycleJobOutcome>
   onMemoryLimit(context: MemoryLimitContext): Promise<void>
 }
@@ -39,6 +40,7 @@ const JOBS: Record<ConversationJobKind, { id: string; fn: string }> = {
   "checkpoint:retry": { id: "checkpoint:retry", fn: "checkpointRetry" },
   "recovery:wake": { id: "recovery:wake", fn: "recoveryWake" },
   "legacy:bootstrap": { id: "legacy:bootstrap", fn: "legacyBootstrap" },
+  "lease:renew": { id: "lease:renew", fn: "leaseRenew" },
 }
 
 const KIND_BY_FUNCTION = new Map(Object.entries(JOBS).map(([kind, value]) => [value.fn, kind as ConversationJobKind]))
@@ -111,6 +113,7 @@ export class ConversationJobs extends LifecycleCapability {
         case "checkpoint:retry": return this.handlers.checkpointRetry(payload)
         case "recovery:wake": return this.handlers.recoveryWake(payload)
         case "legacy:bootstrap": return this.handlers.legacyBootstrap(payload)
+        case "lease:renew": return this.handlers.leaseRenew(payload)
       }
     }) as LifecycleJobOutcome
   }

@@ -36,6 +36,7 @@ import { ConversationRuntime } from "./conversation/runtime"
 import { ConversationUsage, type UsageCutoverLedger } from "./conversation/usage"
 import { ConversationControlPlane } from "./conversation/control-plane"
 import { ConversationImages } from "./conversation/images"
+import { ConversationLease } from "./conversation/lease"
 import { LEGACY_ALARM_MIGRATION_KEY, isFreshLegacyAlarmMigration, type LegacyAlarmMigration } from "./conversation/job-state"
 import type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
 export type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
@@ -130,8 +131,6 @@ const CONTROL_PORT = 4001
 const POLL_MS = 2000
 /** Delay before retrying a checkpoint that failed after a turn. */
 const CHECKPOINT_RETRY_MS = 30_000
-/** Container lease lifetime for the concurrency cap, refreshed per turn. */
-const LEASE_TTL_MS = 10 * 60_000
 /** Admin key exempt from the container cap so onboarding is always reachable. */
 const ONBOARDING_KEY = "onboarding"
 
@@ -175,6 +174,7 @@ export class Conversation extends DurableObject<Env> {
   private readonly usage: ConversationUsage
   private readonly controlPlane: ConversationControlPlane
   private readonly images: ConversationImages
+  private readonly leases: ConversationLease
   private jobEpoch = 0
   private readonly activeLifecycleJobs = new Set<ConversationJobKind>()
   private streaming = false
@@ -188,8 +188,6 @@ export class Conversation extends DurableObject<Env> {
   private admitting = false
   /** Fences admissions and polling while an operator recovery action is in flight. */
   private recoveryAction = false
-  /** This instance holds a container lease from the Settings DO. */
-  private leaseHeld = false
   /** Conversation key, sent by the Worker; admin traffic skips the cap. */
   private key?: string
   /** Onboarding credential epoch copied into this legacy conversation instance. */
@@ -243,11 +241,13 @@ export class Conversation extends DurableObject<Env> {
       checkpointRetry: (payload) => this.runCheckpointRetry(payload),
       recoveryWake: (payload) => this.runRecoveryWake(payload),
       legacyBootstrap: (payload) => this.runLegacyAlarmBootstrap(payload),
+      leaseRenew: (payload) => this.runLeaseRenew(payload),
       onJobError: (kind, payload, error) => this.handleConversationJobError(kind, payload, error),
       onMemoryLimit: (context) => this.onLifecycleMemoryLimit(context),
     })
     this.lifecycle.use(this.jobs)
     this.controlPlane = new ConversationControlPlane({
+      conversationID: ctx.id.toString(),
       storage: ctx.storage,
       store: this.store,
       withClient: (fn, recoverOnRejection) => this.withClient(fn, recoverOnRejection),
@@ -266,6 +266,20 @@ export class Conversation extends DurableObject<Env> {
       }),
       cachedToken: () => this.controlPlane.cachedToken,
       count: (name) => this.count(name),
+    })
+    this.leases = new ConversationLease({
+      storage: ctx.storage,
+      count: (name) => this.count(name),
+      settings: () => this.env.SETTINGS.getByName("global"),
+      identity: {
+        id: ctx.id.toString(),
+        enabled: () => this.nativeLeaseEnabled(),
+        confirmedStopped: () => this.runtime.confirmedStopped,
+      },
+      jobs: {
+        schedule: (at, reason) => this.scheduleConversationJob("lease:renew", at, { reason }),
+        cancel: () => this.jobs.cancel("lease:renew"),
+      },
     })
     this.checkpoints = new ConversationCheckpoints({
       conversationID: ctx.id.toString(),
@@ -333,6 +347,19 @@ export class Conversation extends DurableObject<Env> {
       await this.scheduleConversationJob("legacy:bootstrap", dueAt, { reason: "legacy-alarm-bootstrap" })
       await txn.put<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY, { ...migration, dueAt, scheduled: true })
     })
+    await this.scheduleLeaseAdoptionIfNeeded()
+  }
+
+  private nativeLeaseEnabled(): boolean {
+    return Boolean(this.ctx.container && !this.transport && !this.env.CONTAINER_URL && this.key !== ONBOARDING_KEY)
+  }
+
+  /** Old native containers may predate the durable lease intent and renewal job. */
+  private async scheduleLeaseAdoptionIfNeeded(): Promise<void> {
+    if (!this.nativeLeaseEnabled() || !this.ctx.container?.running || await this.leases.status()) return
+    if (!this.jobs.has("lease:renew")) {
+      await this.scheduleConversationJob("lease:renew", Date.now(), { reason: "adopt-running-lease" })
+    }
   }
 
   /** One legacy alarm reconstructs missing domain intents once; it never prompts. */
@@ -422,6 +449,7 @@ export class Conversation extends DurableObject<Env> {
       await this.jobs.cancel("checkpoint:retry")
       await this.jobs.cancel("recovery:wake")
       await this.jobs.cancel("legacy:bootstrap")
+      await this.jobs.cancel("lease:renew")
       await this.ctx.storage.put<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY, {
         version: 1,
         dueAt: null,
@@ -890,13 +918,12 @@ export class Conversation extends DurableObject<Env> {
       const blocked = await this.blockLifecycleDuringActiveTurn()
       if (blocked) return blocked
       return this.withUsageLifecycle(async () => {
-        try {
-          await this.ctx.container?.destroy()
-        } catch {
-          /* already stopped */
+        if (!(await this.runtime.stop())) {
+          return Response.json({ ok: false, error: "container stop was not confirmed; state was kept" }, { status: 503 })
         }
-        await this.releaseLease()
-        this.runtime.resetAfterStop()
+        if (!(await this.leases.releaseAfterStop())) {
+          return Response.json({ ok: false, error: "container lease release is pending; state was kept" }, { status: 503 })
+        }
         // A reset must not leave a checkpoint that the next cold start would
         // restore over the freshly cleared conversation.
         await this.checkpoints.deleteAll()
@@ -928,14 +955,13 @@ export class Conversation extends DurableObject<Env> {
           { status: 503 },
         )
       }
-      await this.images.clearSnapshot()
-      try {
-        await this.ctx.container?.destroy()
-      } catch {
-        /* already stopped */
+      if (!(await this.runtime.stop())) {
+        return Response.json({ ok: false, error: "container stop was not confirmed; not recycling" }, { status: 503 })
       }
-      await this.releaseLease()
-      this.runtime.resetAfterStop()
+      if (!(await this.leases.releaseAfterStop())) {
+        return Response.json({ ok: false, error: "container lease release is pending; not recycling" }, { status: 503 })
+      }
+      await this.images.clearSnapshot()
       return Response.json({ ok: true })
     })
   }
@@ -947,13 +973,12 @@ export class Conversation extends DurableObject<Env> {
       const blocked = await this.blockLifecycleDuringActiveTurn()
       if (blocked) return blocked
       return this.withUsageLifecycle(async () => {
-        try {
-          await this.ctx.container?.destroy()
-        } catch {
-          /* already stopped */
+        if (!(await this.runtime.stop())) {
+          return Response.json({ ok: false, error: "container stop was not confirmed; state was kept" }, { status: 503 })
         }
-        await this.releaseLease()
-        this.runtime.resetAfterStop()
+        if (!(await this.leases.releaseAfterStop())) {
+          return Response.json({ ok: false, error: "container lease release is pending; state was kept" }, { status: 503 })
+        }
         await this.checkpoints.deleteAll()
         await this.resetConversationJobs()
         this.controlPlane.clearCache()
@@ -1032,37 +1057,6 @@ export class Conversation extends DurableObject<Env> {
     return this.images.captureSnapshot()
   }
 
-  private async acquireLease(): Promise<void> {
-    // Onboarding is admin work and must not be blocked by warm conversations.
-    if (this.key === ONBOARDING_KEY) return
-    const response = await this.env.SETTINGS.getByName("global").fetch(
-      "https://settings/leases/acquire",
-      {
-        method: "POST",
-        body: JSON.stringify({ id: this.ctx.id.toString(), ttlMs: LEASE_TTL_MS }),
-      },
-    )
-    if (response.ok) {
-      this.leaseHeld = true
-      return
-    }
-    void this.count("capacity.rejected")
-    throw new Error("container capacity reached")
-  }
-
-  private async releaseLease(): Promise<void> {
-    if (!this.leaseHeld) return
-    this.leaseHeld = false
-    try {
-      await this.env.SETTINGS.getByName("global").fetch("https://settings/leases/release", {
-        method: "POST",
-        body: JSON.stringify({ id: this.ctx.id.toString() }),
-      })
-    } catch {
-      /* the lease expires on its own */
-    }
-  }
-
   /** Start the container, preferring a snapshot when one is available. */
   private async startContainer(): Promise<boolean> {
     const container = this.ctx.container
@@ -1075,15 +1069,13 @@ export class Conversation extends DurableObject<Env> {
     // Resolve and durably bind the selected image before token creation or
     // lease acquisition. A canary capacity retry then reuses this binding.
     await this.images.prepareContainerImageVariant(container)
+    // The token and lease must exist before the process starts.
+    await this.controlPlane.token()
+    await this.leases.ensureHeld()
     try {
-      // The token must exist before the container process starts, because it is
-      // passed in the container environment.
-      await this.controlPlane.token()
-      await this.acquireLease()
       return await this.startBoundContainer(container)
     } catch (error) {
-      // A failed start must not hold a slot for the lease's full lifetime.
-      await this.releaseLease()
+      if (await this.runtime.stop()) await this.leases.releaseAfterStop()
       throw error
     }
   }
@@ -1576,6 +1568,7 @@ export class Conversation extends DurableObject<Env> {
   private async ensureSession(text: string, transport: Transport, slack?: SlackTarget): Promise<string> {
     if (await this.hasPendingRuntimeUpgrade()) throw new Error("runtime upgrade is pending; an operator must resume it before a session can change")
     await this.ensureReady()
+    await this.leases.ensureHeld()
     if (this.runtime.eventPersistence !== true || !this.runtime.generation ||
       this.runtime.eventPersistenceGeneration !== this.runtime.generation) {
       throw new AccountingPolicyError("runtime cannot retain usage events; upgrade pending")
@@ -1833,7 +1826,6 @@ export class Conversation extends DurableObject<Env> {
       const phase = state.phase ?? "idle"
       if (phase !== "running" && phase !== "settling") return true
       // A long turn can outlive the lease; the poll keeps the slot reserved.
-      void this.acquireLease().catch(() => {})
 
       const sessionID = state.sessionID
       // Context and permissions are independent: fetch them in one round-trip window.
@@ -2948,6 +2940,7 @@ export class Conversation extends DurableObject<Env> {
     await this.lifecycle.start()
     if (!reservation.date) return false
     try {
+      await this.leases.ensureHeld()
       return await this.ctx.storage.transaction(async () => {
         const marked = await this.store.markBudgetReservationDispatched(
           reservation.reservationID,
@@ -3196,6 +3189,20 @@ export class Conversation extends DurableObject<Env> {
     return this.handoffConversationJob("recovery:wake", payload, () => this.processRecoveryWake(payload))
   }
 
+  private async runLeaseRenew(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
+    return this.handoffConversationJob("lease:renew", payload, async () => {
+      const record = await this.leases.status()
+      if (!record) {
+        if (payload.reason === "adopt-running-lease" && this.nativeLeaseEnabled() && this.ctx.container?.running) {
+          await this.leases.ensureHeld()
+        }
+        return undefined
+      }
+      await this.leases.maintain()
+      return undefined
+    })
+  }
+
   private async processRecoveryWake(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
     if (!(await this.jobIsCurrent(payload)) || await this.hasPendingRuntimeUpgrade()) return undefined
     const state = await this.store.get()
@@ -3328,8 +3335,7 @@ export class Conversation extends DurableObject<Env> {
         this.consecutiveFailures = 0
         void this.count("container.recycled")
         logEvent("container.recycled")
-        await this.ctx.container?.destroy().catch(() => {})
-        await this.releaseLease()
+        if (await this.runtime.stop()) await this.leases.releaseAfterStop()
       }
       throw error
     }
@@ -3573,11 +3579,12 @@ export class Conversation extends DurableObject<Env> {
           if (container.images?.evented !== pending.targetImage) {
             return Response.json({ error: "configured evented image changed; upgrade remains pending" }, { status: 409 })
           }
-          if (container.running) {
-            await container.destroy()
-            await this.releaseLease()
+          if (!(await this.runtime.stop())) {
+            return Response.json({ error: "container stop was not confirmed; upgrade remains pending" }, { status: 503 })
           }
-          this.runtime.resetAfterStop()
+          if (!(await this.leases.releaseAfterStop())) {
+            return Response.json({ error: "container lease release is pending; upgrade remains pending" }, { status: 503 })
+          }
           this.runtimeUpgradeResuming = true
           try {
             await this.ensureReady()
@@ -3606,9 +3613,9 @@ export class Conversation extends DurableObject<Env> {
     if (upgradePending && upgradePending.conversationID !== this.ctx.id.toString()) {
       throw new Error("runtime upgrade intent belongs to another conversation")
     }
-    if (this.leaseHeld) void this.acquireLease().catch(() => {})
     if (this.ctx.container?.running) this.runtime.applyInactivity(this.ctx.container)
     await this.images.loadContainerImageVariant(this.ctx.container)
+    await this.scheduleLeaseAdoptionIfNeeded()
     if (upgradePending && this.ctx.container?.images?.evented !== upgradePending.targetImage) {
       throw new Error("configured evented image does not match the pending upgrade")
     }
@@ -3649,10 +3656,9 @@ export class Conversation extends DurableObject<Env> {
       // a fresh portable archive is safely stored.
       const saved = await this.checkpoints.capture()
       if (!saved) throw new Error("settings changed but checkpoint failed; keeping the current container")
+      if (!(await this.runtime.stop())) throw new Error("container stop was not confirmed; keeping the current runtime")
+      if (!(await this.leases.releaseAfterStop())) throw new Error("container lease release is pending; keeping restart blocked")
       await this.images.clearSnapshot()
-      await container.destroy()
-      await this.releaseLease()
-      this.runtime.resetAfterStop()
     }
 
     // Fast path: this instance already verified the container for this spec.

@@ -37,6 +37,7 @@ export class ConversationRuntime {
   private inactivitySetValue = false
   private imageVariantValue?: "base" | "evented"
   private readying?: Promise<ContainerPort>
+  private stopConfirmedValue = false
 
   constructor(private readonly ports: ConversationRuntimePorts) {}
 
@@ -48,6 +49,10 @@ export class ConversationRuntime {
   get startMode(): "image" | "snapshot" | "none" { return this.startModeValue }
   get inactivitySet(): boolean { return this.inactivitySetValue }
   get imageVariant(): "base" | "evented" | undefined { return this.imageVariantValue }
+  get confirmedStopped(): boolean {
+    const container = this.ports.binding.get()
+    return container ? this.stopConfirmedValue || container.running === false : false
+  }
 
   bindImage(variant: "base" | "evented" | undefined): void {
     this.imageVariantValue = variant
@@ -64,6 +69,7 @@ export class ConversationRuntime {
   }
 
   markVerified(port: ContainerPort, generation: string, eventPersistence: boolean): void {
+    this.stopConfirmedValue = false
     this.recordProof(generation, eventPersistence)
     this.apiPortValue = port
     this.readyValue = true
@@ -84,6 +90,27 @@ export class ConversationRuntime {
   resetAfterStop(): void {
     this.invalidate()
     this.inactivitySetValue = false
+  }
+
+  /** Stop only when the binding confirms destruction; failed stops retain ownership. */
+  async stop(): Promise<boolean> {
+    const container = this.ports.binding.get()
+    if (!container) {
+      // Headless and external-host conversations have no native process to stop.
+      // This is cleanup success, but not a positive native stop proof for leases.
+      this.resetAfterStop()
+      return true
+    }
+    if (container.running !== false) {
+      try {
+        await container.destroy()
+      } catch {
+        return false
+      }
+    }
+    this.stopConfirmedValue = true
+    this.resetAfterStop()
+    return true
   }
 
   ensureReady(load: () => Promise<ContainerPort>): Promise<ContainerPort> {
@@ -109,6 +136,7 @@ export class ConversationRuntime {
       if (snapshot) {
         try {
           container.start({ ...options, image: undefined, containerSnapshot: snapshot } as ContainerStartupOptions)
+          this.stopConfirmedValue = false
           this.startModeValue = "snapshot"
           this.applyInactivity(container)
           span.setAttribute("container.start_mode", "snapshot")
@@ -122,6 +150,7 @@ export class ConversationRuntime {
         }
       }
       container.start(options)
+      this.stopConfirmedValue = false
       this.startModeValue = "image"
       this.applyInactivity(container)
       span.setAttribute("container.start_mode", "image")
@@ -192,7 +221,7 @@ export class ConversationRuntime {
     if (usedSnapshot) {
       this.ports.observations.snapshotStale()
       await this.ports.snapshots.clearSnapshot()
-      await container.destroy().catch(() => {})
+      if (!(await this.stop())) throw new Error("snapshot container stop was not confirmed")
       await this.ports.startup.start()
       if (await ready(300)) return port
     }

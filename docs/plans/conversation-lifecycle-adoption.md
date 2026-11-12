@@ -33,10 +33,10 @@ Execution snapshot (the detailed assignments and release gates remain below):
 |---|---|
 | LC-0 | SDK pin/SQLite compatibility and earlier native smoke verified. |
 | LC-1a | Full alarm cutover verified locally and in CI/native smoke at `8661766` (run 43286834935). |
-| LC-1b | EventStream/heartbeat complete. Durable lease renewal/release recovery in implementation. |
+| LC-1b | EventStream and durable lease renewal/release recovery wired; integrated local checks pass. Runtime-use/idle-close gating remains LC-3. |
 | LC-2 | Checkpoints, private runtime cache/ports, image/snapshot policy, usage replay and control plane extracted. High-level readiness, turns and recovery still open. |
 | LC-3 | Runtime-use gate, no-inference measurement tool and isolated qualification fixture prepared. Close/reopen policy and actual measurements pending. |
-| LC-4 | Allowlisted envelope and checkpoint transitions wired/tested; remaining transition categories pending. |
+| LC-4 | Checkpoint, lease and permission outcome events wired/tested. Recovery-action module prepared; turn/admission/runtime categories pending. |
 | LC-5 | Existing replay/dedupe retained; optional further work not started. |
 
 ### Research baseline
@@ -509,3 +509,16 @@ prove these contracts; the review is not runtime qualification.
   Archive keys/raw errors are excluded; counters and trace sampling are retained.
   Four envelope tests and 16 checkpoint Worker tests pass. Remaining categories
   are not yet standardized.
+- LC-1b now uses stable `lease:renew` on the same SDK capability/queue. Renewal
+  survives eviction and adopts already-running pre-service containers without
+  blocking observation of dispatched work on lease authority availability.
+  Settings cap/TTL policy is unchanged. Destruction has one runtime owner;
+  reset/delete/recycle retain state and retry intent if stop or release is not
+  confirmed. Financial holds are untouched. Full typecheck, 369 Bun plus five
+  runtime tests and all 299 working-tree Worker tests pass (including the
+  prepared native-stream test). The final counter-preservation edit also passed
+  eight focused lease tests. Native smoke must run again on the final rollout.
+- Lease and permission outcome events now share the envelope. Permission
+  resolution is emitted after upstream acknowledgement and local clearing;
+  unknown/stale/failed attempts retain their original behavior. No request IDs,
+  resource paths, tokens or raw errors enter those events.
