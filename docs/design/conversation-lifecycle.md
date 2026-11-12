@@ -1,7 +1,8 @@
 # Conversation lifecycle kernel
 
 Status: LC-0 and Conversation alarm integration verified in CI/native smoke; remaining
-module extraction, lease renewal, idle close and telemetry wiring are pending.
+module extraction, runtime-use gating, idle close and remaining telemetry wiring
+are pending. Durable lease integration passes the current local integrated gate.
 Implementation sequence: [adoption plan](../plans/conversation-lifecycle-adoption.md).
 
 We use `agents@0.33.0` through `agents/lifecycle` on the existing Conversation
@@ -30,12 +31,34 @@ required. Slow work needs a durable backstop before it leaves the alarm handler;
 `waitUntil` keeps the invocation alive, while `trackAlarmWork` observes failures
 for the SDK breaker. A completed old attempt must not cancel a newer intent.
 
+Separate owners now handle encrypted checkpoints, image/snapshot selection,
+runtime cache/ports, usage replay, budget reservations, recovery actions and
+control tokens/permission forms. Settings remains the lease authority: a named
+job renews its ten-minute lease halfway through its acknowledged lifetime.
+Unknown release outcomes retain durable retry intent. Destructive lifecycle
+actions keep state when stop or release is unconfirmed; new dispatch requires
+a valid lease while observation of existing dispatched work remains possible.
+
 The HTTP EventStream capability owns process-local subscribers and its own
 heartbeat job. Replay entries are appended by ConversationStore before broadcast;
 heartbeat comments do not append events or acquire a container. On eviction,
 subscribers disappear and startup removes their orphan heartbeat. Its byte-based
 queue now enforces the intended slow-subscriber threshold; default count-based
 stream buffering did not enforce that byte budget.
+
+HTTP clients retry a submission with the same JSON `idempotencyKey` (1–128
+letters, digits, colon, underscore or hyphen), scoped to the conversation. Never
+reuse a key for different content. A duplicate HTTP 200 acknowledges the retained
+claim, not provider completion; queued HTTP 202 is not a permanent receipt.
+The store keeps 200 recent claims, and prompted/ambiguous dispatches attempt a
+24-hour tombstone. Definite pre-dispatch refusals release the claim; queued
+submissions rely on the bounded claim window. These are bounded dedupe rules,
+not a permanent operation ledger.
+
+SSE clients reconnect with numeric `Last-Event-ID`; the store retains 200 public
+events. An expired cursor receives `reset`, so the client reloads state/context.
+No new snapshot/after/follow API is introduced here. The native durable session
+log remains the accounting evidence source, separate from public replay.
 
 ## Differences from official OpenCodeHarness
 

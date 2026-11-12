@@ -23,6 +23,7 @@ export interface ConversationRuntimePorts {
     clearSnapshot(): Promise<boolean>
   }
   authorization: { controlToken(): Promise<string> }
+  lifecycle?: { beforeStop(): void }
   observations: { snapshotStale(): void; count(name: string): void }
 }
 
@@ -101,6 +102,7 @@ export class ConversationRuntime {
       this.resetAfterStop()
       return true
     }
+    this.ports.lifecycle?.beforeStop()
     if (container.running !== false) {
       try {
         await container.destroy()

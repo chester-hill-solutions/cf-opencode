@@ -20,14 +20,10 @@ import {
   type SlackEventEnvelope,
 } from "./adapters/slack"
 import {
-  failureKey,
   isSettled,
-  latestAssistantReply,
   turnMessages,
-  turnFailure,
   toMillis,
   type MessageInfo,
-  type TurnFailure,
 } from "./messages"
 import type { ConversationEvent } from "./events"
 import { ConversationEventStream } from "./conversation/event-stream"
@@ -39,14 +35,13 @@ import { ConversationControlPlane } from "./conversation/control-plane"
 import { ConversationImages } from "./conversation/images"
 import { ConversationLease } from "./conversation/lease"
 import { ConversationBudgetReservations, type BudgetReservationResult } from "./conversation/budget-reservations"
+import { ConversationTurnExecution } from "./conversation/turn-execution"
 import { LEGACY_ALARM_MIGRATION_KEY, isFreshLegacyAlarmMigration, type LegacyAlarmMigration } from "./conversation/job-state"
 import type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
 export type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
-import { createSseParser } from "./sse"
 import { parseModelRef, type Env } from "./env"
 import { retryAfterSeconds } from "./backoff"
 import { logEvent } from "./log"
-import { withSpan } from "./telemetry"
 import type { HarnessSettings } from "./settings"
 import { staleAction } from "./lifecycle"
 import { nextBudgetReset } from "./budget"
@@ -68,7 +63,6 @@ import {
 import { handleSlackCommand } from "./slack-commands"
 import { hasConnectedProvider } from "./onboarding"
 import { parseSlackCommand } from "./slack-command-format"
-import { answerHint, describeForm, formButtons, type Form } from "./slack-forms"
 import {
   checkSlackImageModel,
   downloadSlackImage,
@@ -121,13 +115,6 @@ function sameOperatorReview(draft: OperatorReconciliationDraft, proposal: Operat
     JSON.stringify(fields.map((field) => [field, proposal[field] ?? null]))
 }
 
-/** The fields of a pending permission the harness forwards. */
-interface PermissionSummary {
-  id: string
-  action: string
-  resources: string[]
-}
-
 const OPENCODE_PORT = 4000
 const CONTROL_PORT = 4001
 const POLL_MS = 2000
@@ -174,15 +161,10 @@ export class Conversation extends DurableObject<Env> {
   private readonly images: ConversationImages
   private readonly leases: ConversationLease
   private readonly budgetReservations: ConversationBudgetReservations
+  private readonly turnExecution: ConversationTurnExecution
   private jobEpoch = 0
   private readonly activeLifecycleJobs = new Set<ConversationJobKind>()
-  private streaming = false
-  private pumping = false
   private consecutiveFailures = 0
-  /** Event names seen on the warm stream, for diagnostics. */
-  private seenEvents = new Map<string, number>()
-  /** Last state of the warm stream: opened, an error, or idle. */
-  private streamState = "idle"
   /** An admission is in flight in this instance; alarms must not reset it. */
   private admitting = false
   /** Fences admissions and polling while an operator recovery action is in flight. */
@@ -221,6 +203,7 @@ export class Conversation extends DurableObject<Env> {
         clearSnapshot: () => this.images.clearSnapshot(),
       },
       authorization: { controlToken: () => this.controlPlane.token() },
+      lifecycle: { beforeStop: () => this.turnExecution.cancelStream() },
       observations: {
         snapshotStale: () => {
           logEvent("snapshot.stale")
@@ -253,7 +236,7 @@ export class Conversation extends DurableObject<Env> {
         fetch: (input, init) => this.env.SETTINGS.getByName("global").fetch(input, init),
       },
       withAdmissionLock: (task) => this.withAdmissionLock(task),
-      live: () => ({ admitting: this.admitting, pumping: this.pumping, activeJobs: this.activeLifecycleJobs.size }),
+      live: () => ({ admitting: this.admitting, pumping: this.turnExecution.isPumping, activeJobs: this.activeLifecycleJobs.size }),
       jobs: {
         epoch: () => this.ensureJobEpoch(),
         scheduleRecovery: (at, payload, allowSealed) => this.scheduleConversationJob("recovery:wake", at, payload, allowSealed),
@@ -319,6 +302,34 @@ export class Conversation extends DurableObject<Env> {
       },
       count: (name) => this.count(name),
       deliverError: (message) => this.deliver({ type: "error", message }),
+    })
+    this.turnExecution = new ConversationTurnExecution({
+      conversationID: ctx.id.toString(),
+      storage: ctx.storage,
+      store: this.store,
+      usage: this.usage,
+      checkpoints: this.checkpoints,
+      controlPlane: this.controlPlane,
+      runtime: {
+        ensureReady: () => this.ensureReady(),
+        withClient: (fn, recoverOnRejection) => this.withClient(fn, recoverOnRejection),
+      },
+      guards: {
+        recovering: () => this.recoveryActions.active,
+        hasPendingUpgrade: () => this.hasPendingRuntimeUpgrade(),
+      },
+      delivery: {
+        event: (event, options) => this.deliver(event, options),
+        toSlack: (event) => this.deliverToSlack(event),
+        slack: (method, body) => this.slack(method, body),
+        count: (name) => this.count(name),
+        slackBotToken: () => this.env.SLACK_BOT_TOKEN,
+      },
+      conversationKey: () => this.key ?? this.ctx.id.name ?? this.ctx.id.toString(),
+      jobs: { schedule: (kind, at, payload) => this.scheduleConversationJob(kind, at, payload) },
+      settings: () => this.settings(),
+      releaseBudgetReservation: (reservation) => this.releaseBudgetReservation(reservation),
+      waitUntil: (promise) => this.ctx.waitUntil(promise),
     })
   }
 
@@ -587,14 +598,16 @@ export class Conversation extends DurableObject<Env> {
     if (url.pathname === "/recycle" && request.method === "POST") return this.onRecycle()
     if (url.pathname === "/debug" && request.method === "GET") {
       return Response.json({
-        streamState: this.streamState,
-        streaming: this.streaming,
+        streamState: this.turnExecution.currentStreamState,
+        streaming: this.turnExecution.isStreaming,
         ready: this.runtime.ready,
-        containerRunning: this.ctx.container?.running ?? false,
+        containerRunning: this.transport || this.env.CONTAINER_URL || !this.ctx.container
+          ? undefined
+          : this.ctx.container.running,
         runtimeGeneration: this.runtime.generation,
         startMode: this.runtime.startMode,
         snapshot: Boolean(await this.images.snapshotHandle()),
-        events: Object.fromEntries(this.seenEvents),
+        events: Object.fromEntries(this.turnExecution.observedEvents),
       })
     }
     if (url.pathname === "/debug/messages" && request.method === "GET") {
@@ -741,7 +754,7 @@ export class Conversation extends DurableObject<Env> {
       await this.store.markTombstone(`msg:${idempotencyKey}`).catch(() => {})
     }
     const settings = await this.settings().catch(() => undefined)
-    if (settings?.streaming) this.ctx.waitUntil(this.startStream(sessionID))
+    if (settings?.streaming) this.ctx.waitUntil(this.turnExecution.startStream(sessionID))
     return Response.json({ ok: true, sessionID })
   }
 
@@ -1229,7 +1242,7 @@ export class Conversation extends DurableObject<Env> {
   private async requireSlackIdle(): Promise<ConversationState> {
     const state = await this.store.get()
     if (await this.hasPendingRuntimeUpgrade()) throw new Error("A runtime upgrade is pending. Resume it before changing the model or session.")
-    if (this.admitting || this.pumping || this.recoveryActions.active || this.isBusy(state.phase) || state.queued || state.budgetReservation) {
+    if (this.admitting || this.turnExecution.isPumping || this.recoveryActions.active || this.isBusy(state.phase) || state.queued || state.budgetReservation) {
       throw new Error("This conversation has unfinished work. Use `!stop`, then wait for settlement; `!status` shows any retained usage hold.")
     }
     return state
@@ -1540,7 +1553,7 @@ export class Conversation extends DurableObject<Env> {
       await this.store.markTombstone(input.eventID).catch(() => {})
     }
     const settings = await this.settings().catch(() => undefined)
-    if (settings?.streaming) this.ctx.waitUntil(this.startStream(sessionID))
+    if (settings?.streaming) this.ctx.waitUntil(this.turnExecution.startStream(sessionID))
     return Response.json({ ok: true, sessionID })
   }
 
@@ -1757,272 +1770,9 @@ export class Conversation extends DurableObject<Env> {
 
   // -------------------------------------------------------------- reply pump
 
-  /**
-   * Warm stream: read OpenCode's event stream while the container is up and
-   * pump on completion. Alarms remain the fallback if the stream drops.
-   */
-  private async startStream(sessionID: string): Promise<void> {
-    if (this.streaming) return
-    const settings = await this.settings().catch(() => undefined)
-    if (!settings?.streaming) return
-    this.streaming = true
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 10 * 60_000)
-    try {
-      const port = await this.ensureReady()
-      const res = await port.fetch("http://container/api/event", {
-        headers: {
-          accept: "text/event-stream",
-        },
-        signal: controller.signal,
-      })
-      if (!res.ok || !res.body) {
-        this.streamState = `http ${res.status}`
-        return
-      }
-      this.streamState = "opened"
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      const parse = createSseParser((message) => {
-        // OpenCode's stream may name frames `message` and put the type in the
-        // JSON payload, so prefer the payload's `type` when present.
-        let parsed: { type?: string; data?: { sessionID?: string } } | undefined
-        if (message.data) {
-          try {
-            parsed = JSON.parse(message.data) as { type?: string }
-          } catch {
-            parsed = undefined
-          }
-        }
-        const name = message.event && message.event !== "message" ? message.event : parsed?.type
-        if (!name) return
-        this.seenEvents.set(name, (this.seenEvents.get(name) ?? 0) + 1)
-        if (name === "session.execution.succeeded") void this.pumpOnce()
-        if (name === "session.execution.failed") void this.pumpOnce()
-        if (name === "session.execution.interrupted") void this.pumpOnce()
-        if (name === "form.created" || name === "form.replied" || name === "form.cancelled") void this.pumpOnce()
-        if (
-          (name === "session.step.ended" || name === "session.step.failed" ||
-            name === "session.usage.recorded" || name === "session.usage.updated") &&
-          parsed?.data?.sessionID === sessionID
-        ) {
-          // Warm events only trigger the same durable replay path; their
-          // cumulative snapshots are never sent directly to Settings.
-          this.ctx.waitUntil(this.usage.refresh(sessionID).catch(() => {}))
-        }
-      })
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (done) break
-        parse(decoder.decode(value, { stream: true }))
-      }
-    } catch (error) {
-      this.streamState = errorMessage(error)
-      /* fall back to the alarm pump */
-    } finally {
-      clearTimeout(timeout)
-      this.streaming = false
-      const state = await this.store.get()
-      if (state.budgetReservation?.dispatched) {
-        await this.scheduleConversationJob("turn:observe", Date.now() + POLL_MS, {
-          reservationID: state.budgetReservation.reservationID,
-          reservationDate: state.budgetReservation.date,
-          sessionID,
-          reason: "stream-ended",
-        })
-      }
-    }
-  }
-
-  /** One poll: deliver new assistant text, permissions, settle + checkpoint. */
-  private async pumpOnce(): Promise<boolean> {
-    if (this.pumping || this.recoveryActions.active) return false
-    this.pumping = true
-    try {
-      const state = await this.store.get()
-      if (!state.sessionID) {
-        await this.store.advance("idle")
-        return true
-      }
-      // A late alarm or stream event can arrive after the turn settled. Do not
-      // re-deliver or checkpoint an idle conversation. `settling` is allowed so
-      // a restart in the middle of a settle can finish it.
-      const phase = state.phase ?? "idle"
-      if (phase !== "running" && phase !== "settling") return true
-      // A long turn can outlive the lease; the poll keeps the slot reserved.
-
-      const sessionID = state.sessionID
-      // Context and permissions are independent: fetch them in one round-trip window.
-      const [messages, pending, questions] = await Promise.all([
-        this.withClient((client) => client.session.context({ sessionID })) as Promise<MessageInfo[]>,
-        this.withClient((client) => client.permission.list({ sessionID })).catch(
-          () => [] as PermissionSummary[],
-        ),
-        state.slack ? this.controlPlane.pendingForms(sessionID).catch(() => [] as Form[]) : Promise.resolve([] as Form[]),
-      ])
-      const reply = latestAssistantReply(messages, state.turnBaseline)
-      const settled = isSettled(messages, state.turnBaseline)
-      // A terminal `idle` error means the turn is over even though no assistant
-      // message completed, so it must settle, checkpoint and go idle.
-      // Settlement never hides a failure: a step that errored still completes,
-      // but with an empty body, so report the error rather than going quiet.
-      const failure = turnFailure(messages, state.turnBaseline, state.runStartedAt)
-
-      if (reply && reply !== state.lastReply) {
-        // SSE streams every change; Slack gets one message per turn, at settle.
-        await this.deliver({ type: "assistant", text: reply }, { slack: false })
-        await this.store.patch({ lastReply: reply })
-      }
-
-      await this.pollPermissions(sessionID, pending)
-      await this.pollQuestions(sessionID, questions)
-
-      if (settled || failure) {
-        await this.finishTurn(state, reply, failure, messages)
-        return true
-      }
-      return false
-    } finally {
-      this.pumping = false
-    }
-  }
-
-  /**
-   * End-of-turn bookkeeping, shared by the poll path and the timeout guard.
-   * Persists only after delivery so a failed post is retried next time.
-   */
-  private async finishTurn(
-    state: ConversationState,
-    reply: string,
-    failure?: TurnFailure,
-    messages?: MessageInfo[],
-  ): Promise<void> {
-    return withSpan(
-      "conversation.settle",
-      async (span) => {
-        span.setAttributes({
-          "conversation.failed": Boolean(failure),
-          ...(state.runStartedAt ? { "conversation.turn_ms": Date.now() - state.runStartedAt } : {}),
-          "conversation.reply_chars": reply.length,
-        })
-        await this.settleTurn(state, reply, failure, messages)
-      },
-      { "conversation.key": this.key ?? "unknown" },
-    )
-  }
-
-  /** End-of-turn bookkeeping; runs inside the settle span. */
-  private async settleTurn(
-    state: ConversationState,
-    reply: string,
-    failure?: TurnFailure,
-    messages?: MessageInfo[],
-  ): Promise<void> {
-    await this.store.advance("settling")
-    void this.count(failure ? "turn.failed" : "turn.settled")
-    logEvent(failure ? "turn.failed" : "turn.settled", {
-      ...(state.runStartedAt ? { durationMs: Date.now() - state.runStartedAt } : {}),
-      ...(failure ? { error: failure.message.slice(0, 200) } : {}),
-      queued: Boolean(state.queued),
-    })
-    if (state.budgetReservation?.dispatched) {
-      const currentTurn = messages ? turnMessages(messages, state.turnBaseline) : []
-      const terminalAssistant = currentTurn.filter((message) => message.type === "assistant").at(-1)
-      const hasTerminalUsage = Boolean(
-        messages && isSettled(messages, state.turnBaseline) &&
-          terminalAssistant && typeof terminalAssistant.cost === "number" &&
-          Number.isFinite(terminalAssistant.cost) && terminalAssistant.cost >= 0,
-      )
-      if (!hasTerminalUsage) {
-        // A terminal runtime error remains visible, but it does not prove the
-        // provider did no work. Keep the hold until current-turn usage exists.
-        if (failure) {
-          const key = failureKey(failure)
-          if (key !== state.reportedError) {
-            await this.deliver({ type: "error", message: failure.message })
-            await this.store.patch({ reportedError: key, lastTurnError: failure.message })
-          }
-        }
-        await this.pauseSettlement("terminal current-turn assistant usage is unavailable; reservation retained")
-        return
-      }
-    }
-    // A terminal context report must be acknowledged before releasing the
-    // exact hold acquired for this turn. A timeout has no terminal context and
-    // cannot prove that provider usage was zero.
-    if (messages) {
-      try {
-        await this.usage.recordContext(messages)
-      } catch (error) {
-        await this.pauseSettlement(`usage report failed: ${errorMessage(error)}`)
-        return
-      }
-    } else if (state.budgetReservation) {
-      await this.pauseSettlement("terminal usage context is unavailable; reservation retained")
-      return
-    }
-    if (state.budgetReservation) {
-      if (failure?.message === "turn timed out") {
-        await this.pauseSettlement("turn timed out without terminal usage context; reservation retained")
-        return
-      }
-      if (!(await this.releaseBudgetReservation(state.budgetReservation))) {
-        await this.pauseSettlement("reservation release was not acknowledged; reservation retained")
-        return
-      }
-      await this.store.patch({ settlementError: undefined })
-    }
-    if (failure) {
-      const key = failureKey(failure)
-      if (key !== state.reportedError) {
-        await this.deliver({ type: "error", message: failure.message })
-        await this.store.patch({ reportedError: key, lastTurnError: failure.message })
-      }
-    }
-    if (reply && reply !== state.lastSlackReply) {
-      await this.deliverToSlack({ type: "assistant", text: reply })
-      await this.store.patch({ lastSlackReply: reply })
-    }
-    await this.deliver({ type: "settled" })
-    const saved = await this.checkpoints.capture()
-    if (!saved && !failure) {
-      await this.deliver({
-        type: "error",
-        message: "workspace checkpoint failed; retrying in the background",
-      })
-    }
-    const afterSettle = await this.store.get()
-    await this.ctx.storage.transaction(async () => {
-      await this.store.advance("idle")
-      if (afterSettle.queued) await this.scheduleConversationJob(
-        "admission:retry",
-        Math.max(Date.now() + 1000, afterSettle.queued.nextAttemptAt ?? 0),
-        { queueID: afterSettle.queued.id, reason: "turn-settled-queue-wake" },
-      )
-    })
-  }
-
-  /** Keep terminal work visible and retry without promoting queued work. */
-  private async pauseSettlement(message: string): Promise<void> {
-    const current = await this.store.get()
-    const newlyPaused = current.settlementError !== message
-    await this.ctx.storage.transaction(async () => {
-      if (newlyPaused) await this.store.patch({ settlementError: message })
-      await this.scheduleConversationJob("turn:observe", Date.now() + POLL_MS, {
-        reservationID: current.budgetReservation?.reservationID,
-        reservationDate: current.budgetReservation?.date,
-        sessionID: current.sessionID,
-        reason: "settlement-paused",
-      })
-    }).catch(() => {})
-    if (newlyPaused) {
-      await this.deliver({ type: "error", message: `Settlement paused: ${message}` }).catch(() => {})
-    }
-  }
-
   private async previewOperatorReconciliation(kind: OperatorReconciliationKind): Promise<Response> {
     return this.withAdmissionLock(async () => {
-      if (this.admitting || this.pumping || this.recoveryActions.active) {
+      if (this.admitting || this.turnExecution.isPumping || this.recoveryActions.active) {
         return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
       }
       try {
@@ -2040,7 +1790,7 @@ export class Conversation extends DurableObject<Env> {
   private async buildOperatorReconciliationDraft(kind: OperatorReconciliationKind): Promise<OperatorReconciliationPreviewResult> {
     const conversationID = this.ctx.id.toString()
     const state = await this.store.get()
-    if (this.admitting || this.pumping || !this.recoveryActions.active || state.queued) {
+    if (this.admitting || this.turnExecution.isPumping || !this.recoveryActions.active || state.queued) {
       return { ok: false, status: 409, error: "conversation has live or queued work" }
     }
     const reservation = state.budgetReservation
@@ -2328,7 +2078,7 @@ export class Conversation extends DurableObject<Env> {
     }
 
     return this.withAdmissionLock(async () => {
-      if (this.admitting || this.pumping || this.recoveryActions.active) {
+      if (this.admitting || this.turnExecution.isPumping || this.recoveryActions.active) {
         return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
       }
       try {
@@ -2770,7 +2520,7 @@ export class Conversation extends DurableObject<Env> {
     if (payload.reservationID && (!reservation?.dispatched || reservation.reservationID !== payload.reservationID ||
       reservation.date !== payload.reservationDate)) return undefined
     if (!reservation?.dispatched && !["running", "settling"].includes(before.phase ?? "idle")) return undefined
-    if (this.recoveryActions.active || this.admitting || this.pumping) return { rescheduleAt: Date.now() + POLL_MS }
+    if (this.recoveryActions.active || this.admitting || this.turnExecution.isPumping) return { rescheduleAt: Date.now() + POLL_MS }
 
     const phase = before.phase ?? "idle"
     if (reservation?.dispatched && phase !== "running" && phase !== "settling") {
@@ -2791,23 +2541,23 @@ export class Conversation extends DurableObject<Env> {
     }
     if (action === "timeout") {
       if (state.budgetReservation?.dispatched) {
-        await this.pauseSettlement("turn exceeded its time limit; dispatched reservation retained while context is checked")
+        await this.turnExecution.pauseSettlement("turn exceeded its time limit; dispatched reservation retained while context is checked")
       } else {
         void this.count("turn.timedout")
         logEvent("turn.timedout", {
           ...(state.runStartedAt ? { durationMs: Date.now() - state.runStartedAt } : {}),
         })
-        await this.finishTurn(state, state.lastReply ?? "", { message: "turn timed out" })
+        await this.turnExecution.finishTimedOutTurn(state, state.lastReply ?? "", { message: "turn timed out" })
         return undefined
       }
     }
-    const settled = await this.pumpOnce()
+    const settled = await this.turnExecution.pumpOnce()
     if (settled) {
       const after = await this.store.get()
       if (!after.budgetReservation?.dispatched) return undefined
     }
     const settings = await this.settings().catch(() => undefined)
-    return { rescheduleAt: Date.now() + (this.streaming ? 30_000 : (settings?.pollSeconds ?? 2) * 1000) }
+    return { rescheduleAt: Date.now() + (this.turnExecution.isStreaming ? 30_000 : (settings?.pollSeconds ?? 2) * 1000) }
   }
 
   private async runAdmissionRetry(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
@@ -2821,7 +2571,7 @@ export class Conversation extends DurableObject<Env> {
       if (!state.queued || state.queued.id !== payload.queueID) return undefined
       const due = state.queued.nextAttemptAt ?? 0
       if (Date.now() < due) return { rescheduleAt: due }
-      if (this.admitting || this.pumping || this.recoveryActions.active) return { rescheduleAt: Date.now() + POLL_MS }
+      if (this.admitting || this.turnExecution.isPumping || this.recoveryActions.active) return { rescheduleAt: Date.now() + POLL_MS }
       await this.drainQueue()
       const after = await this.store.get()
       if (!after.queued || after.queued.id !== payload.queueID) return undefined
@@ -2841,7 +2591,7 @@ export class Conversation extends DurableObject<Env> {
     const due = state.checkpointRetryAt ?? Date.now() + CHECKPOINT_RETRY_MS
     if (!state.checkpointRetryAt) await this.store.patch({ checkpointRetryAt: due })
     if (Date.now() < due) return { rescheduleAt: due }
-    if ((state.phase ?? "idle") !== "idle" || this.admitting || this.pumping || this.recoveryActions.active) {
+    if ((state.phase ?? "idle") !== "idle" || this.admitting || this.turnExecution.isPumping || this.recoveryActions.active) {
       return { rescheduleAt: Date.now() + POLL_MS }
     }
     await this.recoveryActions.runAction(() => this.checkpoints.retry())
@@ -2872,7 +2622,7 @@ export class Conversation extends DurableObject<Env> {
     if (payload.reason === "stale-admission-recovery") {
       if ((state.phase ?? "idle") !== "admitting" || state.budgetReservation?.dispatched ||
         (payload.admissionID && state.admissionID !== payload.admissionID)) return undefined
-      if (this.recoveryActions.active || this.admitting || this.pumping) return { rescheduleAt: Date.now() + POLL_MS }
+      if (this.recoveryActions.active || this.admitting || this.turnExecution.isPumping) return { rescheduleAt: Date.now() + POLL_MS }
       if (staleAction(state, Date.now(), false) !== "admission") return undefined
       const queueID = state.queued?.id ?? (state.queued ? crypto.randomUUID() : undefined)
       const retryAt = state.queued ? Math.max(state.queued.nextAttemptAt ?? 0, Date.now()) : undefined
@@ -2897,7 +2647,7 @@ export class Conversation extends DurableObject<Env> {
     const reservation = state.budgetReservation
     if (!reservation?.dispatched || reservation.reservationID !== payload.reservationID ||
       reservation.date !== payload.reservationDate) return undefined
-    if (this.recoveryActions.active || this.admitting || this.pumping) return { rescheduleAt: Date.now() + POLL_MS }
+    if (this.recoveryActions.active || this.admitting || this.turnExecution.isPumping) return { rescheduleAt: Date.now() + POLL_MS }
     // This wake only observes/reconciles the already dispatched prompt.
     if (!(["running", "settling"].includes(state.phase ?? "idle"))) await this.resumeDispatchedTurn(false)
     await this.scheduleConversationJob("turn:observe", Date.now() + POLL_MS, {
@@ -2920,54 +2670,6 @@ export class Conversation extends DurableObject<Env> {
     // Retain the existing owner and work; SDK retries are disabled so a failed
     // wake is retried only by this bounded domain backoff.
     return { rescheduleAt: Date.now() + 30_000 }
-  }
-
-  private async pollPermissions(sessionID: string, pending: PermissionSummary[]): Promise<void> {
-    if (pending.length === 0) return
-    const state = await this.store.get()
-    const fresh = pending.filter((request) => !state.pending[request.id])
-    if (fresh.length === 0) return
-    // One read and one write for the whole batch.
-    await this.store.rememberPermissions(fresh.map((request) => request.id), sessionID)
-    for (const request of fresh) {
-      await this.deliver({
-        type: "permission",
-        requestID: request.id,
-        action: request.action,
-        resources: request.resources,
-      })
-    }
-  }
-
-  private async pollQuestions(sessionID: string, forms: Form[]): Promise<void> {
-    if (!forms.length || !this.env.SLACK_BOT_TOKEN) return
-    const state = await this.store.get()
-    if (state.sessionID !== sessionID || !state.slack) return
-    const key = this.key ?? this.ctx.id.name ?? this.ctx.id.toString()
-    for (const form of forms) {
-      if (state.announcedForms?.includes(form.id)) continue
-      const text = `${describeForm(form)}\n${answerHint(form)}`
-      const common = { key, requestID: form.id, channel: state.slack.channel, sessionID }
-      const actions = formButtons(form).map((option) => ({
-        type: "button", text: { type: "plain_text", text: option.text },
-        ...(option.style ? { style: option.style } : {}), action_id: "form_answer",
-        value: JSON.stringify({ ...common, ...JSON.parse(option.value) }),
-      })).filter((action) => action.value.length <= 2000)
-      // Slack requires action_id to be unique inside an actions block. Each
-      // choice gets its own block while sharing the same authenticated handler.
-      const blocks: Record<string, unknown>[] = [
-        { type: "section", text: { type: "mrkdwn", text: text.slice(0, 2800) } },
-        ...actions.map((action) => ({ type: "actions", elements: [action] })),
-        { type: "actions", elements: [{ type: "button", text: { type: "plain_text", text: "Skip question" },
-          action_id: "form_cancel", value: JSON.stringify(common) }] },
-      ]
-      await this.slack("chat.postMessage", {
-        channel: state.slack.channel, text,
-        ...(state.slack.replyTs ? { thread_ts: state.slack.replyTs } : {}), blocks,
-      })
-      const current = await this.store.get()
-      if (current.sessionID === sessionID) await this.store.patch({ announcedForms: [...(current.announcedForms ?? []), form.id].slice(-100) })
-    }
   }
 
   // ---------------------------------------------------------------- container
@@ -3025,7 +2727,7 @@ export class Conversation extends DurableObject<Env> {
 
   private async previewRuntimeUpgrade(): Promise<Response> {
     return this.withAdmissionLock(async () => {
-      if (this.admitting || this.pumping || this.recoveryActions.active) {
+      if (this.admitting || this.turnExecution.isPumping || this.recoveryActions.active) {
         return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
       }
       try {
@@ -3063,7 +2765,7 @@ export class Conversation extends DurableObject<Env> {
     if (state.queued) blockers.push("queued_work")
     if (state.budgetReservation) blockers.push("local_usage_hold")
     if (state.checkpointPending) blockers.push("checkpoint_pending")
-    if (this.admitting || this.pumping || !this.recoveryActions.active) blockers.push("live_local_operation")
+    if (this.admitting || this.turnExecution.isPumping || !this.recoveryActions.active) blockers.push("live_local_operation")
     const target = this.ctx.container?.images?.evented
     const targetImage = typeof target === "string" ? target : ""
     if (!/^[a-zA-Z0-9._:/-]+@sha256:[a-f0-9]{64}$/.test(targetImage)) blockers.push("pinned_evented_image_unavailable")
@@ -3190,7 +2892,7 @@ export class Conversation extends DurableObject<Env> {
 
   private async applyRuntimeUpgrade(expectedPlanID: string): Promise<Response> {
     return this.withAdmissionLock(async () => {
-      if (this.admitting || this.pumping || this.recoveryActions.active) {
+      if (this.admitting || this.turnExecution.isPumping || this.recoveryActions.active) {
         return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
       }
       try {
@@ -3229,7 +2931,7 @@ export class Conversation extends DurableObject<Env> {
           const ledger = await this.usage.ledger().catch(() => undefined)
           if (!ledger || ledger.conversationID !== this.ctx.id.toString() || ledger.holds.length || ledger.blockers.length ||
             current.sessionID !== pending.sessionID || current.queued || current.budgetReservation || current.checkpointPending ||
-            (current.phase ?? "idle") !== "idle" || this.admitting || this.pumping) {
+            (current.phase ?? "idle") !== "idle" || this.admitting || this.turnExecution.isPumping) {
             return Response.json({ error: "runtime upgrade resume is blocked by changed work or usage state" }, { status: 409 })
           }
           await this.validateRuntimeUpgradeArchive(pending.checkpointManifest)
@@ -3285,7 +2987,7 @@ export class Conversation extends DurableObject<Env> {
     // A warm event stream can stay open across idle turns; only a live turn
     // should protect the container from a settings-driven restart.
     const busy =
-      this.pumping ||
+      this.turnExecution.isPumping ||
       (this.key === ONBOARDING_KEY && this.onboardingOperations > 0) ||
       state.budgetReservation !== undefined ||
       state.phase === "running" ||
@@ -3569,13 +3271,13 @@ export class Conversation extends DurableObject<Env> {
   }
 
   private async drainQueue(): Promise<boolean> {
-    if (this.admitting || this.pumping || this.recoveryActions.active) return false
+    if (this.admitting || this.turnExecution.isPumping || this.recoveryActions.active) return false
     // Claim the queued work under the same lock as admissions, so a new
     // message cannot start while the queue is being drained.
     const queued = await this.withAdmissionLock(async () => {
       const state = await this.store.get()
       // The warm stream stays connected while idle; it must not block the queue.
-      if (!state.queued || this.admitting || this.pumping || this.recoveryActions.active || state.budgetReservation?.dispatched) return undefined
+      if (!state.queued || this.admitting || this.turnExecution.isPumping || this.recoveryActions.active || state.budgetReservation?.dispatched) return undefined
       if (Date.now() < (state.queued.nextAttemptAt ?? 0)) return undefined
       const phase = state.phase ?? "idle"
       if (phase === "running" || phase === "settling" || phase === "admitting") return undefined
@@ -3698,7 +3400,7 @@ export class Conversation extends DurableObject<Env> {
     logEvent("queue.drained", { attempts: queued.attempts })
     await this.recordAcceptedTurn(baseline)
     const settings = await this.settings().catch(() => undefined)
-    if (settings?.streaming) this.ctx.waitUntil(this.startStream(sessionID))
+    if (settings?.streaming) this.ctx.waitUntil(this.turnExecution.startStream(sessionID))
     return true
   }
 

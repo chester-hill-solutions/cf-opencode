@@ -150,6 +150,16 @@ describe("isolated evented container image selection", () => {
     })
   })
 
+  it("leaves container running state unknown when transport is external", async () => {
+    const stub = env.CONVERSATION.getByName("runtime-debug-external-state")
+    const result = await runInDurableObject(stub, async (instance) => {
+      instance.transport = () => ({ fetch: async () => new Response(null) })
+      const response = await instance.fetch(new Request("https://conversation/debug"))
+      return response.json() as Promise<Record<string, unknown>>
+    })
+    expect(result.containerRunning).toBeUndefined()
+  })
+
   beforeEach(async () => {
     env.EVENTED_FRESH_CONVERSATIONS = undefined
     await resetSettings()

@@ -534,3 +534,13 @@ prove these contracts; the review is not runtime qualification.
   typecheck pass. Retry acknowledgement emits `recovery.scheduled`, not a claim
   that asynchronous recovery has already completed. A further 253 inline
   coordinator lines were removed.
+- Native turn polling/settlement and stream ownership now live in
+  `ConversationTurnExecution`. Physical stop synchronously fences the old
+  stream, and explicit bounded draining is available for idle close. Tests cover
+  pump singleflight, late-body cancellation, cancellation before destruction,
+  and one stored assistant event plus one Slack post. Focused turn/lifecycle,
+  checkpoint and stream/image suites and full typecheck pass. The coordinator
+  lost 359 inline lines; runtime-use/idle policy still awaits integration.
+- The internal note now documents exact HTTP idempotency and SSE cursor limits.
+  A new snapshot/after/follow protocol and permanent message receipts remain
+  optional deferred work, not guarantees implied by this refactor.
