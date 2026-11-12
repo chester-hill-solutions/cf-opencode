@@ -166,6 +166,12 @@ For work that cannot finish in a short job step:
 
 Proposed jobs; one table, separately owned intents:
 
+Implementation simplification: the first four intents use one permanent
+`conversation-jobs` SDK capability, with explicit domain handlers and narrow
+scheduling ports. Extraction must retain that queue owner rather than migrate
+pending jobs between capability IDs. The table's owners below describe domain
+ownership; EventStream owns its own SDK capability and heartbeat job.
+
 | Stable ID | Owner | Due / behavior |
 |---|---|---|
 | `turn:observe` | TurnWork capability | Current poll interval or warm-stream watchdog; observe/settle and apply existing stale rules; never submit a prompt. |
@@ -372,3 +378,14 @@ prove these contracts; the review is not runtime qualification.
   bindings as before; four negative/positive boundary tests pass. A later
   overlapping typecheck saw incomplete LC-1 methods, so integrated checks must
   run after that owner hands off rather than treating its partial file as final.
+- Verified LC-0 snapshot: `5b10612`. The production cutover is still uncommitted;
+  the fixture and config-boundary changes are isolated on the verification branch.
+- LC-0 native CI passed both application and container smoke jobs in
+  [run 43268073478](https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43268073478).
+- LC-1b's independent EventStream capability passed five real Worker tests and
+  source/Worker typechecks. Its direct local-stream regression found and fixed
+  an existing buffer bug: the old default stream counted chunks against a
+  byte-based threshold. An explicit byte-length strategy now closes an oversized
+  slow stream and removes its heartbeat. Replay, comments, last-disconnect
+  cleanup and actual orphan-job eviction remain covered. Coordinator wiring and
+  lease renewal are still pending; this is not LC-1b completion.

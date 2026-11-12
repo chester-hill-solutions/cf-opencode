@@ -6,8 +6,27 @@ import {
   type MemoryLimitContext,
 } from "agents/lifecycle"
 import type { Env } from "../../src/env"
+import { ConversationEventStream } from "../../src/conversation/event-stream"
+import { ConversationStore } from "../../src/state"
+import type { ConversationEvent } from "../../src/events"
 
 type ProbePayload = { value?: string; wait?: boolean; outcomeAt?: number }
+
+class ProbeEventStream extends ConversationEventStream {
+  async enqueueHeartbeatAt(time: number): Promise<void> {
+    await this.lifecycle.jobs.push({
+      id: "sse:heartbeat",
+      fn: "heartbeat",
+      time,
+      retry: { maxAttempts: 1 },
+      singleflight: true,
+    })
+  }
+
+  async rescheduleHeartbeat(time: number): Promise<void> {
+    await this.lifecycle.jobs.reschedule("sse:heartbeat", time)
+  }
+}
 
 class TerminalProbeCapability extends LifecycleCapability {
   constructor(private readonly host: LifecycleProbe) {
@@ -48,11 +67,16 @@ class TerminalProbeCapability extends LifecycleCapability {
 export class LifecycleProbe extends DurableObject<Env> {
   private readonly lifecycle: Lifecycle<Env>
   private readonly terminalCapability: TerminalProbeCapability
+  private readonly eventStore: ConversationStore
+  private readonly eventStream: ProbeEventStream
   private releaseBlockedJob: (() => void) | undefined
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
+    this.eventStore = new ConversationStore(ctx.storage)
     this.lifecycle = new Lifecycle(this)
+    this.eventStream = new ProbeEventStream(this.eventStore)
+    this.lifecycle.use(this.eventStream)
     this.terminalCapability = new TerminalProbeCapability(this)
     this.lifecycle.use(this.terminalCapability)
   }
@@ -74,6 +98,43 @@ export class LifecycleProbe extends DurableObject<Env> {
 
   async onRequest(request: Request): Promise<Response> {
     const url = new URL(request.url)
+    if (url.pathname === "/events") return this.eventStream.open(request)
+    if (url.pathname === "/local-backpressure") {
+      const response = await this.eventStream.open(new Request("https://probe/events"))
+      const reader = response.body!.getReader()
+      const connected = new TextDecoder().decode((await reader.read()).value) === ": connected\n\n"
+      const oversized = { type: "assistant", text: "x".repeat(70_000) } satisfies ConversationEvent
+      const oversizedSeq = await this.eventStore.appendEvent(oversized)
+      await this.eventStream.publish(oversized, oversizedSeq)
+      const nextSeq = await this.eventStore.appendEvent({ type: "settled" })
+      await this.eventStream.publish({ type: "settled" }, nextSeq)
+      const frame = await reader.read()
+      const closed = (await reader.read()).done === true
+      const heartbeatJobs = [...this.ctx.storage.sql.exec<{ id: string }>(
+        "SELECT id FROM cf_agents_jobs WHERE id = ?",
+        "sse:heartbeat",
+      )]
+      return Response.json({
+        connected,
+        deliveredBytes: frame.value?.byteLength ?? 0,
+        closed,
+        heartbeatRetained: heartbeatJobs.length > 0,
+      })
+    }
+    if (url.pathname === "/emit") {
+      const event = await request.json() as ConversationEvent
+      const seq = await this.eventStore.appendEvent(event)
+      await this.eventStream.publish(event, seq)
+      return Response.json({ seq })
+    }
+    if (url.pathname === "/heartbeat-now") {
+      await this.eventStream.rescheduleHeartbeat(Date.now())
+      return this.atomicSnapshot()
+    }
+    if (url.pathname === "/orphan-heartbeat") {
+      await this.eventStream.enqueueHeartbeatAt(Date.now() + 15_000)
+      return this.atomicSnapshot()
+    }
     if (url.pathname === "/ping") {
       return Response.json({ name: this.lifecycle.name, started: this.lifecycle.isStarted() })
     }
@@ -201,6 +262,8 @@ export class LifecycleProbe extends DurableObject<Env> {
       ran: await this.ctx.storage.get("probe:ran") ?? null,
       alarms: await this.ctx.storage.get<number>("probe:alarms") ?? 0,
       starts: await this.ctx.storage.get<number>("probe:starts") ?? 0,
+      seq: await this.ctx.storage.get<number>("seq") ?? 0,
+      eventCount: (await this.eventStore.eventsAfter(-1)).length,
       runs: await this.ctx.storage.get<number>("probe:runs") ?? 0,
       entered: await this.ctx.storage.get("probe:entered") ?? null,
       staleCompletion: await this.ctx.storage.get("probe:stale-completion") ?? null,
