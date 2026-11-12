@@ -111,7 +111,7 @@ async function sendImage(stub: ReturnType<typeof env.CONVERSATION.getByName>, op
     } else {
       delete (instance as unknown as { env: { SLACK_BOT_TOKEN?: string } }).env.SLACK_BOT_TOKEN
     }
-    ;(instance as unknown as { slack: unknown }).slack = async (_method: string, body: Record<string, unknown>) => {
+    ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async (_method: string, body: Record<string, unknown>) => {
       posts.push(String(body.text ?? ""))
       return { ok: true }
     }

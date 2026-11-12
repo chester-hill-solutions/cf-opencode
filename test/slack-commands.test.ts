@@ -68,7 +68,7 @@ async function send(stub: ReturnType<typeof env.CONVERSATION.getByName>, text: s
 } = {}) {
   return runInDurableObject(stub, async (instance) => {
     const posts: Array<{ method: string; body: Record<string, unknown> }> = []
-    ;(instance as unknown as { slack: unknown }).slack = async (method: string, body: Record<string, unknown>) => {
+    ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async (method: string, body: Record<string, unknown>) => {
       posts.push({ method, body }); return { ok: true }
     }
     const response = await instance.fetch(new Request("https://conversation/slack", {
@@ -91,7 +91,7 @@ describe("Slack commands in the Conversation DO", () => {
     const result = await runInDurableObject(stub, async (instance) => {
       instance.transport = fakeContainer(calls)
       const posts: string[] = []
-      ;(instance as unknown as { slack: unknown }).slack = async (_method: string, body: Record<string, unknown>) => { posts.push(String(body.text)); return { ok: true } }
+      ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async (_method: string, body: Record<string, unknown>) => { posts.push(String(body.text)); return { ok: true } }
       for (const text of ["!help", "!nonesuch"]) await instance.fetch(new Request("https://conversation/slack", { method: "POST", body: JSON.stringify({ event: { type: "message", channel: "C", channel_type: "im", ts: text, text } }) }))
       return posts
     })
@@ -122,7 +122,7 @@ describe("Slack commands in the Conversation DO", () => {
     const result = await runInDurableObject(stub, async (instance, runtime) => {
       instance.transport = fakeContainer(calls)
       const posts: string[] = []
-      ;(instance as unknown as { slack: unknown }).slack = async (_method: string, body: Record<string, unknown>) => { posts.push(String(body.text)); return { ok: true } }
+      ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async (_method: string, body: Record<string, unknown>) => { posts.push(String(body.text)); return { ok: true } }
       const make = (eventID: string, text: string) => instance.fetch(new Request("https://conversation/slack", { method: "POST", body: JSON.stringify({ eventID, event: { type: "message", channel: "C_TEST", channel_type: "im", ts: eventID, text } }) }))
       await make("invalid-model", "!model p/chat")
       await make("valid-model", "!model p/chat-b")
@@ -145,7 +145,7 @@ describe("Slack commands in the Conversation DO", () => {
     const result = await runInDurableObject(stub, async (instance, runtime) => {
       instance.transport = fakeContainer(calls)
       const posts: string[] = []
-      ;(instance as unknown as { slack: unknown }).slack = async (_method: string, body: Record<string, unknown>) => { posts.push(String(body.text)); return { ok: true } }
+      ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async (_method: string, body: Record<string, unknown>) => { posts.push(String(body.text)); return { ok: true } }
       const sendCommand = (eventID: string, text: string) => instance.fetch(new Request("https://conversation/slack", { method: "POST", body: JSON.stringify({ eventID, event: { type: "message", channel: "C_TEST", channel_type: "im", ts: eventID, text } }) }))
       await sendCommand("switch-session", "!sessions 1")
       const switched = await runtime.storage.get<ConversationState>("state")
@@ -169,7 +169,7 @@ describe("Slack commands in the Conversation DO", () => {
     const result = await runInDurableObject(stub, async (instance, runtime) => {
       instance.transport = fakeContainer(calls)
       const posts: string[] = []
-      ;(instance as unknown as { slack: unknown }).slack = async (_method: string, body: Record<string, unknown>) => { posts.push(String(body.text)); return { ok: true } }
+      ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async (_method: string, body: Record<string, unknown>) => { posts.push(String(body.text)); return { ok: true } }
       for (const [id, text] of [["blocked-model", "!model p/chat-b"], ["blocked-session", "!sessions 1"], ["stop", "!stop"]]) {
         await instance.fetch(new Request("https://conversation/slack", { method: "POST", body: JSON.stringify({ eventID: id, event: { type: "message", channel: "C_TEST", channel_type: "im", ts: id, text } }) }))
       }
@@ -191,7 +191,7 @@ describe("Slack commands in the Conversation DO", () => {
     const result = await runInDurableObject(stub, async (instance, runtime) => {
       instance.transport = fakeContainer(calls, "running")
       const posts: string[] = []
-      ;(instance as unknown as { slack: unknown }).slack = async (_method: string, body: Record<string, unknown>) => { posts.push(String(body.text)); return { ok: true } }
+      ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async (_method: string, body: Record<string, unknown>) => { posts.push(String(body.text)); return { ok: true } }
       await instance.fetch(new Request("https://conversation/slack", { method: "POST", body: JSON.stringify({ event: { type: "message", channel: "C_TEST", channel_type: "im", ts: "new-fenced", text: "!new" } }) }))
       const state = await runtime.storage.get<ConversationState>("state")
       if (!state) throw new Error("conversation state missing after fenced !new")
@@ -211,7 +211,7 @@ describe("Slack commands in the Conversation DO", () => {
     const result = await runInDurableObject(stub, async (instance, runtime) => {
       instance.transport = fakeContainer(calls)
       let replyAttempts = 0
-      ;(instance as unknown as { slack: unknown }).slack = async () => {
+      ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async () => {
         replyAttempts++
         throw new Error("Slack reply unavailable")
       }
@@ -237,7 +237,7 @@ describe("Slack commands in the Conversation DO", () => {
     const calls: Call[] = []
     const result = await runInDurableObject(stub, async (instance, runtime) => {
       instance.transport = fakeContainer(calls)
-      ;(instance as unknown as { slack: unknown }).slack = async () => ({ ok: true })
+      ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async () => ({ ok: true })
       const post = (id: string, text: string) => instance.fetch(new Request("https://conversation/slack", { method: "POST", body: JSON.stringify({ eventID: id, event: { type: "message", channel: "D_TEST", channel_type: "im", ts: id, text } }) }))
       await post("pre-model", "!model p/chat-b")
       await post("first-prompt", "hello")
@@ -265,7 +265,7 @@ describe("Slack commands in the Conversation DO", () => {
       await seed(stub, { sessionID: "ses_1", ...(override ? { modelOverride: override } : {}) })
       await runInDurableObject(stub, async (instance) => {
         instance.transport = fakeContainer(calls)
-        ;(instance as unknown as { slack: unknown }).slack = async () => ({ ok: true })
+        ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async () => ({ ok: true })
         await instance.fetch(new Request("https://conversation/slack", {
           method: "POST",
           body: JSON.stringify({ event: { type: "message", channel: "D_TEST", channel_type: "im", ts: name, text: "continue" } }),
@@ -303,15 +303,15 @@ describe("Slack commands in the Conversation DO", () => {
     await seed(stub, { sessionID: "ses_1", slack: { channel: "C_TEST", replyTs: "thread.root" } })
     const result = await runInDurableObject(stub, async (instance, runtime) => {
       const posts: Array<{ method: string; body: Record<string, unknown> }> = []
-      ;(instance as unknown as { slack: unknown }).slack = async (method: string, body: Record<string, unknown>) => {
+      ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async (method: string, body: Record<string, unknown>) => {
         posts.push({ method, body }); return { ok: true }
       }
       const internal = instance as unknown as {
         env: { SLACK_BOT_TOKEN?: string }
-        pollQuestions(sessionID: string, forms: Form[]): Promise<void>
+        turnExecution: { pollQuestions(sessionID: string, forms: Form[]): Promise<void> }
       }
       internal.env.SLACK_BOT_TOKEN = "xoxb-test-token"
-      await internal.pollQuestions("ses_1", [{
+      await internal.turnExecution.pollQuestions("ses_1", [{
         id: "form-choice", sessionID: "ses_1", title: "Choose a plan", fields: [{
           key: "plan", type: "string", required: true, options: [
             { value: "basic", label: "Basic" }, { value: "plus", label: "Plus" },

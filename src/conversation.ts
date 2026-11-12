@@ -7,21 +7,11 @@ import {
   type BudgetReservation,
   type ConversationPhase,
   type ConversationState,
-  type SlackTarget,
-  type Transport,
 } from "./state"
-import {
-  chunkText,
-  formatSlackContext,
-  mrkdwnEscape,
-  type SlackContextMessage,
-  type SlackEventEnvelope,
-} from "./adapters/slack"
 import {
   isSettled,
   turnMessages,
   toMillis,
-  type MessageInfo,
 } from "./messages"
 import type { ConversationEvent } from "./events"
 import { ConversationEventStream } from "./conversation/event-stream"
@@ -39,13 +29,12 @@ import { ConversationTurnExecution } from "./conversation/turn-execution"
 import { ConversationReadiness } from "./conversation/readiness"
 import { ConversationReconciliation } from "./conversation/reconciliation"
 import { ConversationAccountingCutover } from "./conversation/accounting-cutover"
-import { ConversationAdmissions, isBusyPhase } from "./conversation/admissions"
+import { ConversationAdmissions } from "./conversation/admissions"
 import { ConversationRuntimeUpgrades } from "./conversation/runtime-upgrades"
 import { isFreshLegacyAlarmMigration } from "./conversation/job-state"
 import type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
 export type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
-import { parseModelRef, type Env } from "./env"
-import { retryAfterSeconds } from "./backoff"
+import type { Env } from "./env"
 import { logEvent } from "./log"
 import type { HarnessSettings } from "./settings"
 import { staleAction } from "./lifecycle"
@@ -54,18 +43,14 @@ import { LEGACY_ACCOUNT_STATE_KEY, parseConversationKey } from "./tenancy"
 import { AccountingPolicyError } from "./accounting-policy"
 import { IdleClosePendingError } from "./conversation/idle-close"
 import { parseOperatorReconciliationProposal } from "./operator-reconciliation"
-import { handleSlackCommand } from "./slack-commands"
 import { hasConnectedProvider } from "./onboarding"
-import { parseSlackCommand } from "./slack-command-format"
-import {
-  checkSlackImageModel,
-  downloadSlackImage,
-  formatSlackImageModelSuggestions,
-  type ImageModelCheck,
-  type SlackImageAttachment,
-} from "./slack-images"
 import type { ConversationJobPayload } from "./conversation/jobs"
 import { ConversationScheduler } from "./conversation/scheduler"
+import { ConversationSessions } from "./conversation/sessions"
+import { ConversationSlackAdapter } from "./conversation/slack-adapter"
+import { ConversationProviderOnboarding } from "./conversation/provider-onboarding"
+import type { MessageRequest, SlackEventRequest } from "./conversation/requests"
+export type { MessageRequest, SlackEventRequest } from "./conversation/requests"
 
 type UnknownRecord = Record<string, unknown>
 
@@ -83,22 +68,6 @@ const ONBOARDING_KEY = "onboarding"
 
 /** R2 key holding the account's OpenCode state (config + provider credentials). */
 export const ACCOUNT_STATE_KEY = LEGACY_ACCOUNT_STATE_KEY
-
-export interface MessageRequest {
-  text: string
-  user?: string
-  transport?: Transport
-  slack?: SlackTarget
-  /** Optional client key; a retry with the same key is not a second turn. */
-  idempotencyKey?: string
-}
-
-export interface SlackEventRequest {
-  eventID?: string
-  replyTs?: string
-  appUrl?: string
-  event: NonNullable<SlackEventEnvelope["event"]>
-}
 
 export type { BudgetReservationResult } from "./conversation/budget-reservations"
 
@@ -127,11 +96,12 @@ export class Conversation extends DurableObject<Env> {
   private readonly accountingCutover: ConversationAccountingCutover
   private readonly admissions: ConversationAdmissions
   private readonly runtimeUpgrades: ConversationRuntimeUpgrades
+  private readonly sessions: ConversationSessions
+  private readonly slackAdapter: ConversationSlackAdapter
+  private readonly providerOnboarding: ConversationProviderOnboarding
   private consecutiveFailures = 0
   /** Canonical name when named; forwarded key is only a validated fallback. */
   private key?: string
-  /** Source onboarding work must finish before its runtime can be restarted. */
-  private onboardingOperations = 0
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
@@ -180,6 +150,13 @@ export class Conversation extends DurableObject<Env> {
         ready: this.runtime.ready,
         running: Boolean(this.transport || this.env.CONTAINER_URL || this.ctx.container?.running === true),
       }),
+    })
+    this.providerOnboarding = new ConversationProviderOnboarding({
+      identity: { key: () => this.key },
+      runtime: this.runtime,
+      access: this.runtimeAccess,
+      withClient: (fn, recoverOnRejection) => this.withClient(fn, recoverOnRejection),
+      store: this.store,
     })
     this.lifecycle = new Lifecycle(this)
     this.eventStream = new ConversationEventStream(this.store)
@@ -295,8 +272,8 @@ export class Conversation extends DurableObject<Env> {
       },
       delivery: {
         event: (event, options) => this.deliver(event, options),
-        toSlack: (event) => this.deliverToSlack(event),
-        slack: (method, body) => this.slack(method, body),
+        toSlack: (event) => this.slackAdapter.deliverToSlack(event),
+        slack: (method, body) => this.slackAdapter.slack(method, body),
         count: (name) => this.count(name),
         slackBotToken: () => this.env.SLACK_BOT_TOKEN,
       },
@@ -325,7 +302,7 @@ export class Conversation extends DurableObject<Env> {
       },
       activity: {
         pumping: () => this.turnExecution.isPumping,
-        onboardingOperations: () => this.onboardingOperations,
+        onboardingOperations: () => this.providerOnboarding.activeOperations,
         upgradeResuming: () => this.runtimeUpgrades.resuming,
       },
       upgrade: {
@@ -355,14 +332,24 @@ export class Conversation extends DurableObject<Env> {
       prepareOwned: () => this.ensureReadyOwned(),
       stopStream: () => this.turnExecution.stopStream(),
     })
+    this.sessions = new ConversationSessions({
+      store: this.store,
+      runtime: this.runtime,
+      upgrades: this.runtimeUpgrades,
+      prepare: () => this.ensureReady(),
+      leases: this.leases,
+      usage: this.usage,
+      settings: () => this.settings(),
+      withClient: (fn, recoverOnRejection) => this.withClient(fn, recoverOnRejection),
+    })
     this.admissions = new ConversationAdmissions({
       conversationID: ctx.id.toString(),
       storage: ctx.storage,
       store: this.store,
       budgetReservations: this.budgetReservations,
       session: {
-        ensure: (text, transport, slack) => this.ensureSession(text, transport, slack),
-        baseline: (sessionID) => this.turnBaseline(sessionID),
+        ensure: (text, transport, slack) => this.sessions.ensure(text, transport, slack),
+        baseline: (sessionID) => this.sessions.baseline(sessionID),
       },
       recovery: {
         active: () => this.recoveryActions.active,
@@ -376,7 +363,7 @@ export class Conversation extends DurableObject<Env> {
       settings: async () => ({ streaming: (await this.settings()).streaming }),
       delivery: {
         event: (event, options) => this.deliver(event, options),
-        postChunked: (channel, text, threadTs) => this.postChunked(channel, text, threadTs),
+        postChunked: (channel, text, threadTs) => this.slackAdapter.postChunked(channel, text, threadTs),
         count: (name) => this.count(name),
       },
       startStream: (sessionID) => this.turnExecution.startStream(sessionID),
@@ -402,7 +389,7 @@ export class Conversation extends DurableObject<Env> {
       leases: this.leases,
       eligibleNative: () => this.nativeLeaseEnabled(),
       locallyBusy: async () => this.admissions.active || this.turnExecution.isPumping ||
-        this.recoveryActions.active || this.onboardingOperations > 0 ||
+        this.recoveryActions.active || this.providerOnboarding.activeOperations > 0 ||
         this.scheduler.hasActiveOtherThan("container:idle") || await this.runtimeUpgrades.hasPending(),
       withAdmissionLock: (task) => this.admissions.withLock(task),
       stopStream: () => this.turnExecution.stopStream(),
@@ -411,6 +398,36 @@ export class Conversation extends DurableObject<Env> {
         schedule: (at, payload) => this.scheduler.schedule("container:idle", at, { ...payload, reason: "unused-runtime" }),
         cancel: () => this.scheduler.cancel("container:idle"),
       },
+    })
+
+    this.slackAdapter = new ConversationSlackAdapter({
+      store: this.store,
+      sessions: this.sessions,
+      admissions: this.admissions,
+      budget: {
+        acquire: () => this.acquireBudgetReservation(),
+        markDispatched: (reservation, baseline) => this.markBudgetReservationDispatched(reservation, baseline),
+      },
+      controlPlane: this.controlPlane,
+      upgrades: this.runtimeUpgrades,
+      turnExecution: this.turnExecution,
+      scheduler: this.scheduler,
+      recovery: this.recoveryActions,
+      withClient: (fn, recoverOnRejection) => this.withClient(fn, recoverOnRejection),
+      withUsageLifecycle: (cleanup) => this.withUsageLifecycle(cleanup),
+      settings: () => this.settings(),
+      usageToday: async () => {
+        const response = await this.env.SETTINGS.getByName("global").fetch("https://settings/usage/today")
+        if (!response.ok) throw new Error("Usage is temporarily unavailable")
+        return await response.json() as {
+          date: string; costUSD: number; reservedUSD: number; input: number; output: number
+          historicalUsageUnreconciled?: boolean; unknownReconciliationCount?: number
+        }
+      },
+      deliver: (event, options) => this.deliver(event, options),
+      waitUntil: (promise) => this.ctx.waitUntil(promise),
+      conversationKey: () => this.key ?? this.ctx.id.name ?? this.ctx.id.toString(),
+      env: () => ({ SLACK_BOT_TOKEN: this.env.SLACK_BOT_TOKEN, SLACK_BOT_USER_ID: this.env.SLACK_BOT_USER_ID }),
     })
 
     this.reconciliation = new ConversationReconciliation({
@@ -478,7 +495,7 @@ export class Conversation extends DurableObject<Env> {
   private async routeRequest(request: Request): Promise<Response> {
     const url = new URL(request.url)
     if (url.pathname === "/message") return this.onMessage((await request.json()) as MessageRequest)
-    if (url.pathname === "/slack") return this.onSlackEvent((await request.json()) as SlackEventRequest)
+    if (url.pathname === "/slack") return this.slackAdapter.onEvent((await request.json()) as SlackEventRequest)
     if (url.pathname === "/permission") return this.controlPlane.onPermission((await request.json()) as PermissionRequest)
     if (url.pathname === "/form" && request.method === "POST") return this.controlPlane.onSlackForm((await request.json()) as SlackFormRequest)
     if (url.pathname === "/events") return this.onEvents(request)
@@ -547,7 +564,7 @@ export class Conversation extends DurableObject<Env> {
     }
     if (url.pathname === "/state") return Response.json(await this.store.get())
     if (url.pathname === "/health") return Response.json({ ok: true })
-    if (url.pathname === "/provider-credentials") return this.onProviderCredentials(request)
+    if (url.pathname === "/provider-credentials") return this.providerOnboarding.providerCredentials(request)
     if (url.pathname === "/provider-status") {
       if (this.key !== ONBOARDING_KEY || request.method !== "GET") return Response.json({ error: "forbidden" }, { status: 403 })
       try {
@@ -557,7 +574,7 @@ export class Conversation extends DurableObject<Env> {
         return Response.json({ error: "provider status unavailable", retryable: true }, { status: 503 })
       }
     }
-    if (url.pathname.startsWith("/onboarding")) return this.onOnboarding(url.pathname, request)
+    if (url.pathname.startsWith("/onboarding")) return this.providerOnboarding.onboarding(url.pathname, request)
     if (url.pathname === "/reset" && request.method === "POST") return this.onReset()
     if (url.pathname === "/recycle" && request.method === "POST") return this.onRecycle()
     if (url.pathname === "/debug" && request.method === "GET") {
@@ -583,7 +600,7 @@ export class Conversation extends DurableObject<Env> {
       return Response.json({ messages })
     }
     if (url.pathname === "/debug/providers" && request.method === "GET") {
-      return this.onDebugProviders()
+      return this.providerOnboarding.debugProviders()
     }
     if (url.pathname === "/debug/snapshot/invalidate" && request.method === "POST") {
       // Ops/test seam: poison the stored handle so the next start must fall
@@ -650,8 +667,8 @@ export class Conversation extends DurableObject<Env> {
     let sessionID = ""
     let baseline: string | undefined
     try {
-      sessionID = await this.ensureSession(text, input.transport ?? "http", input.slack)
-      baseline = await this.turnBaseline(sessionID)
+      sessionID = await this.sessions.ensure(text, input.transport ?? "http", input.slack)
+      baseline = await this.sessions.baseline(sessionID)
     } catch (err) {
       this.admissions.finishLocal()
       void this.count("admission.failed")
@@ -738,77 +755,6 @@ export class Conversation extends DurableObject<Env> {
     return (await res.json()) as HarnessSettings
   }
 
-  /** Internal-only source for a new legacy conversation's provider credentials. */
-  private async onProviderCredentials(request: Request): Promise<Response> {
-    if (this.key !== ONBOARDING_KEY) return Response.json({ error: "forbidden" }, { status: 403 })
-    if (request.method !== "GET") return Response.json({ error: "method not allowed" }, { status: 405 })
-    try {
-      const credentials = await this.withClient((client) => client.credential.list(), false)
-      return Response.json(credentials.filter((credential) => credential.active && credential.value.type === "key"))
-    } catch {
-      return Response.json({ error: "provider credentials unavailable" }, { status: 503 })
-    }
-  }
-
-  /** Read-only, secret-free provider diagnostics for the current session location. */
-  private async onDebugProviders(): Promise<Response> {
-    const state = await this.store.get()
-    if (!state.sessionID) {
-      return Response.json({ session: null, integrations: [], providers: [], models: [] })
-    }
-    // Diagnostics must never cold-start, configure, sync credentials, or recycle a container.
-    if (!this.runtime.ready || !this.runtime.apiPort || !this.runtime.generation || (this.ctx.container && !this.ctx.container.running)) {
-      return Response.json({ error: "provider diagnostics unavailable" }, { status: 503 })
-    }
-    try {
-      const client = makeClient(portFetch(this.runtime.apiPort))
-      const session = await client.session.get({ sessionID: state.sessionID })
-      const location = { directory: session.location.directory }
-      const [integrations, providers, models] = await Promise.all([
-        client.integration.list({ location }),
-        client.provider.list({ location }),
-        client.model.list({ location }),
-      ])
-      const result = {
-        session: {
-          id: session.id,
-          location,
-          ...(session.model
-            ? {
-                model: {
-                  providerID: session.model.providerID,
-                  id: session.model.id,
-                  ...(session.model.variant === undefined ? {} : { variant: session.model.variant }),
-                },
-              }
-            : {}),
-        },
-        integrations: integrations.data.map((integration) => ({
-          id: integration.id,
-          connections: integration.connections.map((connection, index) => ({
-            type: connection.type,
-            ...(connection.type === "credential" ? { id: connection.id, method: connection.method } : {}),
-            ...(index === 0 ? { selected: true } : {}),
-          })),
-        })),
-        providers: providers.data.map((provider) => ({
-          id: provider.id,
-          activation: provider.activation,
-          ...(provider.integrationID ? { integrationID: provider.integrationID } : {}),
-        })),
-        models: models.data.map((model) => ({
-          providerID: model.providerID,
-          id: model.id,
-          enabled: model.enabled,
-          type: model.type ?? "chat",
-        })),
-      }
-      return Response.json(result)
-    } catch {
-      return Response.json({ error: "provider diagnostics unavailable" }, { status: 503 })
-    }
-  }
-
   /** Decrypt one stored credential through the Settings DO. */
   private async secret(key: string): Promise<string | undefined> {
     try {
@@ -821,64 +767,6 @@ export class Conversation extends DurableObject<Env> {
       return body.value ?? undefined
     } catch {
       return undefined
-    }
-  }
-
-  /**
-   * Onboarding traffic: provider integrations, OAuth attempts, live models and
-   * the account-state snapshot. Paths beyond `/onboarding` mirror the control
-   * server, so the Worker only forwards the authenticated request.
-   */
-  private async onOnboarding(pathname: string, request: Request): Promise<Response> {
-    const blocksSettingsRestart = this.key === ONBOARDING_KEY
-    if (blocksSettingsRestart) this.onboardingOperations++
-    try {
-      const path = pathname.slice("/onboarding".length) || "/"
-      try {
-        // Return provider/model catalogues through the same authenticated SDK
-        // path used elsewhere in the harness. Forwarding the control server's
-        // special integration response can cross two Workers with stale
-        // compression metadata and lose its body at the service-binding edge.
-        if (request.method === "GET" && path === "/integrations") {
-          const integrations = await this.withClient((client) => client.integration.list(), false)
-          return Response.json(integrations)
-        }
-        if (request.method === "GET" && path === "/models") {
-          const models = await this.withClient(
-            (client) => client.model.list({ location: { directory: "/workspace" } }),
-            false,
-          )
-          return Response.json(models)
-        }
-        const body =
-          request.method === "GET" || request.method === "HEAD" ? undefined : await request.text()
-        return await this.runtimeAccess.useReady(async () => {
-          const control = await this.runtime.port(CONTROL_PORT)
-          const res = await control.fetch(`http://container${path}`, {
-            method: request.method,
-            ...(body === undefined ? {} : { body }),
-            signal: AbortSignal.timeout(120_000),
-          })
-          // Consume the complete control response while this runtime generation
-          // is borrowed. Returning a live body stream would outlive the gate.
-          const bytes = await res.arrayBuffer()
-          // The state snapshot pauses OpenCode; the next call must start it again.
-          if (path === "/state-checkpoint" && res.ok) this.runtime.pauseServer()
-          const headers = new Headers(res.headers)
-          headers.delete("content-encoding")
-          headers.delete("content-length")
-          return new Response(bytes.byteLength ? bytes : null, { status: res.status, headers })
-        })
-      } catch (error) {
-        // A cold start can outlast the port wait. Report it so the wizard can
-        // retry instead of surfacing an opaque Worker exception.
-        return Response.json(
-          { error: errorMessage(error), retryable: true },
-          { status: 503 },
-        )
-      }
-    } finally {
-      if (blocksSettingsRestart) this.onboardingOperations--
     }
   }
 
@@ -1063,400 +951,6 @@ export class Conversation extends DurableObject<Env> {
     return this.runtime.startBoundContainer(container)
   }
 
-  // -------------------------------------------------------------- Slack adapter
-
-  private async handleSlackControl(text: string, input: SlackEventRequest, target: SlackTarget): Promise<void> {
-    await handleSlackCommand(text, {
-      getState: () => this.store.get(),
-      getDefaultModel: async () => (await this.settings()).model,
-      getModels: async () => (await this.withClient((client) => client.model.list({ location: { directory: "/workspace" } }), false)).data,
-      getSession: (sessionID) => this.withClient((client) => client.session.get({ sessionID }), false),
-      listSessions: async () => (await this.withClient((client) => client.session.list({ limit: 100, order: "desc" }), false)).data,
-      switchModel: (ref) => this.changeSlackModel(ref),
-      selectSession: (sessionID) => this.changeSlackSession(sessionID, target),
-      newSession: () => this.changeSlackSession(undefined, target),
-      stop: () => this.stopSlackWork(),
-      leave: async () => {
-        if (input.event.channel_type === "im") return "This is a DM; use `!new` for a fresh session or `!stop` to interrupt work."
-        await this.store.patch({ slackEngaged: false })
-        return "Stopped following this thread. Mention me to re-engage; use `!stop` to interrupt current work."
-      },
-      listForms: (sessionID) => this.controlPlane.pendingForms(sessionID),
-      answerForm: (sessionID, formID, answer) => this.controlPlane.replyToForm(sessionID, formID, answer),
-      cancelForm: (sessionID, formID) => this.controlPlane.replyToForm(sessionID, formID),
-      usageText: async () => {
-        const response = await this.env.SETTINGS.getByName("global").fetch("https://settings/usage/today")
-        if (!response.ok) throw new Error("Usage is temporarily unavailable")
-        const usage = await response.json() as {
-          date: string; costUSD: number; reservedUSD: number; input: number; output: number
-          historicalUsageUnreconciled?: boolean; unknownReconciliationCount?: number
-        }
-        const settings = await this.settings()
-        const historyNote = usage.historicalUsageUnreconciled
-          ? `\n⚠ Historical usage remains unreconciled${usage.unknownReconciliationCount ? ` (${usage.unknownReconciliationCount} unknown amount${usage.unknownReconciliationCount === 1 ? "" : "s"} acknowledged)` : ""}.`
-          : ""
-        return `*Workspace usage — ${usage.date} (UTC)*\nReported spend: $${usage.costUSD.toFixed(4)}\nReserved: $${usage.reservedUSD.toFixed(4)}\nTokens: ${usage.input} in / ${usage.output} out\nDaily budget: ${settings.dailyBudgetUSD > 0 ? `$${settings.dailyBudgetUSD.toFixed(2)}` : "unlimited"}\nProvider quota and billing may differ from reported usage.${historyNote}`
-      },
-      reply: (message) => this.postChunked(target.channel, message, target.replyTs),
-      setupUrl: input.appUrl ? `${new URL(input.appUrl).origin}/onboarding/` : "the web app's /onboarding/ page",
-    })
-  }
-
-  private async checkSlackImageModel(sessionID: string): Promise<ImageModelCheck> {
-    const models = (await this.withClient(
-      (client) => client.model.list({ location: { directory: "/workspace" } }),
-      false,
-    )).data
-
-    let selected: { providerID: string; id: string } | undefined
-    try {
-      const session = await this.withClient((client) => client.session.get({ sessionID }), false)
-      const model = (session as { model?: { providerID?: unknown; id?: unknown } }).model
-      if (typeof model?.providerID === "string" && typeof model.id === "string") {
-        selected = { providerID: model.providerID, id: model.id }
-      }
-    } catch {
-      // Missing session metadata is unknown; do not guess from a stale override.
-    }
-    return checkSlackImageModel(selected, models)
-  }
-
-  private slackImageCompatibilityMessage(check: ImageModelCheck, catalogueUnavailable = false): string {
-    if (catalogueUnavailable) {
-      return "⚠️ I couldn't check image support right now, so nothing was sent or reserved. Please resend the image when the bot is ready."
-    }
-    if (check.status === "compatible") return ""
-    if (check.status === "unknown") {
-      const candidates = formatSlackImageModelSuggestions(check.suggestions)
-      return candidates
-        ? `⚠️ I couldn't confirm that the selected model can read images, so nothing was sent or reserved. Compatible connected models: ${mrkdwnEscape(candidates)}. Choose one with !model provider/model, then resend the image.`
-        : "⚠️ I couldn't confirm that the selected model can read images, so nothing was sent or reserved. Use `!model` to check available models or `!setup` to connect a provider, then resend the image."
-    }
-    const candidates = formatSlackImageModelSuggestions(check.suggestions)
-    return candidates
-      ? `⚠️ The selected model can't read images, so nothing was sent or reserved. Compatible connected models: ${mrkdwnEscape(candidates)}. Switch with !model provider/model, then resend the image.`
-      : "⚠️ No connected model reports image input support, so nothing was sent or reserved. Use `!setup` to connect a compatible provider, then resend the image."
-  }
-
-  /** Model/session changes share the admission lock, so a prompt cannot race them. */
-  private async requireSlackIdle(): Promise<ConversationState> {
-    const state = await this.store.get()
-    if (await this.runtimeUpgrades.hasPending()) throw new Error("A runtime upgrade is pending. Resume it before changing the model or session.")
-    if (this.admissions.active || this.turnExecution.isPumping || this.recoveryActions.active || isBusyPhase(state.phase) || state.queued || state.budgetReservation) {
-      throw new Error("This conversation has unfinished work. Use `!stop`, then wait for settlement; `!status` shows any retained usage hold.")
-    }
-    return state
-  }
-
-  private async changeSlackModel(ref: string): Promise<void> {
-    await this.admissions.withLock(async () => {
-      const state = await this.requireSlackIdle()
-      const model = parseModelRef(ref)
-      if (!model) throw new Error("Use a provider/model reference from `!model`.")
-      if (state.sessionID) await this.withClient((client) => client.session.switchModel({ sessionID: state.sessionID!, model }), false)
-      await this.store.patch({ modelOverride: ref })
-    })
-  }
-
-  /** Change only the session mapping; archives, sources and historical sessions survive. */
-  private async changeSlackSession(sessionID: string | undefined, target: SlackTarget): Promise<void> {
-    await this.admissions.withLock(async () => {
-      const current = await this.requireSlackIdle()
-      let selectedModel = current.modelOverride
-      if (sessionID) {
-        const detail = await this.withClient((client) => client.session.get({ sessionID }), false)
-        if (detail.id !== sessionID || detail.parentID || detail.location?.directory !== "/workspace") {
-          throw new Error("That session does not belong to this conversation's workspace.")
-        }
-        selectedModel = detail.model ? `${detail.model.providerID}/${detail.model.id}${detail.model.variant ? `#${detail.model.variant}` : ""}` : undefined
-      }
-      const response = await this.withUsageLifecycle(async () => {
-        await this.store.patch({
-          sessionID, modelOverride: selectedModel, transport: "slack", slack: target,
-          turnBaseline: undefined, runStartedAt: undefined, pending: {}, announcedForms: [],
-          lastReply: undefined, lastSlackReply: undefined, reportedError: undefined, lastTurnError: undefined,
-          usage: undefined, usageAux: undefined, usageCursor: undefined, usageTerminal: undefined,
-          usageExecution: undefined, usageError: undefined, settlementError: undefined,
-        })
-        return Response.json({ ok: true })
-      })
-      if (!response.ok) {
-        const body = await response.json() as { error?: string }
-        throw new Error(body.error ?? "Cannot change sessions while usage is unresolved.")
-      }
-    })
-  }
-
-  private async stopSlackWork(): Promise<string> {
-    return this.admissions.withLock(async () => {
-      const state = await this.store.get()
-      if (this.admissions.active || state.phase === "admitting") return "A message is being admitted. Retry `!stop` once startup finishes."
-      if (state.queued && !state.budgetReservation && state.phase === "queued") {
-        await this.store.patch({ queued: undefined, phase: "idle" })
-        return "Stopped the queued message before dispatch."
-      }
-      if (!state.sessionID) return "No session mapped here yet."
-      if (!isBusyPhase(state.phase) && !state.budgetReservation) return "This session is already idle."
-      await this.withClient((client) => client.session.interrupt({ sessionID: state.sessionID!, resume: false }), false)
-      // Interrupting proves neither zero spend nor successful settlement. The
-      // normal log/context reconciliation retains and eventually releases holds.
-      await this.store.patch({ queued: undefined })
-      await this.scheduler.schedule("turn:observe", Date.now() + 1000, {
-        reservationID: state.budgetReservation?.reservationID,
-        reservationDate: state.budgetReservation?.date,
-        sessionID: state.sessionID,
-        reason: "slack-stop-settlement",
-      })
-      return "Stop requested; queued follow-ups cleared. Usage settlement will finish before the next turn."
-    })
-  }
-
-  private async onSlackEvent(input: SlackEventRequest): Promise<Response> {
-    const event = input.event
-    if (!event.channel || !event.ts) return Response.json({ ok: true })
-    const files = event.files ?? []
-    const hasImage = files.length > 0
-    const isFileShare = event.subtype === "file_share" && hasImage
-    if (event.bot_id || (event.subtype && !isFileShare)) return Response.json({ ok: true })
-    if (!event.text && !hasImage) return Response.json({ ok: true })
-    const strippedText = this.stripMention(event.text ?? "")
-    const text = strippedText || (hasImage ? "Describe the attached image." : "")
-    if (!text) return Response.json({ ok: true })
-    if (await this.runtimeUpgrades.hasPending()) {
-      const target = { channel: event.channel, ...(input.replyTs ? { replyTs: input.replyTs } : {}) }
-      await this.postChunked(target.channel, "Runtime upgrade is pending. No message was queued; an operator must resume the upgrade first.", target.replyTs).catch(() => {})
-      return Response.json({ error: "runtime upgrade pending" }, { status: 409 })
-    }
-    const isDm = event.channel_type === "im"
-    const state = await this.store.get()
-    // Channel message subscriptions exist only to carry replies in engaged
-    // threads. A regular channel message must never become a model turn.
-    if (!isDm && event.type !== "app_mention" &&
-      (!event.thread_ts || !state.slackEngaged)) return Response.json({ ok: true })
-    if (input.eventID && !(await this.store.claimEvent(input.eventID))) return Response.json({ ok: true })
-    if (!isDm && event.type === "app_mention") await this.store.patch({ slackEngaged: true })
-    const target: SlackTarget = { channel: event.channel, ...(input.replyTs ? { replyTs: input.replyTs } : {}) }
-
-    // Management commands must bypass prompt admission, provider quota and
-    // budgets, including unknown commands and failures in their handlers.
-    if (parseSlackCommand(text)) {
-      // A reply can fail after a command has already changed the model/session.
-      // Preserve at-most-once execution even if delivery or the DO then fails.
-      // A user can issue a new command, but a Slack retry cannot repeat an old
-      // mutation against a newer session or a differently ordered session list.
-      if (input.eventID) await this.store.markTombstone(input.eventID)
-      await this.handleSlackControl(text, input, target)
-      return Response.json({ ok: true, command: true })
-    }
-
-    let prompt = text
-    let sessionID = ""
-    let baseline: string | undefined
-    let imageAttachment: SlackImageAttachment | undefined
-    let accepted = false
-    try {
-      prompt = await this.buildPrompt(event.channel, event.ts, event.thread_ts, text)
-    } catch (err) {
-      logEvent("admission.failed", { transport: "slack", stage: "context" })
-      if (hasImage) {
-        await this.postChunked(
-          target.channel,
-          "⚠️ I couldn't prepare that image message. Nothing was sent or reserved; please resend the image.",
-          target.replyTs,
-        ).catch(() => {})
-        if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
-        return Response.json({ ok: true })
-      }
-      const queued = await this.admissions.enqueue(prompt, target)
-      accepted = queued
-      if (!queued) {
-        await this.postChunked(
-          target.channel,
-          `⚠️ Container busy and a message is already queued: ${errorMessage(err)}`,
-          target.replyTs,
-        ).catch(() => {})
-      }
-      if (!accepted && input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
-      return Response.json({ ok: true, queued })
-    }
-
-    if (!(await this.admissions.claim())) {
-      if (hasImage) {
-        await this.postChunked(
-          target.channel,
-          "⏳ I'm busy with another turn, so I didn't send or queue this image. Please resend it when I'm ready.",
-          target.replyTs,
-        ).catch(() => {})
-        if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
-        return Response.json({ ok: true, queued: false })
-      }
-      const queued = await this.admissions.enqueue(prompt, target)
-      accepted = queued
-      if (!queued) {
-        await this.postChunked(
-          target.channel,
-          "⚠️ Container busy and a message is already queued.",
-          target.replyTs,
-        ).catch(() => {})
-      }
-      if (!accepted && input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
-      return Response.json({ ok: true, queued })
-    }
-
-    if (hasImage) {
-      try {
-        // Establish or switch the session first. ensureSession reapplies the
-        // current override/default after a restore, so preflight must inspect
-        // the model this prompt will actually use.
-        sessionID = await this.ensureSession(text, "slack", target)
-      } catch {
-        this.admissions.finishLocal()
-        await this.store.advance("idle")
-        await this.postChunked(
-          target.channel,
-          "⚠️ I couldn't start the session, so I didn't send or queue this image. No usage hold was created; please resend it later.",
-          target.replyTs,
-        ).catch(() => {})
-        if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
-        return Response.json({ ok: true, queued: false })
-      }
-
-      let check: ImageModelCheck
-      let catalogueUnavailable = false
-      try {
-        check = await this.checkSlackImageModel(sessionID)
-      } catch {
-        catalogueUnavailable = true
-        check = checkSlackImageModel(undefined, undefined)
-      }
-      if (check.status !== "compatible") {
-        this.admissions.finishLocal()
-        await this.store.advance("idle")
-        await this.postChunked(target.channel, this.slackImageCompatibilityMessage(check, catalogueUnavailable), target.replyTs).catch(() => {})
-        if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
-        return Response.json({ ok: true, image: "model-incompatible" })
-      }
-      try {
-        imageAttachment = await downloadSlackImage(files, this.env.SLACK_BOT_TOKEN ?? "")
-      } catch (error) {
-        this.admissions.finishLocal()
-        await this.store.advance("idle")
-        const message = error instanceof Error ? error.message : "That image could not be validated."
-        await this.postChunked(target.channel, `⚠️ ${message} Nothing was sent or reserved; please resend the image.`, target.replyTs).catch(() => {})
-        if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
-        return Response.json({ ok: true, image: "invalid" })
-      }
-    }
-
-    try {
-      if (!sessionID) sessionID = await this.ensureSession(text, "slack", target)
-      baseline = await this.turnBaseline(sessionID)
-    } catch (err) {
-      this.admissions.finishLocal()
-      logEvent("admission.failed", { transport: "slack", stage: "readiness" })
-      if (hasImage) {
-        imageAttachment = undefined
-        await this.store.advance("idle")
-        await this.postChunked(
-          target.channel,
-          "⚠️ I couldn't start the session, so I didn't send or queue this image. No usage hold was created; please resend it later.",
-          target.replyTs,
-        ).catch(() => {})
-        if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
-        return Response.json({ ok: true, queued: false })
-      }
-      const queued = await this.admissions.enqueue(prompt, target)
-      accepted = queued
-      if (!queued) {
-        await this.store.advance("idle")
-        await this.postChunked(
-          target.channel,
-          `⚠️ Container busy and a message is already queued: ${errorMessage(err)}`,
-          target.replyTs,
-        ).catch(() => {})
-      }
-      if (!accepted && input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
-      return Response.json({ ok: true, queued })
-    }
-
-    const reservation = await this.acquireBudgetReservation()
-    if (reservation.kind === "denied") {
-      imageAttachment = undefined
-      this.admissions.finishLocal()
-      await this.store.advance("idle")
-      await this.postChunked(
-        target.channel,
-        `⚠️ ${reservation.message}. Raise the budget in settings or wait for the daily reset.`,
-        target.replyTs,
-      ).catch(() => {})
-      if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
-      return Response.json({ ok: true })
-    }
-    if (reservation.kind === "conflict" || reservation.kind === "unavailable") {
-      imageAttachment = undefined
-      this.admissions.finishLocal()
-      await this.store.advance("idle")
-      await this.postChunked(
-        target.channel,
-        `⚠️ ${reservation.message}. No prompt was sent; please try again shortly.`,
-        target.replyTs,
-      ).catch(() => {})
-      if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
-      return Response.json({ ok: true })
-    }
-    if (reservation.kind === "already-dispatched") {
-      imageAttachment = undefined
-      await this.admissions.resumeDispatched()
-      await this.postChunked(
-        target.channel,
-        "⚠️ A previous prompt has an unresolved dispatch result. This message was not sent; please retry after it settles.",
-        target.replyTs,
-      ).catch(() => {})
-      if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
-      return Response.json({ ok: true })
-    }
-    if (!(await this.markBudgetReservationDispatched(reservation.reservation, baseline))) {
-      imageAttachment = undefined
-      this.admissions.finishLocal()
-      await this.store.advance("idle")
-      await this.postChunked(
-        target.channel,
-        "⚠️ Could not persist dispatch state. No prompt was sent; please retry shortly.",
-        target.replyTs,
-      ).catch(() => {})
-      if (input.eventID) await this.store.releaseEvent(input.eventID).catch(() => {})
-      return Response.json({ ok: true })
-    }
-    try {
-      await this.withClient((client) => client.session.prompt({
-        sessionID,
-        text: prompt,
-        ...(imageAttachment ? { files: [imageAttachment] } : {}),
-      }))
-    } catch (err) {
-      imageAttachment = undefined
-      await this.admissions.recordAccepted(baseline, "ambiguous")
-      if (input.eventID) await this.store.markTombstone(input.eventID).catch(() => {})
-      await this.deliver({
-        type: "error",
-        message: `prompt dispatch outcome is unknown; reservation retained: ${errorMessage(err)}`,
-      }).catch(() => {})
-      return Response.json({ ok: true })
-    }
-    accepted = true
-    imageAttachment = undefined
-
-    // The prompt is accepted; bookkeeping and stream failures must not re-send it.
-    await this.admissions.recordAccepted(baseline, "acknowledged")
-    if (input.eventID) {
-      // Mark event as processed so it stays blocked beyond the 200-event window
-      await this.store.markTombstone(input.eventID).catch(() => {})
-    }
-    const settings = await this.settings().catch(() => undefined)
-    if (settings?.streaming) this.ctx.waitUntil(this.turnExecution.startStream(sessionID))
-    return Response.json({ ok: true, sessionID })
-  }
-
   /** Diagnostics: the raw OpenCode message context for this conversation. */
   private async onContext(): Promise<Response> {
     const state = await this.store.get()
@@ -1482,163 +976,7 @@ export class Conversation extends DurableObject<Env> {
     const seq = await this.store.appendEvent(event)
     await this.eventStream.publish(event, seq)
     if (options.slack === false) return
-    await this.deliverToSlack(event)
-  }
-
-  private async deliverToSlack(event: ConversationEvent): Promise<void> {
-    const state = await this.store.get()
-    if (!state.slack || !this.env.SLACK_BOT_TOKEN) return
-    if (event.type === "assistant") {
-      await this.postChunked(state.slack.channel, event.text, state.slack.replyTs)
-    }
-    if (event.type === "permission") {
-      await this.postPermission(state.slack, event)
-    }
-    // A failed turn, timeout or checkpoint must not leave the thread silent.
-    if (event.type === "error") {
-      await this.postChunked(state.slack.channel, `⚠️ ${event.message}`, state.slack.replyTs)
-    }
-  }
-
-  // ------------------------------------------------------------------- prompt
-
-  private async ensureSession(text: string, transport: Transport, slack?: SlackTarget): Promise<string> {
-    if (await this.runtimeUpgrades.hasPending()) throw new Error("runtime upgrade is pending; an operator must resume it before a session can change")
-    await this.ensureReady()
-    await this.leases.ensureHeld()
-    if (this.runtime.eventPersistence !== true || !this.runtime.generation ||
-      this.runtime.eventPersistenceGeneration !== this.runtime.generation) {
-      throw new AccountingPolicyError("runtime cannot retain usage events; upgrade pending")
-    }
-    const state = await this.store.get()
-    if (state.sessionID && (await this.sessionUsable(state.sessionID))) {
-      // Drain the durable log before admission. The verified foreground policy
-      // disables title generation and background compaction, so settled
-      // sessions have no permitted auxiliary writer after their terminal fence.
-      await this.usage.refresh(state.sessionID)
-      // The durable choice is authoritative even if a cold start restored an
-      // archive captured before !model. Switching models makes no model call.
-      const override = parseModelRef(state.modelOverride ?? (await this.settings()).model)
-      if (override) await this.withClient((client) => client.session.switchModel({ sessionID: state.sessionID!, model: override }))
-      if (slack && (state.slack?.channel !== slack.channel || state.slack?.replyTs !== slack.replyTs)) {
-        await this.store.patch({ slack })
-      }
-      return state.sessionID
-    }
-    if (state.sessionID) {
-      // The OpenCode database was reset or restored without this session.
-      // Create a replacement before clearing the old one, so a transient
-      // container failure cannot erase a session that still exists.
-      logEvent("session.stale", { sessionID: state.sessionID })
-    }
-
-    const session = await this.withClient((client) =>
-      client.session.create({
-        location: { directory: "/workspace" },
-        title: text.replace(/\s+/g, " ").slice(0, 80),
-      }),
-    )
-    const sessionID = (session as { id?: string }).id
-    if (!sessionID) throw new Error("session.create returned no id")
-
-    const settings = await this.settings()
-    const model = parseModelRef(state.modelOverride ?? settings.model)
-    if (model) {
-      await this.withClient((client) => client.session.switchModel({ sessionID, model }))
-    }
-    await this.store.patch({
-      sessionID,
-      transport,
-      ...(slack ? { slack } : {}),
-      // A replacement session has no history: baseline, pending requests and
-      // per-session usage all belong to the session that disappeared.
-      ...(state.sessionID
-        ? {
-            pending: {},
-            announcedForms: [],
-            turnBaseline: undefined,
-            lastReply: undefined,
-            lastSlackReply: undefined,
-            reportedError: undefined,
-            usage: undefined,
-            usageAux: undefined,
-            usageCursor: undefined,
-            usageTerminal: undefined,
-            usageExecution: undefined,
-            usageError: undefined,
-          }
-        : {}),
-    })
-    return sessionID
-  }
-
-  /** Is this session still present in OpenCode? */
-  private async sessionUsable(sessionID: string): Promise<boolean> {
-    try {
-      return await this.withClient(async (client) => {
-        try {
-          await client.session.get({ sessionID })
-          return true
-        } catch {
-          // A missing session is an expected outcome, not a container failure:
-          // handle it here so it does not trip the readiness breaker.
-          return false
-        }
-      })
-    } catch {
-      return false
-    }
-  }
-
-  /**
-   * The last assistant message id before a prompt. Everything after it belongs
-   * to the next turn, even before OpenCode has recorded the new user message.
-   */
-  private async turnBaseline(sessionID: string): Promise<string | undefined> {
-    const messages = (await this.withClient((client) =>
-      client.session.context({ sessionID }),
-    )) as MessageInfo[]
-    if (!Array.isArray(messages)) throw new Error("session context is unreadable while establishing turn baseline")
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const message = messages[i]
-      if (message?.type === "assistant" && message.id) return message.id
-    }
-    return undefined
-  }
-
-  private async buildPrompt(channel: string, ts: string, threadTs: string | undefined, text: string): Promise<string> {
-    const messages = await this.fetchContext(channel, ts, threadTs)
-    const context = formatSlackContext(messages, {
-      botUserId: this.env.SLACK_BOT_USER_ID ?? "",
-      excludeTs: ts,
-    })
-    if (!context) return text
-    return [
-      `<slack_context channel="${channel}" source="${threadTs ? `thread ${threadTs}` : "recent channel history"}">`,
-      context,
-      "</slack_context>",
-      "",
-      "<message>",
-      text,
-      "</message>",
-    ].join("\n")
-  }
-
-  private async fetchContext(
-    channel: string,
-    ts: string,
-    threadTs: string | undefined,
-  ): Promise<SlackContextMessage[]> {
-    try {
-      if (threadTs) {
-        const res = await this.slack("conversations.replies", { channel, ts: threadTs, limit: 60 })
-        return (res.messages ?? []) as SlackContextMessage[]
-      }
-      const res = await this.slack("conversations.history", { channel, latest: ts, inclusive: false, limit: 20 })
-      return ((res.messages ?? []) as SlackContextMessage[]).reverse()
-    } catch {
-      return []
-    }
+    await this.slackAdapter.deliverToSlack(event)
   }
 
   // -------------------------------------------------------------- reply pump
@@ -1869,92 +1207,6 @@ export class Conversation extends DurableObject<Env> {
   private ensureReady(): Promise<ContainerPort> {
     return this.runtimeAccess.prepare()
   }
-
-  // -------------------------------------------------------------------- Slack
-
-  private async postChunked(channel: string, text: string, threadTs?: string): Promise<void> {
-    for (const chunk of chunkText(text)) {
-      await this.slack("chat.postMessage", {
-        channel,
-        text: chunk,
-        ...(threadTs ? { thread_ts: threadTs } : {}),
-      })
-    }
-  }
-
-  private async postPermission(target: SlackTarget, event: Extract<ConversationEvent, { type: "permission" }>): Promise<void> {
-    const key = this.ctx.id.name ?? this.ctx.id.toString()
-    const resources = (event.resources ?? []).map((resource) => `• \`${mrkdwnEscape(resource)}\``).join("\n")
-    await this.slack("chat.postMessage", {
-      channel: target.channel,
-      ...(target.replyTs ? { thread_ts: target.replyTs } : {}),
-      text: `🔐 Approval needed — ${event.action ?? "unknown action"}`,
-      blocks: [
-        {
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text: `🔐 *Approval needed* — \`${mrkdwnEscape(event.action ?? "unknown action")}\`\n${resources || "• _(no resources)_"}`,
-          },
-        },
-        {
-          type: "actions",
-          elements: [
-            button("Approve once", "primary", "oc_perm_once", key, event.requestID, target.channel),
-            button("Always allow", undefined, "oc_perm_always", key, event.requestID, target.channel),
-            button("Deny", "danger", "oc_perm_reject", key, event.requestID, target.channel),
-          ],
-        },
-      ],
-    })
-  }
-
-  private stripMention(text: string): string {
-    const botUserId = this.env.SLACK_BOT_USER_ID
-    if (!botUserId) return text.trim()
-    return text.replace(new RegExp(`<@${botUserId}>`, "g"), "").trim()
-  }
-
-  private async slack(
-    method: string,
-    body: Record<string, unknown>,
-    attempt = 0,
-  ): Promise<Record<string, any>> {
-    if (!this.env.SLACK_BOT_TOKEN) throw new Error("SLACK_BOT_TOKEN is not configured")
-    const res = await fetch(`https://slack.com/api/${method}`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${this.env.SLACK_BOT_TOKEN}`,
-        "content-type": "application/json; charset=utf-8",
-      },
-      body: JSON.stringify(body),
-    })
-    if (res.status === 429) {
-      if (attempt >= 2) throw new Error(`${method}: rate_limited`)
-      await sleep(retryAfterSeconds(res.headers.get("retry-after")) * 1000)
-      return this.slack(method, body, attempt + 1)
-    }
-    const json = (await res.json()) as { ok?: boolean; error?: string }
-    if (!json.ok) throw new Error(`${method}: ${json.error ?? "unknown_error"}`)
-    return json as Record<string, any>
-  }
-}
-
-function button(
-  label: string,
-  style: "primary" | "danger" | undefined,
-  actionID: string,
-  key: string,
-  requestID: string,
-  channel: string,
-): Record<string, unknown> {
-  return {
-    type: "button",
-    text: { type: "plain_text", text: label },
-    ...(style ? { style } : {}),
-    action_id: actionID,
-    value: JSON.stringify({ key, requestID, channel }),
-  }
 }
 
 function errorMessage(err: unknown): string {
@@ -1964,23 +1216,4 @@ function errorMessage(err: unknown): string {
   } catch {
     return String(err)
   }
-}
-
-/** Pass a stream through unchanged while counting its bytes. */
-function countedStream(stream: ReadableStream<Uint8Array>): {
-  stream: ReadableStream<Uint8Array>
-  bytes: () => number
-} {
-  let bytes = 0
-  const transform = new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      bytes += chunk.byteLength
-      controller.enqueue(chunk)
-    },
-  })
-  return { stream: stream.pipeThrough(transform), bytes: () => bytes }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }
