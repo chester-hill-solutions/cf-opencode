@@ -3,7 +3,6 @@ import { Lifecycle } from "agents/lifecycle"
 import type { MemoryLimitContext } from "agents/lifecycle"
 import { ClientError, type CredentialEntry } from "@opencode/client"
 import { makeClient, portFetch, type ContainerPort } from "./opencode"
-import { opencodeViaControl } from "./opencode-proxy"
 import {
   ConversationStore,
   type BudgetReservation,
@@ -33,6 +32,7 @@ import {
 import type { ConversationEvent } from "./events"
 import { ConversationEventStream } from "./conversation/event-stream"
 import { ConversationCheckpoints } from "./conversation/checkpoints"
+import { ConversationRuntime } from "./conversation/runtime"
 import { createSseParser } from "./sse"
 import { parseModelRef, type Env } from "./env"
 import { retryAfterSeconds } from "./backoff"
@@ -163,8 +163,6 @@ const POLL_MS = 2000
 const CHECKPOINT_RETRY_MS = 30_000
 /** Container lease lifetime for the concurrency cap, refreshed per turn. */
 const LEASE_TTL_MS = 10 * 60_000
-/** Keep a warm container between quick follow-up turns. */
-const INACTIVITY_TIMEOUT_MS = 10 * 60_000
 /** Admin key exempt from the container cap so onboarding is always reachable. */
 const ONBOARDING_KEY = "onboarding"
 
@@ -215,6 +213,7 @@ export type BudgetReservationResult =
  */
 export class Conversation extends DurableObject<Env> {
   private readonly lifecycle: Lifecycle<Env>
+  private readonly runtime: ConversationRuntime
   private readonly jobs: ConversationJobs
   private readonly store: ConversationStore
   private readonly eventStream: ConversationEventStream
@@ -226,43 +225,55 @@ export class Conversation extends DurableObject<Env> {
   private streaming = false
   private pumping = false
   private consecutiveFailures = 0
-  /** This instance has verified the container for the current spec. */
-  private ready = false
-  private opencodePort?: ContainerPort
-  /** Control-server identity proving which foreground accounting runtime is serving. */
-  private opencodeGeneration?: string
   /** Bearer token the container control server requires. */
   private controlTokenValue?: string
   /** Event names seen on the warm stream, for diagnostics. */
   private seenEvents = new Map<string, number>()
   /** Last state of the warm stream: opened, an error, or idle. */
   private streamState = "idle"
-  /** How the current container was started, for diagnostics. */
-  private startMode: "image" | "snapshot" | "none" = "none"
   /** An admission is in flight in this instance; alarms must not reset it. */
   private admitting = false
   /** Fences admissions and polling while an operator recovery action is in flight. */
   private recoveryAction = false
   /** This instance holds a container lease from the Settings DO. */
   private leaseHeld = false
-  /** The inactivity timeout was applied to the current container. */
-  private inactivitySet = false
   /** Conversation key, sent by the Worker; admin traffic skips the cap. */
   private key?: string
   /** Onboarding credential epoch copied into this legacy conversation instance. */
   private providerSyncAt?: number
   /** Source onboarding work must finish before its runtime can be restarted. */
   private onboardingOperations = 0
-  /** Durable binding for the single opt-in runtime canary; all others default to base. */
-  private containerImageVariant?: "base" | "evented"
-  /** Persistent native event capability, attested for one exact runtime generation. */
-  private eventPersistence?: boolean
-  private eventPersistenceGeneration?: string
   private runtimeUpgradeResuming = false
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
     this.store = new ConversationStore(ctx.storage)
+    this.runtime = new ConversationRuntime({
+      network: {
+        transport: () => this.transport,
+        containerURL: () => this.env.CONTAINER_URL,
+      },
+      binding: {
+        get: () => this.ctx.container,
+      },
+      startup: {
+        start: () => this.startContainer(),
+        prepareImage: (container) => this.prepareContainerImageVariant(container),
+        options: () => this.startOptions(),
+      },
+      snapshots: {
+        snapshotHandle: () => this.snapshotHandle(),
+        clearSnapshot: () => this.clearSnapshot(),
+      },
+      authorization: { controlToken: () => this.controlToken() },
+      observations: {
+        snapshotStale: () => {
+          logEvent("snapshot.stale")
+          void this.count("snapshot.stale")
+        },
+        count: (name) => { void this.count(name) },
+      },
+    })
     this.lifecycle = new Lifecycle(this)
     this.eventStream = new ConversationEventStream(this.store)
     this.lifecycle.use(this.eventStream)
@@ -284,7 +295,7 @@ export class Conversation extends DurableObject<Env> {
       storage: ctx.storage,
       bucket: env.CHECKPOINTS,
       archiveEnv: env,
-      getControl: () => this.port(CONTROL_PORT),
+      getControl: () => this.runtime.port(CONTROL_PORT),
       retry: {
         schedule: (at, reason) => this.scheduleConversationJob("checkpoint:retry", at, { reason }),
         cancel: () => this.jobs.cancel("checkpoint:retry"),
@@ -547,8 +558,10 @@ export class Conversation extends DurableObject<Env> {
       return Response.json({
         streamState: this.streamState,
         streaming: this.streaming,
-        ready: this.ready,
-        startMode: this.startMode,
+        ready: this.runtime.ready,
+        containerRunning: this.ctx.container?.running ?? false,
+        runtimeGeneration: this.runtime.generation,
+        startMode: this.runtime.startMode,
         snapshot: Boolean(await this.snapshotHandle()),
         events: Object.fromEntries(this.seenEvents),
       })
@@ -761,11 +774,11 @@ export class Conversation extends DurableObject<Env> {
       return Response.json({ session: null, integrations: [], providers: [], models: [] })
     }
     // Diagnostics must never cold-start, configure, sync credentials, or recycle a container.
-    if (!this.ready || !this.opencodePort || !this.opencodeGeneration || (this.ctx.container && !this.ctx.container.running)) {
+    if (!this.runtime.ready || !this.runtime.apiPort || !this.runtime.generation || (this.ctx.container && !this.ctx.container.running)) {
       return Response.json({ error: "provider diagnostics unavailable" }, { status: 503 })
     }
     try {
-      const client = makeClient(portFetch(this.opencodePort))
+      const client = makeClient(portFetch(this.runtime.apiPort))
       const session = await client.session.get({ sessionID: state.sessionID })
       const location = { directory: session.location.directory }
       const [integrations, providers, models] = await Promise.all([
@@ -855,7 +868,7 @@ export class Conversation extends DurableObject<Env> {
           return Response.json(models)
         }
         await this.ensureReady()
-        const control = await this.port(CONTROL_PORT)
+        const control = await this.runtime.port(CONTROL_PORT)
         const body =
           request.method === "GET" || request.method === "HEAD" ? undefined : await request.text()
         const res = await control.fetch(`http://container${path}`, {
@@ -866,8 +879,7 @@ export class Conversation extends DurableObject<Env> {
         let responseBody: BodyInit | null = res.body
         // The state snapshot pauses OpenCode; the next call must start it again.
         if (path === "/state-checkpoint" && res.ok) {
-          this.ready = false
-          this.opencodePort = undefined
+          this.runtime.pauseServer()
           // This endpoint is a streamed account archive. Finish consuming it
           // before dropping the onboarding operation fence; a settings-driven
           // restart must not interrupt the archive stream.
@@ -905,11 +917,7 @@ export class Conversation extends DurableObject<Env> {
           /* already stopped */
         }
         await this.releaseLease()
-        this.ready = false
-        this.opencodePort = undefined
-        this.opencodeGeneration = undefined
-        this.eventPersistence = undefined
-        this.eventPersistenceGeneration = undefined
+        this.runtime.resetAfterStop()
         // A reset must not leave a checkpoint that the next cold start would
         // restore over the freshly cleared conversation.
         await this.checkpoints.deleteAll()
@@ -948,12 +956,7 @@ export class Conversation extends DurableObject<Env> {
         /* already stopped */
       }
       await this.releaseLease()
-      this.ready = false
-      this.opencodePort = undefined
-      this.opencodeGeneration = undefined
-      this.eventPersistence = undefined
-      this.eventPersistenceGeneration = undefined
-      this.inactivitySet = false
+      this.runtime.resetAfterStop()
       return Response.json({ ok: true })
     })
   }
@@ -971,11 +974,7 @@ export class Conversation extends DurableObject<Env> {
           /* already stopped */
         }
         await this.releaseLease()
-        this.ready = false
-        this.opencodePort = undefined
-        this.opencodeGeneration = undefined
-        this.eventPersistence = undefined
-        this.eventPersistenceGeneration = undefined
+        this.runtime.resetAfterStop()
         await this.checkpoints.deleteAll()
         await this.resetConversationJobs()
         this.controlTokenValue = undefined
@@ -1060,7 +1059,7 @@ export class Conversation extends DurableObject<Env> {
   protected startOptions(): ContainerStartupOptions {
     const images = (this.ctx.container as unknown as { images?: Record<string, string> } | undefined)
       ?.images
-    const eventedCanary = this.containerImageVariant === "evented" || this.isEventedCanary()
+    const eventedCanary = this.runtime.imageVariant === "evented" || this.isEventedCanary()
     const image = eventedCanary ? images?.evented : images?.base
     if (eventedCanary && !image) throw new Error("evented canary image is not configured")
     if (!eventedCanary && !image) throw new Error("base container image is not configured")
@@ -1077,7 +1076,7 @@ export class Conversation extends DurableObject<Env> {
   /** A snapshot to restore instead of a fresh start, when supported. */
   protected async snapshotHandle(): Promise<ContainerSnapshot | undefined> {
     const binding = await this.ctx.storage.get<unknown>("containerImageVariant")
-    if (binding === "evented" || this.containerImageVariant === "evented" || this.isEventedCanary()) return undefined
+    if (binding === "evented" || this.runtime.imageVariant === "evented" || this.isEventedCanary()) return undefined
     return this.ctx.storage.get<ContainerSnapshot>("snapshot")
   }
 
@@ -1159,23 +1158,23 @@ export class Conversation extends DurableObject<Env> {
     const stored = await this.ctx.storage.get<unknown>("containerImageVariant")
     if (stored !== undefined) {
       if (stored !== "evented") throw new Error("unknown container image binding; refusing to fall back")
-      this.containerImageVariant = "evented"
+      this.runtime.bindImage("evented")
       this.startOptions()
       return
     }
 
     const explicitlySelected = this.isEventedCanary()
     if (!explicitlySelected && !this.canRouteFreshConversationsToEvented()) {
-      this.containerImageVariant = "base"
+      this.runtime.bindImage("base")
       this.startOptions()
       return
     }
     if (!explicitlySelected && !(await this.isFreshUnstartedConversation(container))) {
-      this.containerImageVariant = "base"
+      this.runtime.bindImage("base")
       this.startOptions()
       return
     }
-    this.containerImageVariant = "evented"
+    this.runtime.bindImage("evented")
     // Resolve the named image before any durable write. Persist the binding
     // only after strict freshness validation, but before token/lease creation,
     // so a capacity retry cannot accidentally retarget this conversation.
@@ -1230,13 +1229,13 @@ export class Conversation extends DurableObject<Env> {
     if (stored !== undefined) {
       if (stored !== "evented") throw new Error("unknown container image binding; refusing to fall back")
       if (!container?.images?.evented) throw new Error("evented canary image is not configured")
-      this.containerImageVariant = "evented"
+      this.runtime.bindImage("evented")
       return
     }
     if (this.isEventedCanary() && container?.running) {
       throw new Error("running evented canary container has no durable image binding")
     }
-    this.containerImageVariant = undefined
+    this.runtime.bindImage(undefined)
   }
 
   /** Drop a snapshot that cannot be used (image change, corruption). */
@@ -1299,12 +1298,6 @@ export class Conversation extends DurableObject<Env> {
     }
   }
 
-  private applyInactivity(container: NonNullable<typeof this.ctx.container>): void {
-    if (this.inactivitySet) return
-    this.inactivitySet = true
-    void container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS).catch(() => {})
-  }
-
   /** Start the container, preferring a snapshot when one is available. */
   private async startContainer(): Promise<boolean> {
     const container = this.ctx.container
@@ -1313,7 +1306,7 @@ export class Conversation extends DurableObject<Env> {
     if (imageBinding !== undefined && imageBinding !== "evented") {
       throw new Error("unknown container image binding; refusing to fall back")
     }
-    if (imageBinding === "evented") this.containerImageVariant = "evented"
+    if (imageBinding === "evented") this.runtime.bindImage("evented")
     // Resolve and durably bind the selected image before token creation or
     // lease acquisition. A canary capacity retry then reuses this binding.
     await this.prepareContainerImageVariant(container)
@@ -1332,32 +1325,7 @@ export class Conversation extends DurableObject<Env> {
 
   /** Start a bound container from the snapshot when possible, else the image. */
   private async startBoundContainer(container: NonNullable<typeof this.ctx.container>): Promise<boolean> {
-    return withSpan("container.start", async (span) => {
-      await this.prepareContainerImageVariant(container)
-      const options = this.startOptions()
-      const snapshot = await this.snapshotHandle()
-      if (snapshot) {
-      try {
-        container.start({ ...options, image: undefined, containerSnapshot: snapshot } as ContainerStartupOptions)
-        this.startMode = "snapshot"
-        this.applyInactivity(container)
-        span.setAttribute("container.start_mode", "snapshot")
-        logEvent("snapshot.restored")
-        void this.count("snapshot.restored")
-        return true
-      } catch {
-        logEvent("snapshot.stale")
-        void this.count("snapshot.stale")
-        span.setAttribute("container.snapshot_stale", true)
-        await this.clearSnapshot()
-      }
-      }
-      container.start(options)
-      this.startMode = "image"
-      this.applyInactivity(container)
-      span.setAttribute("container.start_mode", "image")
-      return false
-    })
+    return this.runtime.startBoundContainer(container)
   }
 
   /** A phase where a new prompt must wait for the current turn. */
@@ -1905,8 +1873,8 @@ export class Conversation extends DurableObject<Env> {
   private async ensureSession(text: string, transport: Transport, slack?: SlackTarget): Promise<string> {
     if (await this.hasPendingRuntimeUpgrade()) throw new Error("runtime upgrade is pending; an operator must resume it before a session can change")
     await this.ensureReady()
-    if (this.eventPersistence !== true || !this.opencodeGeneration ||
-      this.eventPersistenceGeneration !== this.opencodeGeneration) {
+    if (this.runtime.eventPersistence !== true || !this.runtime.generation ||
+      this.runtime.eventPersistenceGeneration !== this.runtime.generation) {
       throw new AccountingPolicyError("runtime cannot retain usage events; upgrade pending")
     }
     const state = await this.store.get()
@@ -2728,7 +2696,7 @@ export class Conversation extends DurableObject<Env> {
         client,
         sessionID,
         getRuntimeGeneration: async (signal) => {
-          const control = await this.port(CONTROL_PORT)
+          const control = await this.runtime.port(CONTROL_PORT)
           const response = await control.fetch("http://container/start", { method: "POST", signal })
           if (!response.ok) throw new Error("runtime proof unavailable")
           const proof = await response.json() as UnknownRecord
@@ -2736,7 +2704,7 @@ export class Conversation extends DurableObject<Env> {
             typeof proof.opencodeGeneration !== "string" || !proof.opencodeGeneration) {
             throw new Error("runtime generation proof invalid")
           }
-          this.opencodeGeneration = proof.opencodeGeneration
+          this.runtime.recordGeneration(proof.opencodeGeneration)
           return proof.opencodeGeneration
         },
       }), false)
@@ -3064,7 +3032,7 @@ export class Conversation extends DurableObject<Env> {
     if (sessionID) {
       try {
         await this.ensureReady()
-        const control = await this.port(CONTROL_PORT)
+        const control = await this.runtime.port(CONTROL_PORT)
         const proofResponse = await control.fetch("http://container/start", {
           method: "POST",
           signal: AbortSignal.timeout(120_000),
@@ -3081,10 +3049,8 @@ export class Conversation extends DurableObject<Env> {
           throw new Error("runtime generation proof is unavailable")
         }
         runtimeGeneration = proof.opencodeGeneration
-        this.opencodeGeneration = runtimeGeneration
-        this.eventPersistence = proof.eventPersistence === true
-        this.eventPersistenceGeneration = runtimeGeneration
-        const apiPort = await this.port(OPENCODE_PORT)
+        this.runtime.recordProof(runtimeGeneration, proof.eventPersistence === true)
+        const apiPort = await this.runtime.port(OPENCODE_PORT)
         const client = makeClient(portFetch(apiPort))
         assertAccountingPolicy(await client.config.get())
         const inspected = await (async () => {
@@ -3905,90 +3871,6 @@ export class Conversation extends DurableObject<Env> {
   /** Test seam: replaces the container port for a given number. */
   transport?: (number: number) => ContainerPort
 
-  private async port(number: number): Promise<ContainerPort> {
-    if (number === OPENCODE_PORT) {
-      // The test seam replaces the container port directly. In production the
-      // DO has no OpenCode password, so it goes through the control server,
-      // which authenticates to OpenCode on loopback.
-      if (this.transport) return this.rawPort(number)
-      return opencodeViaControl(await this.controlPort())
-    }
-    const base = await this.rawPort(number)
-    if (number !== CONTROL_PORT) return base
-    return this.withControlAuth(base)
-  }
-
-  private async controlPort(): Promise<ContainerPort> {
-    return this.port(CONTROL_PORT)
-  }
-
-  private async withControlAuth(base: ContainerPort): Promise<ContainerPort> {
-    const token = await this.controlToken()
-    return {
-      fetch: (input, init) => {
-        const request = new Request(input as any, init)
-        request.headers.set("authorization", `Bearer ${token}`)
-        return base.fetch(request)
-      },
-    }
-  }
-
-  private async rawPort(number: number): Promise<ContainerPort> {
-    if (this.transport) return this.transport(number)
-    if (this.env.CONTAINER_URL) {
-      const host = new URL(this.env.CONTAINER_URL).hostname
-      return {
-        fetch: (input, init) => {
-          const original = input instanceof Request ? input : new Request(input as any, init)
-          const url = new URL(original.url)
-          url.hostname = host
-          url.port = String(number)
-          return fetch(url.toString(), {
-            method: original.method,
-            headers: original.headers,
-            body: original.body,
-          })
-        },
-      }
-    }
-    const container = this.ctx.container
-    if (!container) throw new Error("no container bound")
-    // The direct Container API defaults internet access off; OpenCode needs
-    // DNS and outbound HTTPS for the workspace clone and model providers.
-    let usedSnapshot = false
-    if (!container.running) usedSnapshot = await this.startContainer()
-    const port = container.getTcpPort(number)
-    const path = "/health"
-    const ready = async (limit: number): Promise<boolean> => {
-      for (let attempt = 0; attempt < limit; attempt++) {
-        try {
-          const res = await port.fetch(`http://container${path}`, {
-            signal: AbortSignal.timeout(2000),
-          })
-          if (res.ok) return true
-        } catch {
-          /* not ready yet */
-        }
-        await sleep(200)
-      }
-      return false
-    }
-    // A snapshot restore should be quick; do not burn the long cold-start
-    // window before falling back to the image.
-    if (await ready(usedSnapshot ? 90 : 300)) return port
-    // A snapshot is tied to the image it was taken from. If restoring it never
-    // becomes ready, drop it and start from the current image instead.
-    if (usedSnapshot) {
-      logEvent("snapshot.stale")
-      void this.count("snapshot.stale")
-      await this.clearSnapshot()
-      await container.destroy().catch(() => {})
-      await this.startContainer()
-      if (await ready(300)) return port
-    }
-    throw new Error(`container port ${number} did not become ready`)
-  }
-
   private async withClient<T>(fn: (client: ReturnType<typeof makeClient>) => Promise<T>, recoverOnRejection = true): Promise<T> {
     try {
       const port = await this.ensureReady()
@@ -4006,7 +3888,7 @@ export class Conversation extends DurableObject<Env> {
       // it as a failure or recycle the container out from under itself.
       if (error instanceof Error && error.message.includes("did not become ready")) throw error
       this.consecutiveFailures++
-      this.invalidateOpenCode()
+      this.runtime.invalidate()
       // Two consecutive failures: assume the container is wedged and recycle it.
       if (this.consecutiveFailures >= 2) {
         this.consecutiveFailures = 0
@@ -4019,16 +3901,9 @@ export class Conversation extends DurableObject<Env> {
     }
   }
 
-  private readying?: Promise<ContainerPort>
-
   /** Start the container, restore the checkpoint on first boot, start OpenCode. */
-  private async ensureReady(): Promise<ContainerPort> {
-    if (!this.readying) {
-      this.readying = this.doEnsureReady().finally(() => {
-        this.readying = undefined
-      })
-    }
-    return this.readying
+  private ensureReady(): Promise<ContainerPort> {
+    return this.runtime.ensureReady(() => this.doEnsureReady())
   }
 
   private async readRuntimeUpgradePending(): Promise<RuntimeUpgradePending | undefined> {
@@ -4105,8 +3980,8 @@ export class Conversation extends DurableObject<Env> {
     if (blockers.length) return { ok: false, status: blockers.includes("central_usage_authority_unavailable") ? 503 : 409, error: "runtime upgrade is blocked", blockers }
     try {
       await this.ensureReady()
-      const port = this.opencodePort
-      const generation = this.opencodeGeneration
+      const port = this.runtime.apiPort
+      const generation = this.runtime.generation
       if (!port || !generation) throw new Error("runtime generation unavailable")
       const client = makeClient(portFetch(port))
       assertAccountingPolicy(await client.config.get())
@@ -4177,7 +4052,7 @@ export class Conversation extends DurableObject<Env> {
       client,
       sessionID,
       getRuntimeGeneration: async (signal) => {
-        const control = await this.port(CONTROL_PORT)
+        const control = await this.runtime.port(CONTROL_PORT)
         const response = await control.fetch("http://container/start", { method: "POST", signal })
         if (!response.ok) throw new Error("runtime proof unavailable")
         const proof = await response.json() as UnknownRecord
@@ -4185,9 +4060,7 @@ export class Conversation extends DurableObject<Env> {
           typeof proof.opencodeGeneration !== "string" || !proof.opencodeGeneration) {
           throw new Error("runtime generation proof invalid")
         }
-        this.opencodeGeneration = proof.opencodeGeneration
-        this.eventPersistence = proof.eventPersistence === true
-        this.eventPersistenceGeneration = proof.opencodeGeneration
+        this.runtime.recordProof(proof.opencodeGeneration, proof.eventPersistence === true)
         return proof.opencodeGeneration
       },
     })
@@ -4237,9 +4110,9 @@ export class Conversation extends DurableObject<Env> {
             const manifest = latestState.checkpointManifest
             if (!manifest) return Response.json({ error: "a published split checkpoint is required; current runtime was kept" }, { status: 503 })
             await this.validateRuntimeUpgradeArchive(manifest)
-            if (!this.opencodePort) return Response.json({ error: "runtime port changed after checkpoint; current runtime was kept" }, { status: 409 })
+            if (!this.runtime.apiPort) return Response.json({ error: "runtime port changed after checkpoint; current runtime was kept" }, { status: 409 })
             const afterCheckpoint = await this.proveRuntimeUpgradeSession(
-              makeClient(portFetch(this.opencodePort)), plan.pending.sessionID,
+              makeClient(portFetch(this.runtime.apiPort)), plan.pending.sessionID,
             )
             if (afterCheckpoint.proof.contextDigest !== plan.pending.contextDigest ||
               afterCheckpoint.proof.runtimeGeneration !== plan.pending.sourceGeneration) {
@@ -4270,12 +4143,7 @@ export class Conversation extends DurableObject<Env> {
             await container.destroy()
             await this.releaseLease()
           }
-          this.ready = false
-          this.opencodePort = undefined
-          this.opencodeGeneration = undefined
-          this.eventPersistence = undefined
-          this.eventPersistenceGeneration = undefined
-          this.inactivitySet = false
+          this.runtime.resetAfterStop()
           this.runtimeUpgradeResuming = true
           try {
             await this.ensureReady()
@@ -4305,7 +4173,7 @@ export class Conversation extends DurableObject<Env> {
       throw new Error("runtime upgrade intent belongs to another conversation")
     }
     if (this.leaseHeld) void this.acquireLease().catch(() => {})
-    if (this.ctx.container?.running) this.applyInactivity(this.ctx.container)
+    if (this.ctx.container?.running) this.runtime.applyInactivity(this.ctx.container)
     await this.loadContainerImageVariant(this.ctx.container)
     if (upgradePending && this.ctx.container?.images?.evented !== upgradePending.targetImage) {
       throw new Error("configured evented image does not match the pending upgrade")
@@ -4334,7 +4202,7 @@ export class Conversation extends DurableObject<Env> {
 
     // A settings change is applied between runs: destroying mid-run loses the turn.
     if (container && versionChanged && container.running && busy) {
-      if (this.ready && this.opencodePort && this.opencodeGeneration) return this.opencodePort
+      if (this.runtime.ready && this.runtime.apiPort && this.runtime.generation) return this.runtime.apiPort
       // A restarted DO can lack the old port cache while an accepted prompt is
       // still running. Verify the live runtime without reconfiguring or
       // destroying it; the new settings apply after this turn settles.
@@ -4350,21 +4218,16 @@ export class Conversation extends DurableObject<Env> {
       await this.clearSnapshot()
       await container.destroy()
       await this.releaseLease()
-      this.ready = false
-      this.opencodePort = undefined
-      this.opencodeGeneration = undefined
-      this.eventPersistence = undefined
-      this.eventPersistenceGeneration = undefined
-      this.inactivitySet = false
+      this.runtime.resetAfterStop()
     }
 
     // Fast path: this instance already verified the container for this spec.
-    if (!upgradePending && this.ready && this.opencodePort && this.opencodeGeneration &&
+    if (!upgradePending && this.runtime.ready && this.runtime.apiPort && this.runtime.generation &&
       (!container || container.running) && !versionChanged && (!providerSyncNeeded || busy)) {
-      return this.opencodePort
+      return this.runtime.apiPort
     }
 
-    const control = await this.port(CONTROL_PORT)
+    const control = await this.runtime.port(CONTROL_PORT)
 
     const status = (await (
       await control.fetch("http://container/status", { signal: AbortSignal.timeout(10_000) })
@@ -4465,20 +4328,19 @@ export class Conversation extends DurableObject<Env> {
       typeof proof.opencodeGeneration !== "string" || !proof.opencodeGeneration) {
       throw new AccountingPolicyError("container start returned no valid accounting runtime proof")
     }
-    this.eventPersistence = proof.eventPersistence === true
-    this.eventPersistenceGeneration = proof.opencodeGeneration
-    if (this.containerImageVariant === "evented" && proof.eventPersistence !== true) {
+    // Proof fields are committed together only after policy verification succeeds.
+    if (this.runtime.imageVariant === "evented" && proof.eventPersistence !== true) {
       throw new AccountingPolicyError("evented canary runtime did not confirm persistent events")
     }
-    const runtimeChanged = this.opencodeGeneration !== proof.opencodeGeneration
+    const runtimeChanged = this.runtime.generation !== proof.opencodeGeneration
     // Verify effective OpenCode config through its local API before caching the
     // port or allowing any call that could run a provider prompt.
-    const port = await this.port(OPENCODE_PORT)
+    const port = await this.runtime.port(OPENCODE_PORT)
     const opencode = makeClient(portFetch(port))
     assertAccountingPolicy(await opencode.config.get())
     if (upgradePending) {
       const targetImage = this.ctx.container?.images?.evented
-      if (!targetImage || targetImage !== upgradePending.targetImage || this.containerImageVariant !== "evented") {
+      if (!targetImage || targetImage !== upgradePending.targetImage || this.runtime.imageVariant !== "evented") {
         throw new Error("restored runtime image does not match the pending upgrade")
       }
       const restoredQuiescence = await this.proveRuntimeUpgradeSession(opencode, upgradePending.sessionID)
@@ -4514,9 +4376,7 @@ export class Conversation extends DurableObject<Env> {
     }
 
     logEvent("container.ready", { durationMs: Date.now() - startedAt })
-    this.opencodeGeneration = proof.opencodeGeneration
-    this.opencodePort = port
-    this.ready = true
+    this.runtime.markVerified(port, proof.opencodeGeneration, proof.eventPersistence === true)
     return port
   }
 
@@ -4743,15 +4603,6 @@ export class Conversation extends DurableObject<Env> {
     const settings = await this.settings().catch(() => undefined)
     if (settings?.streaming) this.ctx.waitUntil(this.startStream(sessionID))
     return true
-  }
-
-  /** Drop the cached port so the next call re-checks and restarts OpenCode. */
-  private invalidateOpenCode(): void {
-    this.ready = false
-    this.opencodePort = undefined
-    this.opencodeGeneration = undefined
-    this.eventPersistence = undefined
-    this.eventPersistenceGeneration = undefined
   }
 
   // -------------------------------------------------------------------- Slack

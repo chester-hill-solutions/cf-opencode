@@ -3,6 +3,7 @@ import { env, runInDurableObject } from "cloudflare:test"
 import { ACCOUNT_STATE_KEY } from "../src/conversation"
 import type { ConversationState } from "../src/state"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
+import { runtimeCache } from "./helpers/runtime-cache"
 
 const settings = () => env.SETTINGS.getByName("global")
 
@@ -125,15 +126,10 @@ describe("settings-driven container restart", () => {
       const container = installContainer(instance, calls)
       const internal = instance as unknown as {
         doEnsureReady(): Promise<unknown>
-        ready: boolean
-        opencodePort?: unknown
-        opencodeGeneration?: string
-        inactivitySet: boolean
       }
-      internal.ready = true
-      internal.opencodePort = {}
-      internal.opencodeGeneration = "old-generation"
-      internal.inactivitySet = true
+      const cache = runtimeCache(instance)
+      cache.markVerified({ fetch: async () => new Response(null) }, "old-generation", true)
+      cache.applyInactivity(container)
       await internal.doEnsureReady()
       const state = await runtime.storage.get<ConversationState>("state")
       if (!state) throw new Error("state missing after settings restart")
@@ -143,9 +139,9 @@ describe("settings-driven container restart", () => {
         source: await runtime.storage.get("usage-source:preserve"),
         snapshot: await runtime.storage.get("snapshot"),
         containerRunning: container.running,
-        ready: internal.ready,
-        generation: internal.opencodeGeneration,
-        inactivitySet: internal.inactivitySet,
+        ready: cache.ready,
+        generation: cache.generation,
+        inactivitySet: cache.inactivitySet,
       }
     })
     const checkpoint = result.calls.findIndex((call) => call === "4001 GET /checkpoint")
@@ -200,13 +196,8 @@ describe("settings-driven container restart", () => {
       const container = installContainer(instance, calls)
       const internal = instance as unknown as {
         doEnsureReady(): Promise<unknown>
-        ready: boolean
-        opencodePort?: unknown
-        opencodeGeneration?: string
       }
-      internal.ready = true
-      internal.opencodePort = { fetch: async () => new Response(null) }
-      internal.opencodeGeneration = "current-generation"
+      runtimeCache(instance).markVerified({ fetch: async () => new Response(null) }, "current-generation", true)
       await internal.doEnsureReady()
       return {
         calls, containerRunning: container.running,
@@ -285,13 +276,8 @@ describe("settings-driven container restart", () => {
       }
       const internal = instance as unknown as {
         doEnsureReady(): Promise<unknown>
-        ready: boolean
-        opencodePort: { fetch(input: Request | string | URL): Promise<Response> }
-        opencodeGeneration: string
       }
-      internal.ready = true
-      internal.opencodeGeneration = "live-generation"
-      internal.opencodePort = instance.transport?.(4000)
+      runtimeCache(instance).markVerified(instance.transport!(4000), "live-generation", true)
       const onboarding = instance.fetch(new Request("https://conversation/onboarding/models", {
         headers: { "x-conversation-key": "onboarding" },
       }))
@@ -326,13 +312,8 @@ describe("settings-driven container restart", () => {
       })
       const internal = instance as unknown as {
         doEnsureReady(): Promise<unknown>
-        ready: boolean
-        opencodePort: unknown
-        opencodeGeneration: string
       }
-      internal.ready = true
-      internal.opencodePort = instance.transport?.(4000)
-      internal.opencodeGeneration = "live-generation"
+      runtimeCache(instance).markVerified(instance.transport!(4000), "live-generation", true)
 
       const pending = instance.fetch(new Request("https://conversation/onboarding/state-checkpoint", {
         headers: { "x-conversation-key": "onboarding" },

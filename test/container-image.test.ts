@@ -3,6 +3,7 @@ import { env, runInDurableObject } from "cloudflare:test"
 import type { ContainerStartupOptions } from "@cloudflare/workers-types"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
 import { driveConversationJobs } from "./helpers/conversation-jobs"
+import { runtimeCache } from "./helpers/runtime-cache"
 
 const BASE_IMAGE = "registry.cloudflare.com/test/conversation-base@sha256:base"
 const EVENTED_IMAGE = "registry.cloudflare.com/test/conversation-evented@sha256:evented"
@@ -11,7 +12,6 @@ type Internal = {
   env: { EVENTED_FRESH_CONVERSATIONS?: string; SLACK_BOT_TOKEN?: string }
   key?: string
   controlTokenValue?: string
-  containerImageVariant?: "base" | "evented"
   startOptions(): ContainerStartupOptions
   snapshotHandle(): Promise<unknown>
   startContainer(): Promise<boolean>
@@ -19,9 +19,6 @@ type Internal = {
   doEnsureReady(): Promise<unknown>
   acquireLease(): Promise<void>
   releaseLease(): Promise<void>
-  ready: boolean
-  opencodePort?: unknown
-  opencodeGeneration?: string
 }
 
 function installContainer(instance: unknown, images: Record<string, string>) {
@@ -134,6 +131,26 @@ function installMessagePorts(
 }
 
 describe("isolated evented container image selection", () => {
+  it("reports the actual binding state separately from runtime readiness", async () => {
+    const stub = env.CONVERSATION.getByName("runtime-debug-running-state")
+    const result = await runInDurableObject(stub, async (instance) => {
+      const internal = instance as unknown as { ctx: object }
+      runtimeCache(instance).markVerified({ fetch: async () => new Response(null) }, "verified-generation", true)
+      Object.defineProperty(internal.ctx, "container", {
+        configurable: true,
+        value: { running: false },
+      })
+      const response = await instance.fetch(new Request("https://conversation/debug"))
+      return response.json() as Promise<Record<string, unknown>>
+    })
+
+    expect(result).toMatchObject({
+      ready: true,
+      containerRunning: false,
+      runtimeGeneration: "verified-generation",
+    })
+  })
+
   beforeEach(async () => {
     env.EVENTED_FRESH_CONVERSATIONS = undefined
     await resetSettings()
@@ -287,7 +304,7 @@ describe("isolated evented container image selection", () => {
       const usedSnapshot = await internal.startBoundContainer(container)
       await runtime.storage.put("snapshot", { id: "base-image-snapshot", size: 17 })
       internal.key = undefined
-      internal.containerImageVariant = undefined
+      runtimeCache(instance).bindImage(undefined)
       const coldStartUsedSnapshot = await internal.startBoundContainer(container)
       return {
         starts,
@@ -542,10 +559,8 @@ describe("isolated evented container image selection", () => {
       // Simulate a cold DO before the alarm drains the queued turn. The durable
       // image marker, not the lost request key or startup cache, selects image.
       internal.key = undefined
-      internal.containerImageVariant = undefined
-      internal.ready = false
-      internal.opencodePort = undefined
-      internal.opencodeGeneration = undefined
+      runtimeCache(instance).bindImage(undefined)
+      runtimeCache(instance).invalidate()
       const state = firstState as Record<string, unknown> & { queued: Record<string, unknown> }
       await runtime.storage.put("state", {
         ...state,
@@ -680,9 +695,7 @@ describe("isolated evented container image selection", () => {
       const fake = installMessagePorts(instance, { eventPersistence: false, initialized: true })
       const internal = instance as unknown as Internal
       internal.key = undefined
-      internal.ready = false
-      internal.opencodePort = undefined
-      internal.opencodeGeneration = undefined
+      runtimeCache(instance).invalidate()
       let error = ""
       try {
         await internal.doEnsureReady()
@@ -692,7 +705,7 @@ describe("isolated evented container image selection", () => {
       return {
         error,
         calls: fake.calls,
-        binding: internal.containerImageVariant,
+        binding: runtimeCache(instance).imageVariant,
         persisted: await runtime.storage.get("containerImageVariant"),
       }
     })

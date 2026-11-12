@@ -234,7 +234,7 @@ platform inactivity timeout as a distinct safety net; reducing it to 30 seconds
 alone would skip checkpointing and is not the implementation.
 
 The close linearization point is a **runtime-owned exclusive-use gate**, not
-only a final epoch read. Every client/control/onboarding/lease operation borrows
+only a final epoch read. Every client/control/onboarding operation borrows
 the runtime through that gate. With admission/lifecycle exclusion held, closing
 may claim the gate only at zero active borrows; otherwise defer. Mark it closing
 before the final checks and hold that state through checkpoint, destroy and
@@ -243,6 +243,21 @@ state/SSE requests remain responsive. The close owner receives a narrow existing
 runtime handle for proof/capture so it does not deadlock by borrowing itself.
 Document/test lock order and release on all failures. A lease operation with an
 unknown outcome blocks close until reconciled rather than racing a late renewal.
+
+Lock order is admission, usage serialization, then runtime exclusivity. Stop
+the owned idle native stream before taking the usage fence, so queued usage
+replays drain without a teardown waiting on its own lock. Internal readiness,
+checkpoint and control calls use an already-owned handle; they must not enter
+the outer runtime gate again. Iterated durable logs remain under usage
+serialization until consumption finishes. Readiness must not race a close
+between preparation and the actual borrowed operation.
+
+Lease requests use a separate serialized tail so a long runtime call cannot
+starve renewal. Persist desired-held/release-pending state before I/O; retain
+uncertain or rejected releases and retry with the same Settings identity.
+Runtime close waits for that tail after confirmed stop. Renewal failure blocks
+new dispatch before the acknowledged lease expires, while active financial
+holds remain unchanged. TTL is not a guaranteed lock through a network outage.
 
 Runtime-dependent requests reopen through existing restore/readiness/accounting
 verification; passive inspection does not reopen it. Restore failure refuses
@@ -449,3 +464,10 @@ prove these contracts; the review is not runtime qualification.
   startup tests pass, preserving the observation job, deadline and held usage.
   The helper-only race did not establish a production failure; no additional
   migration protocol was added. CI will rerun with the corrected fixture.
+- Runtime port routing, snapshot-start fallback, readiness coalescing and
+  private cache transitions now live in `ConversationRuntime`. Coordinator
+  writes use explicit verification/pause/stop/image transitions, not public
+  mutable cache fields. Sixty-two focused Worker tests and full typecheck pass.
+  High-level restore/readiness, image policy and lease orchestration still need
+  extraction/integration. Passive debug now distinguishes actual container
+  running state from verified readiness for the no-inference benchmark.

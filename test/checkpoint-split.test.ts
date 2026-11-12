@@ -6,6 +6,7 @@ import { decryptBytes } from "../src/archive-crypto"
 import type { CheckpointManifest, ConversationState } from "../src/state"
 import { usageLogResponse } from "./helpers/usage-log"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
+import { runtimeCache } from "./helpers/runtime-cache"
 
 /**
  * Split checkpoints keep the workspace and harness state in separate R2
@@ -429,8 +430,7 @@ describe("split checkpoints", () => {
     await runInDurableObject(stub, async (instance) => {
       instance.transport = fake.transport
       fake.stop()
-      ;(instance as unknown as { ready: boolean }).ready = false
-      ;(instance as unknown as { opencodePort?: unknown }).opencodePort = undefined
+      runtimeCache(instance).pauseServer()
       await send(instance, "again")
     })
 

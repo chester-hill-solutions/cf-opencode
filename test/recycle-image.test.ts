@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
 import type { ConversationState } from "../src/state"
+import { runtimeCache } from "./helpers/runtime-cache"
 
 function installContainer(instance: unknown, calls: { destroy: number; snapshot: number }) {
   const container = {
     async destroy() { calls.destroy++ },
+    async setInactivityTimeout() {},
     async snapshotContainer() { calls.snapshot++; return { id: "captured-old", size: 99 } },
   }
   const context = (instance as { ctx: object }).ctx
@@ -28,17 +30,12 @@ describe("image upgrade recycle", () => {
       const internal = instance as unknown as {
         checkpoints: { capture(): Promise<boolean> }
         captureSnapshot(): Promise<void>
-        ready: boolean
-        opencodePort?: unknown
-        opencodeGeneration?: string
-        inactivitySet: boolean
       }
+      const cache = runtimeCache(instance)
       internal.checkpoints.capture = async () => { calls.checkpoint++; return true }
       internal.captureSnapshot = async () => { calls.capture++ }
-      internal.ready = true
-      internal.opencodePort = {}
-      internal.opencodeGeneration = "old-generation"
-      internal.inactivitySet = true
+      cache.markVerified({ fetch: async () => new Response(null) }, "old-generation", true)
+      cache.applyInactivity((instance as unknown as { ctx: { container: { setInactivityTimeout(ms: number): Promise<void> } } }).ctx.container)
       const response = await recycle(instance)
       return {
         status: response.status,
@@ -47,10 +44,10 @@ describe("image upgrade recycle", () => {
         state: await runtime.storage.get<ConversationState>("state"),
         source: await runtime.storage.get("usage-source:keep"),
         snapshot: await runtime.storage.get("snapshot"),
-        ready: internal.ready,
-        opencodePort: internal.opencodePort,
-        generation: internal.opencodeGeneration,
-        inactivitySet: internal.inactivitySet,
+        ready: cache.ready,
+        opencodePort: cache.apiPort,
+        generation: cache.generation,
+        inactivitySet: cache.inactivitySet,
       }
     })
 
