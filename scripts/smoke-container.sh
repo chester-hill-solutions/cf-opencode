@@ -46,6 +46,10 @@ need curl
 need tar
 need jq
 
+# Finish before Bun's 120-second idle disconnect so failure diagnostics observe
+# the blocked request while the container and its children are still present.
+curl() { command curl --connect-timeout 5 --max-time 110 "$@"; }
+
 case "$RUNTIME" in
   docker)
     need docker
@@ -74,8 +78,21 @@ case "$RUNTIME" in
     ;;
 esac
 
+finish() {
+  local status=$?
+  if [[ "$status" != 0 && "$RUNTIME" == "docker" ]]; then
+    echo "container smoke failed; collecting process diagnostics" >&2
+    docker top "$NAME" -eo pid,ppid,stat,comm >&2 || true
+    docker exec "$NAME" sh -c 'for p in /proc/[0-9]*; do test -r "$p/status" || continue; sed -n -e "/^Name:/p" -e "/^State:/p" -e "/^Pid:/p" -e "/^PPid:/p" "$p/status"; printf "wait: "; cat "$p/wchan" 2>/dev/null; printf "\n"; done' >&2 || true
+    docker logs --tail 200 "$NAME" >&2 || true
+  fi
+  cleanup
+  rm -rf "$WORK"
+  exit "$status"
+}
+
 cleanup
-trap 'cleanup; rm -rf "$WORK"' EXIT
+trap finish EXIT
 
 echo "building ${IMAGE}…"
 build_image
@@ -108,7 +125,9 @@ grep -q '/var/lib/aboiteau/state/\*\*' <<<"$config" || fail "state-root read/edi
 grep -q '\$HOME' <<<"$config" || fail "HOME shell deny missing from OpenCode config"
 ok "credential denials written to OpenCode config"
 
+echo "starting runtime"
 curl -fsS "${AUTH[@]}" -X POST "${BASE}/start" >/dev/null
+echo "completed runtime start"
 status="$(curl -fsS "${AUTH[@]}" "${BASE}/status")"
 echo "$status" | jq -e '.initialized and .running and .s3' >/dev/null || fail "status not ready: ${status}"
 ok "OpenCode and local S3 running"
@@ -141,9 +160,13 @@ ok "state checkpoint contains the marker"
 
 # Workspace restore round-trip.
 exec_in rm -f /workspace/smoke.txt
+echo "starting workspace restore"
 curl -fsS "${AUTH[@]}" -X POST --data-binary "@${WS_ARCHIVE}" "${BASE}/restore?part=workspace&final=1" >/dev/null
+echo "completed workspace restore"
 exec_in test -f /workspace/smoke.txt || fail "workspace restore lost the marker"
+echo "starting runtime"
 curl -fsS "${AUTH[@]}" -X POST "${BASE}/start" >/dev/null
+echo "completed runtime start"
 curl -fsS "${AUTH[@]}" "${BASE}/status" | jq -e '.initialized and .running and .s3' >/dev/null \
   || fail "container did not restart after workspace restore"
 ok "workspace restore round-trip"
@@ -155,17 +178,25 @@ code="$(exec_in sh -c "curl -s -o /dev/null -w '%{http_code}' -H 'authorization:
 [[ "$code" == "500" ]] || fail "escaping workspace symlink returned ${code}, expected 500"
 ok "escaping workspace symlink refused"
 
+echo "starting workspace restore"
 curl -fsS "${AUTH[@]}" -X POST --data-binary "@${WS_ARCHIVE}" "${BASE}/restore?part=workspace&final=1" >/dev/null
+echo "completed workspace restore"
+echo "starting runtime"
 curl -fsS "${AUTH[@]}" -X POST "${BASE}/start" >/dev/null
+echo "completed runtime start"
 curl -fsS "${AUTH[@]}" "${BASE}/status" | jq -e '.initialized and .running and .s3' >/dev/null \
   || fail "container did not recover after refusing the malicious archive"
 ok "workspace recovered after refusal"
 
 # State restore round-trip.
 exec_in rm -f /var/lib/aboiteau/state/smoke-state.txt
+echo "starting state restore"
 curl -fsS "${AUTH[@]}" -X POST --data-binary "@${STATE_ARCHIVE}" "${BASE}/restore?part=state" >/dev/null
+echo "completed state restore"
 exec_in test -f /var/lib/aboiteau/state/smoke-state.txt || fail "state restore lost the marker"
+echo "starting runtime"
 curl -fsS "${AUTH[@]}" -X POST "${BASE}/start" >/dev/null
+echo "completed runtime start"
 curl -fsS "${AUTH[@]}" "${BASE}/status" | jq -e '.initialized and .running and .s3' >/dev/null \
   || fail "container did not restart after state restore"
 ok "state restore round-trip"
@@ -173,7 +204,9 @@ ok "state restore round-trip"
 # Account-state snapshot used by onboarding.
 curl -fsS "${AUTH[@]}" "${BASE}/state-checkpoint" -o "$ACCOUNT_ARCHIVE"
 [[ -s "$ACCOUNT_ARCHIVE" ]] || fail "account state checkpoint empty"
+echo "starting runtime"
 curl -fsS "${AUTH[@]}" -X POST "${BASE}/start" >/dev/null
+echo "completed runtime start"
 ok "account state checkpoint"
 
 echo "container smoke test passed"
