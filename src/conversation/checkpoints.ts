@@ -29,6 +29,7 @@ export interface ConversationCheckpointsOptions {
   bucket: R2Bucket
   archiveEnv: ArchivePolicyEnv
   getControl(): Promise<ContainerPort>
+  withRuntimeUse?<T>(task: () => Promise<T>): Promise<T>
   retry: CheckpointRetryPort
   count(name: string): Promise<void>
   deliverError(message: string): Promise<unknown>
@@ -151,7 +152,13 @@ export class ConversationCheckpoints {
     return false
   }
 
-  async capture(): Promise<boolean> {
+  capture(): Promise<boolean> {
+    const capture = () => this.captureOwned()
+    return this.options.withRuntimeUse ? this.options.withRuntimeUse(capture) : capture()
+  }
+
+  /** Capture while the caller already owns runtime access, preserving the checkpoint publication fence. */
+  async captureOwned(): Promise<boolean> {
     const previous = this.checkpointTail
     let release!: () => void
     this.checkpointTail = new Promise<void>((resolve) => { release = resolve })

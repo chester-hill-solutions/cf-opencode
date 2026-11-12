@@ -115,7 +115,7 @@ export class ConversationReadiness {
       // and OpenCode database that live in the current container. Its prior
       // checkpoint may predate an account connection, so never destroy before
       // a fresh portable archive is safely stored.
-      const saved = await this.options.checkpoints.capture()
+      const saved = await this.options.checkpoints.captureOwned()
       if (!saved) throw new Error("settings changed but checkpoint failed; keeping the current container")
       if (!(await this.options.runtime.stop())) throw new Error("container stop was not confirmed; keeping the current runtime")
       if (!(await this.options.leases.releaseAfterStop())) throw new Error("container lease release is pending; keeping restart blocked")
