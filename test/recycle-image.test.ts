@@ -26,14 +26,14 @@ describe("image upgrade recycle", () => {
       const calls = { checkpoint: 0, capture: 0, destroy: 0, snapshot: 0 }
       installContainer(instance, calls)
       const internal = instance as unknown as {
-        checkpoint(): Promise<boolean>
+        checkpoints: { capture(): Promise<boolean> }
         captureSnapshot(): Promise<void>
         ready: boolean
         opencodePort?: unknown
         opencodeGeneration?: string
         inactivitySet: boolean
       }
-      internal.checkpoint = async () => { calls.checkpoint++; return true }
+      internal.checkpoints.capture = async () => { calls.checkpoint++; return true }
       internal.captureSnapshot = async () => { calls.capture++ }
       internal.ready = true
       internal.opencodePort = {}
@@ -78,7 +78,7 @@ describe("image upgrade recycle", () => {
       await runtime.storage.put("snapshot", { id: "old-image-snapshot", size: 10 })
       const calls = { checkpoint: 0, capture: 0, destroy: 0, snapshot: 0 }
       installContainer(instance, calls)
-      ;(instance as unknown as { checkpoint(): Promise<boolean> }).checkpoint = async () => { calls.checkpoint++; return true }
+      ;(instance as unknown as { checkpoints: { capture(): Promise<boolean> } }).checkpoints.capture = async () => { calls.checkpoint++; return true }
       const response = await recycle(instance)
       return { status: response.status, calls, snapshot: await runtime.storage.get("snapshot") }
     })
@@ -94,8 +94,8 @@ describe("image upgrade recycle", () => {
       await runtime.storage.put("snapshot", { id: "old-image-snapshot", size: 10 })
       const calls = { checkpoint: 0, capture: 0, destroy: 0, snapshot: 0 }
       installContainer(instance, calls)
-      const internal = instance as unknown as { checkpoint(): Promise<boolean>; captureSnapshot(): Promise<void> }
-      internal.checkpoint = async () => { calls.checkpoint++; return false }
+      const internal = instance as unknown as { checkpoints: { capture(): Promise<boolean> }; captureSnapshot(): Promise<void> }
+      internal.checkpoints.capture = async () => { calls.checkpoint++; return false }
       internal.captureSnapshot = async () => { calls.capture++ }
       const response = await recycle(instance)
       return { status: response.status, body: await response.json(), calls, snapshot: await runtime.storage.get("snapshot") }

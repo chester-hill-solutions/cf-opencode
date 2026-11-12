@@ -179,7 +179,8 @@ describe("split checkpoints", () => {
             createdAt: 100,
           },
         })
-        await (instance as unknown as { pruneCheckpoints(): Promise<void> }).pruneCheckpoints()
+        const checkpoints = (instance as unknown as { checkpoints: { prune(): Promise<void> } }).checkpoints
+        await checkpoints.prune()
         return { prefix, workspaces, states, unknown }
       })
     } finally {
@@ -216,10 +217,11 @@ describe("split checkpoints", () => {
       const newerKeys = Array.from({ length: 7 }, (_, i) => `${prefix}workspace-${200 + i}.tar.gz`)
       for (const key of [activeKey, ...newerKeys]) await env.CHECKPOINTS.put(key, "legacy")
       await state.storage.put("state", { checkpointKey: activeKey })
-      await (instance as unknown as { pruneCheckpoints(): Promise<void> }).pruneCheckpoints()
-      const latest = await (instance as unknown as {
-        latestCheckpoint(): Promise<{ workspace: { key: string } } | null>
-      }).latestCheckpoint()
+      const checkpoints = (instance as unknown as {
+        checkpoints: { prune(): Promise<void>; latest(): Promise<{ workspace: { key: string } } | null> }
+      }).checkpoints
+      await checkpoints.prune()
+      const latest = await checkpoints.latest()
       const listed = await env.CHECKPOINTS.list({ prefix })
       return { activeKey, newerKeys, latestKey: latest?.workspace.key, retained: listed.objects.map(({ key }) => key) }
     })
@@ -234,7 +236,9 @@ describe("split checkpoints", () => {
     try {
       const result = await runInDurableObject(stub, async (instance, state) => {
         instance.transport = fake.transport
-        const checkpoint = (instance as unknown as { checkpoint(): Promise<boolean> }).checkpoint.bind(instance)
+        const checkpoint = (instance as unknown as { checkpoints: { capture(): Promise<boolean> } }).checkpoints.capture.bind(
+          (instance as unknown as { checkpoints: object }).checkpoints,
+        )
         const saved: string[] = []
         for (let i = 0; i < 7; i++) {
           now.mockReturnValue(10_000 + i)
@@ -268,7 +272,9 @@ describe("split checkpoints", () => {
     try {
       const result = await runInDurableObject(stub, async (instance, state) => {
         instance.transport = fake.transport
-        const checkpoint = (instance as unknown as { checkpoint(): Promise<boolean> }).checkpoint.bind(instance)
+        const checkpoint = (instance as unknown as { checkpoints: { capture(): Promise<boolean> } }).checkpoints.capture.bind(
+          (instance as unknown as { checkpoints: object }).checkpoints,
+        )
         const saved: string[] = []
         for (let i = 0; i < 7; i++) {
           now.mockReturnValue(20_000 + i)
@@ -449,7 +455,7 @@ describe("split checkpoints", () => {
 
     const second = await runInDurableObject(stub, async (instance, state) => {
       instance.transport = fake.transport
-      await (instance as unknown as { checkpoint(): Promise<boolean> }).checkpoint()
+      await (instance as unknown as { checkpoints: { capture(): Promise<boolean> } }).checkpoints.capture()
       return (await state.storage.get<ConversationState>("state"))?.checkpointManifest
     })
 

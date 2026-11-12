@@ -432,3 +432,15 @@ prove these contracts; the review is not runtime qualification.
   Protected policy/accounting/Settings source hashes match the baseline. Native
   image code is unchanged; final native smoke remains a release gate. Runtime,
   lease renewal, checkpoint extraction, idle close and telemetry wiring remain.
+- Checkpoint extraction now delegates archive capture, retry, lookup, decryption
+  and deletion to `ConversationCheckpoints`; the serialization tail moved with
+  upload/publication/pruning and failure bookkeeping. Conversation shrank by
+  390 lines. Fifty-three affected Worker tests and full typecheck passed; two
+  direct real-SQLite/R2 tests additionally prove capture ordering and that a
+  failed capture persists its retry before releasing the next writer.
+- CI run 43280729799 passed typecheck/build/unit checks but failed one startup
+  race fixture. The public test helper deletes an alarm and yields before
+  invoking its handler; this can erase provenance before the passive fetch.
+  Native dispatch has not yet been shown to permit that gap. Platform-scheduled
+  delivery is being checked directly; native smoke was skipped by the failed
+  prerequisite. Do not interpret the local pass as final release verification.

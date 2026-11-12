@@ -425,7 +425,7 @@ describe("durable usage ledger", () => {
     const reset = await runInDurableObject(stub, async (instance, state) => {
       const target = instance as unknown as {
         withClient<T>(fn: (client: any) => Promise<T>): Promise<T>
-        deleteCheckpoints(): Promise<void>
+        checkpoints: { deleteAll(): Promise<void> }
         refreshUsageFromLog(sessionID: string): Promise<void>
       }
       let logCalls = 0
@@ -439,7 +439,7 @@ describe("durable usage ledger", () => {
       target.withClient = async (fn) => fn({
         experimental: { session: { log: () => { logCalls++; return iterable() } } },
       })
-      target.deleteCheckpoints = async () => {
+      target.checkpoints.deleteAll = async () => {
         cleanupEntered()
         await cleanupGate
       }

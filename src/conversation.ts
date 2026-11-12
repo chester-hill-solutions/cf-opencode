@@ -32,9 +32,9 @@ import {
 } from "./messages"
 import type { ConversationEvent } from "./events"
 import { ConversationEventStream } from "./conversation/event-stream"
+import { ConversationCheckpoints } from "./conversation/checkpoints"
 import { createSseParser } from "./sse"
 import { parseModelRef, type Env } from "./env"
-import { withRetries } from "./retry"
 import { retryAfterSeconds } from "./backoff"
 import { logEvent } from "./log"
 import { withSpan } from "./telemetry"
@@ -44,13 +44,6 @@ import { nextBudgetReset } from "./budget"
 import { CAPACITY_RETRY_MS, isCapacityRejection } from "./queue"
 import { GITHUB_TOKEN_KEY, workspaceID } from "./vault"
 import { accountStateKey, LEGACY_ACCOUNT_STATE_KEY, parseConversationKey } from "./tenancy"
-import {
-  decryptTransform,
-  encryptBytes,
-  encryptTransform,
-  encryptedLength,
-} from "./archive-crypto"
-import { deriveWorkspaceKey } from "@chester-hill-solutions/vault/core"
 import { plaintextArchivesAllowed } from "./archive-policy"
 import { durableUsageEvent } from "./usage"
 import { ACCOUNTING_POLICY_ID, AccountingPolicyError, assertAccountingPolicy } from "./accounting-policy"
@@ -168,9 +161,6 @@ const CONTROL_PORT = 4001
 const POLL_MS = 2000
 /** Delay before retrying a checkpoint that failed after a turn. */
 const CHECKPOINT_RETRY_MS = 30_000
-const CHECKPOINT_RETRY_LIMIT = 3
-/** How many checkpoint versions to keep per conversation. */
-const CHECKPOINT_KEEP = 5
 /** Container lease lifetime for the concurrency cap, refreshed per turn. */
 const LEASE_TTL_MS = 10 * 60_000
 /** Keep a warm container between quick follow-up turns. */
@@ -228,12 +218,11 @@ export class Conversation extends DurableObject<Env> {
   private readonly jobs: ConversationJobs
   private readonly store: ConversationStore
   private readonly eventStream: ConversationEventStream
+  private readonly checkpoints: ConversationCheckpoints
   private jobEpoch = 0
   private readonly activeLifecycleJobs = new Set<ConversationJobKind>()
   /** Serialize durable usage replays (settlement may race the alarm pump). */
   private usageTail: Promise<void> = Promise.resolve()
-  /** Serialize checkpoint publication through pruning within this instance. */
-  private checkpointTail: Promise<void> = Promise.resolve()
   private streaming = false
   private pumping = false
   private consecutiveFailures = 0
@@ -288,6 +277,21 @@ export class Conversation extends DurableObject<Env> {
       onMemoryLimit: (context) => this.onLifecycleMemoryLimit(context),
     })
     this.lifecycle.use(this.jobs)
+    this.checkpoints = new ConversationCheckpoints({
+      conversationID: ctx.id.toString(),
+      workspaceID: workspaceID(env),
+      store: this.store,
+      storage: ctx.storage,
+      bucket: env.CHECKPOINTS,
+      archiveEnv: env,
+      getControl: () => this.port(CONTROL_PORT),
+      retry: {
+        schedule: (at, reason) => this.scheduleConversationJob("checkpoint:retry", at, { reason }),
+        cancel: () => this.jobs.cancel("checkpoint:retry"),
+      },
+      count: (name) => this.count(name),
+      deliverError: (message) => this.deliver({ type: "error", message }),
+    })
   }
 
   private async ensureJobEpoch(): Promise<number> {
@@ -908,25 +912,13 @@ export class Conversation extends DurableObject<Env> {
         this.eventPersistenceGeneration = undefined
         // A reset must not leave a checkpoint that the next cold start would
         // restore over the freshly cleared conversation.
-        await this.deleteCheckpoints()
+        await this.checkpoints.deleteAll()
         await this.resetConversationJobs()
         this.controlTokenValue = undefined
         this.providerSyncAt = undefined
         return Response.json({ ok: true })
       })
     })
-  }
-
-  /** Remove every archived workspace for this conversation, including legacy keys. */
-  private async deleteCheckpoints(): Promise<void> {
-    const prefix = this.checkpointPrefix()
-    let cursor: string | undefined
-    do {
-      const page = await this.env.CHECKPOINTS.list({ prefix, cursor })
-      for (const object of page.objects) await this.env.CHECKPOINTS.delete(object.key)
-      cursor = page.truncated ? page.cursor : undefined
-    } while (cursor)
-    await this.env.CHECKPOINTS.delete(`workspaces/${this.ctx.id.toString()}.tar.gz`)
   }
 
   /**
@@ -942,7 +934,7 @@ export class Conversation extends DurableObject<Env> {
       // R2 checkpoints are portable across image versions. Capturing the old
       // rootfs here would pin the next start to its retired control server.
       // Keep the old runtime intact unless its current state is checkpointed.
-      const saved = await this.checkpoint()
+      const saved = await this.checkpoints.capture()
       if (!saved) {
         return Response.json(
           { ok: false, error: "checkpoint failed; not recycling" },
@@ -984,7 +976,7 @@ export class Conversation extends DurableObject<Env> {
         this.opencodeGeneration = undefined
         this.eventPersistence = undefined
         this.eventPersistenceGeneration = undefined
-        await this.deleteCheckpoints()
+        await this.checkpoints.deleteAll()
         await this.resetConversationJobs()
         this.controlTokenValue = undefined
         this.providerSyncAt = undefined
@@ -2305,7 +2297,7 @@ export class Conversation extends DurableObject<Env> {
       await this.store.patch({ lastSlackReply: reply })
     }
     await this.deliver({ type: "settled" })
-    const saved = await this.checkpoint()
+    const saved = await this.checkpoints.capture()
     if (!saved && !failure) {
       await this.deliver({
         type: "error",
@@ -3793,7 +3785,7 @@ export class Conversation extends DurableObject<Env> {
     }
     this.recoveryAction = true
     try {
-      await this.retryCheckpoint()
+      await this.checkpoints.retry()
     } finally {
       this.recoveryAction = false
     }
@@ -4204,7 +4196,7 @@ export class Conversation extends DurableObject<Env> {
   private async validateRuntimeUpgradeArchive(manifest: CheckpointManifest): Promise<void> {
     if (!manifest.state || manifest.workspace.size <= 0 || manifest.state.size <= 0 ||
       manifest.workspace.key === manifest.state.key) throw new Error("split checkpoint is incomplete")
-    const keyPrefix = this.checkpointPrefix()
+    const keyPrefix = `workspaces/${this.ctx.id.toString()}/`
     for (const part of [manifest.workspace, manifest.state]) {
       if (!part.key.startsWith(keyPrefix) || !Number.isSafeInteger(part.size) || part.size <= 0) {
         throw new Error("split checkpoint metadata is invalid")
@@ -4217,7 +4209,7 @@ export class Conversation extends DurableObject<Env> {
       if (!part.encrypted && !plaintextArchivesAllowed(this.env)) {
         throw new Error("plaintext checkpoint archives are disabled")
       }
-      const clear = await this.decryptCheckpointBody(object.body, part.encrypted)
+      const clear = await this.checkpoints.decryptBody(object.body, part.encrypted)
       const bytes = await new Response(clear).arrayBuffer()
       if (bytes.byteLength <= 0) throw new Error("split checkpoint archive is empty")
     }
@@ -4240,7 +4232,7 @@ export class Conversation extends DurableObject<Env> {
             const plan = await this.buildRuntimeUpgradePlan()
             if (!plan.ok) return Response.json({ error: plan.error, blockers: plan.blockers }, { status: plan.status })
             if (plan.pending.planID !== expectedPlanID) return Response.json({ error: "runtime upgrade plan changed; review a fresh preview" }, { status: 409 })
-            if (!await this.checkpoint()) return Response.json({ error: "checkpoint failed; current runtime was kept" }, { status: 503 })
+            if (!await this.checkpoints.capture()) return Response.json({ error: "checkpoint failed; current runtime was kept" }, { status: 503 })
             const latestState = await this.store.get()
             const manifest = latestState.checkpointManifest
             if (!manifest) return Response.json({ error: "a published split checkpoint is required; current runtime was kept" }, { status: 503 })
@@ -4353,7 +4345,7 @@ export class Conversation extends DurableObject<Env> {
       // and OpenCode database that live in the current container. Its prior
       // checkpoint may predate an account connection, so never destroy before
       // a fresh portable archive is safely stored.
-      const saved = await this.checkpoint()
+      const saved = await this.checkpoints.capture()
       if (!saved) throw new Error("settings changed but checkpoint failed; keeping the current container")
       await this.clearSnapshot()
       await container.destroy()
@@ -4381,9 +4373,9 @@ export class Conversation extends DurableObject<Env> {
     if (!status.initialized) {
       const checkpoint = upgradePending
         ? await this.runtimeUpgradeCheckpoint(upgradePending)
-        : await this.latestCheckpoint()
+        : await this.checkpoints.latest()
       if (checkpoint) {
-        const workspace = await this.decryptCheckpointBody(
+        const workspace = await this.checkpoints.decryptBody(
           checkpoint.workspace.body,
           checkpoint.workspace.customMetadata?.encrypted === "1",
         )
@@ -4406,7 +4398,7 @@ export class Conversation extends DurableObject<Env> {
           throw new Error(`workspace restore failed: ${restoredWorkspace.status}`)
         }
         if (checkpoint.state) {
-          const state = await this.decryptCheckpointBody(
+          const state = await this.checkpoints.decryptBody(
             checkpoint.state.body,
             checkpoint.state.customMetadata?.encrypted === "1",
           )
@@ -4434,7 +4426,7 @@ export class Conversation extends DurableObject<Env> {
         if (seed?.body) {
           const body =
             seed.customMetadata?.encrypted === "1"
-              ? await this.decryptCheckpointBody(seed.body, true)
+              ? await this.checkpoints.decryptBody(seed.body, true)
               : seed.body
           const seeded = await control.fetch("http://container/seed-state", {
             method: "POST",
@@ -4751,389 +4743,6 @@ export class Conversation extends DurableObject<Env> {
     const settings = await this.settings().catch(() => undefined)
     if (settings?.streaming) this.ctx.waitUntil(this.startStream(sessionID))
     return true
-  }
-
-  private checkpointPrefix(): string {
-    return `workspaces/${this.ctx.id.toString()}/`
-  }
-
-  /**
-   * Newest checkpoint. A manifest describes two independent objects; the
-   * pre-split layout is a single object and stays read-only during migration.
-   */
-  private async latestCheckpoint(): Promise<{
-    workspace: R2ObjectBody
-    state: R2ObjectBody | null
-    split: boolean
-  } | null> {
-    const state = await this.store.get()
-    const manifest = state.checkpointManifest
-    if (manifest?.workspace) {
-      const workspace = await this.env.CHECKPOINTS.get(manifest.workspace.key)
-      if (!workspace) {
-        logEvent("checkpoint.manifest.missing", { key: manifest.workspace.key })
-        throw new Error(`checkpoint manifest workspace is missing: ${manifest.workspace.key}`)
-      }
-      const state = manifest.state ? await this.env.CHECKPOINTS.get(manifest.state.key) : null
-      if (manifest.state && !state) {
-        logEvent("checkpoint.manifest.missing", { key: manifest.state.key })
-        throw new Error(`checkpoint manifest state is missing: ${manifest.state.key}`)
-      }
-      return { workspace, state, split: true }
-    }
-    const objects = await this.checkpointObjects()
-    if (state.checkpointKey) {
-      const recorded = await this.env.CHECKPOINTS.get(state.checkpointKey)
-      if (!recorded) throw new Error(`recorded checkpoint is missing: ${state.checkpointKey}`)
-      return { workspace: recorded, state: null, split: false }
-    }
-    const newest = objects
-      .map((object) => object.key)
-      .filter((key) => /^\d+\.tar\.gz$/.test(key.slice(this.checkpointPrefix().length)))
-      .sort()
-      .at(-1)
-    const legacy = newest
-      ? await this.env.CHECKPOINTS.get(newest)
-      : await this.env.CHECKPOINTS.get(`workspaces/${this.ctx.id.toString()}.tar.gz`)
-    return legacy ? { workspace: legacy, state: null, split: false } : null
-  }
-
-  /** Drop old versions, keeping the most recent few of each part. */
-  private async checkpointObjects(): Promise<R2Object[]> {
-    const objects: R2Object[] = []
-    let cursor: string | undefined
-    do {
-      const page = await this.env.CHECKPOINTS.list({ prefix: this.checkpointPrefix(), cursor })
-      objects.push(...page.objects)
-      cursor = page.truncated ? page.cursor : undefined
-    } while (cursor)
-    return objects
-  }
-
-  private async pruneCheckpoints(): Promise<void> {
-    const objects = await this.checkpointObjects()
-    const state = await this.store.get()
-    const manifest = state.checkpointManifest
-    const active = new Set([
-      state.checkpointKey,
-      manifest?.workspace.key,
-      manifest?.state?.key,
-    ].filter((key): key is string => Boolean(key)))
-    // Match only the actual split object basenames. Unknown names may belong
-    // to another format and must not be classified or deleted by substring.
-    const workspaceKeys: string[] = []
-    const stateKeys: string[] = []
-    for (const { key } of objects) {
-      const basename = key.slice(this.checkpointPrefix().length)
-      if (/^workspace-\d+\.tar\.gz$/.test(basename)) workspaceKeys.push(key)
-      else if (/^state-\d+\.tar\.gz$/.test(basename)) stateKeys.push(key)
-    }
-    workspaceKeys.sort()
-    stateKeys.sort()
-    const keep = (keys: string[]) => new Set([
-      ...keys.slice(Math.max(0, keys.length - CHECKPOINT_KEEP)),
-      ...keys.filter((key) => active.has(key)),
-    ])
-    const retained = new Set([...keep(workspaceKeys), ...keep(stateKeys)])
-    const stale = [...workspaceKeys, ...stateKeys].filter((key) => !retained.has(key))
-    for (const key of stale) await this.env.CHECKPOINTS.delete(key)
-    if (stale.length) logEvent("checkpoint.pruned", { count: stale.length })
-  }
-
-  /** Retry a checkpoint that failed at settle time, with a bounded attempt count. */
-  private async retryCheckpoint(): Promise<boolean> {
-    const state = await this.store.get()
-    if (!state.checkpointPending) return false
-    if ((state.phase ?? "idle") !== "idle") return false
-    const attempts = state.checkpointAttempts ?? 0
-    if (attempts >= CHECKPOINT_RETRY_LIMIT) {
-      await this.store.patch({ checkpointPending: undefined, checkpointAttempts: undefined, checkpointRetryAt: undefined })
-      await this.jobs.cancel("checkpoint:retry")
-      logEvent("checkpoint.abandoned", { attempts })
-      await this.deliver({
-        type: "error",
-        message: "workspace checkpoint failed repeatedly; recent changes may not be recoverable",
-      }).catch(() => {})
-      return false
-    }
-    const saved = await this.checkpoint()
-    if (saved) {
-      await this.store.patch({ checkpointPending: undefined, checkpointAttempts: undefined, checkpointRetryAt: undefined })
-      await this.jobs.cancel("checkpoint:retry")
-      logEvent("checkpoint.recovered", { attempts })
-      return false
-    }
-    await this.store.patch({ checkpointAttempts: attempts + 1 })
-    logEvent("checkpoint.retry", { attempts: attempts + 1 })
-    return false
-  }
-
-  /** Tenant-scoped archive key, or undefined when plaintext storage is allowed. */
-  private async checkpointCryptoKey(): Promise<CryptoKey | undefined> {
-    const master = this.env.VAULT_MASTER_KEY
-    if (!master) {
-      // Provider credentials live in the state archive, so a missing key must
-      // not silently downgrade to plaintext R2 objects.
-      if (plaintextArchivesAllowed(this.env)) return undefined
-      throw new Error(
-        "VAULT_MASTER_KEY is required to encrypt checkpoints; set it or explicitly allow plaintext archives",
-      )
-    }
-    return deriveWorkspaceKey(master, workspaceID(this.env))
-  }
-
-  /** Decrypt a stored archive before handing it to the restore endpoint. */
-  private async decryptCheckpointBody(
-    body: ReadableStream,
-    encrypted: boolean,
-  ): Promise<ReadableStream> {
-    if (!encrypted) return body
-    const key = await this.checkpointCryptoKey()
-    if (!key) {
-      throw new Error("checkpoint is encrypted but VAULT_MASTER_KEY is not configured")
-    }
-    return body.pipeThrough(decryptTransform(key))
-  }
-
-  /** Stream one checkpoint part into R2 and prove the object is complete. */
-  private async uploadCheckpointPart(
-    key: string,
-    response: Response,
-    cryptoKey: CryptoKey | undefined,
-  ): Promise<number> {
-    if (!response.body) throw new Error("checkpoint part has no body")
-    const encrypted = Boolean(cryptoKey)
-    const length = Number(response.headers.get("content-length"))
-    const metadata = { customMetadata: { encrypted: encrypted ? "1" : "0" } }
-    let bytes: number
-    if (cryptoKey) {
-      if (Number.isFinite(length) && length > 0) {
-        // Encrypt as the body streams; the framed format has a deterministic
-        // length, so R2 still gets a fixed-length stream.
-        const sealed = response.body.pipeThrough(encryptTransform(cryptoKey))
-        const cipherLength = encryptedLength(length)
-        const fixed = new FixedLengthStream(cipherLength)
-        const piping = sealed.pipeTo(fixed.writable)
-        await Promise.all([this.env.CHECKPOINTS.put(key, fixed.readable, metadata), piping])
-        bytes = cipherLength
-      } else {
-        const plain = new Uint8Array(await response.arrayBuffer())
-        const sealed = await encryptBytes(plain, cryptoKey)
-        await this.env.CHECKPOINTS.put(key, sealed, metadata)
-        bytes = sealed.byteLength
-      }
-    } else if (Number.isFinite(length) && length > 0) {
-      // R2 needs a stream of known length; the control server sends one.
-      const counted = countedStream(response.body)
-      const fixed = new FixedLengthStream(length)
-      const piping = counted.stream.pipeTo(fixed.writable)
-      // Await both: a stream error must fail the checkpoint, not be silently
-      // swallowed while R2 keeps a truncated object.
-      await Promise.all([this.env.CHECKPOINTS.put(key, fixed.readable, metadata), piping])
-      bytes = counted.bytes()
-    } else {
-      // Older control servers streamed without a length.
-      const buffer = await response.arrayBuffer()
-      await this.env.CHECKPOINTS.put(key, buffer, metadata)
-      bytes = buffer.byteLength
-    }
-    const stored = await this.env.CHECKPOINTS.head(key)
-    if (!stored) throw new Error("checkpoint upload disappeared")
-    if (stored.size !== bytes) {
-      await this.env.CHECKPOINTS.delete(key)
-      throw new Error(`checkpoint size mismatch: ${stored.size} != ${bytes}`)
-    }
-    return bytes
-  }
-
-  /** Verify a part that the control server reported as unchanged. */
-  private async requireCheckpointPart(
-    part: { key: string } | undefined,
-    kind: "workspace" | "state",
-  ): Promise<void> {
-    if (!part) return
-    const head = await this.env.CHECKPOINTS.head(part.key)
-    if (head) return
-    logEvent("checkpoint.missing", { key: part.key })
-    await this.store.patch(
-      kind === "workspace"
-        ? { checkpointFingerprint: undefined, checkpointKey: undefined }
-        : { checkpointStateFingerprint: undefined },
-    )
-    throw new Error("checkpoint was skipped but the archive is missing")
-  }
-
-  private async checkpoint(): Promise<boolean> {
-    const previous = this.checkpointTail
-    let release!: () => void
-    this.checkpointTail = new Promise<void>((resolve) => { release = resolve })
-    await previous
-    try {
-      return await this.checkpointLocked()
-    } finally {
-      release()
-    }
-  }
-
-  private async checkpointLocked(): Promise<boolean> {
-    // The control server archives the workspace without stopping OpenCode, so
-    // the cached port stays valid across a checkpoint.
-    return withSpan("conversation.checkpoint", async (span) => {
-      const stamp = Date.now()
-      const prefix = this.checkpointPrefix()
-      const workspaceKey = `${prefix}workspace-${stamp}.tar.gz`
-      const stateKey = `${prefix}state-${stamp}.tar.gz`
-      try {
-        // Fail fast on a missing key instead of retrying a configuration error.
-        await this.checkpointCryptoKey()
-        await withRetries(
-          async () => {
-            const state = await this.store.get()
-            const cryptoKey = await this.checkpointCryptoKey()
-            const encrypted = Boolean(cryptoKey)
-            // Toggling encryption must not be skipped by a matching fingerprint.
-            const matching = state.checkpointEncrypted === encrypted
-            const workspaceSince = matching ? state.checkpointFingerprint ?? "" : ""
-            const stateSince = matching ? state.checkpointStateFingerprint ?? "" : ""
-            const control = await this.port(CONTROL_PORT)
-            const response = await control.fetch(
-              `http://container/checkpoint?part=workspace&since=${encodeURIComponent(workspaceSince)}`,
-              { signal: AbortSignal.timeout(120_000) },
-            )
-            const split = response.headers.get("x-aboiteau-checkpoint") === "split"
-
-            if (!split) {
-              // Legacy control server: one archive, one key. Kept for rolling
-              // deploys so an older image still checkpoints.
-              if (response.status === 204) {
-                await this.requireCheckpointPart(
-                  state.checkpointKey ? { key: state.checkpointKey } : undefined,
-                  "workspace",
-                )
-                void this.count("checkpoint.skipped")
-                logEvent("checkpoint.skipped")
-                return
-              }
-              if (!response.ok) throw new Error(`checkpoint returned ${response.status}`)
-              const bytes = await this.uploadCheckpointPart(workspaceKey, response, cryptoKey)
-              span.setAttribute("checkpoint.bytes", bytes)
-              void this.count("checkpoint.saved")
-              logEvent("checkpoint.saved", { bytes })
-              await this.store.patch({
-                checkpointSize: bytes,
-                checkpointKey: workspaceKey,
-                checkpointManifest: undefined,
-                checkpointEncrypted: encrypted,
-              })
-              const fingerprint = response.headers.get("x-workspace-fingerprint")
-              if (fingerprint) await this.store.patch({ checkpointFingerprint: fingerprint })
-              await this.pruneCheckpoints()
-              return
-            }
-
-            let manifest = state.checkpointManifest
-            let workspacePart = manifest?.workspace
-            let statePart = manifest?.state
-            let uploaded = false
-
-            if (response.status === 204) {
-              if (!workspacePart) {
-                // No archive to reuse: retry as a full checkpoint.
-                await this.store.patch({ checkpointFingerprint: undefined })
-                throw new Error("checkpoint was skipped but no manifest exists")
-              }
-              await this.requireCheckpointPart(workspacePart, "workspace")
-            } else if (response.ok) {
-              const bytes = await this.uploadCheckpointPart(workspaceKey, response, cryptoKey)
-              workspacePart = { key: workspaceKey, size: bytes, encrypted }
-              uploaded = true
-            } else {
-              throw new Error(`checkpoint returned ${response.status}`)
-            }
-
-            const stateResponse = await control.fetch(
-              `http://container/checkpoint?part=state&since=${encodeURIComponent(stateSince)}`,
-              { signal: AbortSignal.timeout(120_000) },
-            )
-            let stateFingerprint = manifest?.stateFingerprint
-            if (stateResponse.status === 204) {
-              if (!statePart) {
-                // The control server says "unchanged" but we hold no archive to
-                // restore from. Force a full state archive on the retry.
-                await this.store.patch({ checkpointStateFingerprint: undefined })
-                throw new Error("state checkpoint was skipped but no archive exists")
-              }
-              await this.requireCheckpointPart(statePart, "state")
-              stateFingerprint =
-                stateResponse.headers.get("x-state-fingerprint") ?? stateFingerprint
-            } else if (stateResponse.status === 404) {
-              // Fresh conversation: no state root yet.
-              statePart = undefined
-              stateFingerprint = undefined
-            } else if (stateResponse.ok) {
-              const bytes = await this.uploadCheckpointPart(stateKey, stateResponse, cryptoKey)
-              statePart = { key: stateKey, size: bytes, encrypted }
-              stateFingerprint =
-                stateResponse.headers.get("x-state-fingerprint") ?? stateFingerprint
-              uploaded = true
-            } else {
-              throw new Error(`state checkpoint returned ${stateResponse.status}`)
-            }
-
-            const fingerprint =
-              response.headers.get("x-workspace-fingerprint") ?? manifest?.fingerprint
-
-            if (!uploaded) {
-              // Both parts unchanged and both objects verified.
-              void this.count("checkpoint.skipped")
-              logEvent("checkpoint.skipped")
-              return
-            }
-
-            const next: CheckpointManifest = {
-              workspace: workspacePart!,
-              ...(statePart ? { state: statePart } : {}),
-              ...(fingerprint ? { fingerprint } : {}),
-              ...(stateFingerprint ? { stateFingerprint } : {}),
-              createdAt: Date.now(),
-            }
-            const bytes = next.workspace.size + (next.state?.size ?? 0)
-            span.setAttribute("checkpoint.bytes", bytes)
-            void this.count("checkpoint.saved")
-            logEvent("checkpoint.saved", { bytes })
-            await this.store.patch({
-              checkpointManifest: next,
-              checkpointKey: next.workspace.key,
-              checkpointSize: bytes,
-              checkpointEncrypted: encrypted,
-              ...(fingerprint ? { checkpointFingerprint: fingerprint } : {}),
-              ...(stateFingerprint ? { checkpointStateFingerprint: stateFingerprint } : {}),
-            })
-            await this.pruneCheckpoints()
-          },
-          { attempts: 3, delayMs: 1000 },
-        )
-        await this.store.patch({
-          checkpointPending: undefined,
-          checkpointAttempts: undefined,
-          checkpointRetryAt: undefined,
-        })
-        return true
-      } catch (err) {
-        span.recordException(err as Error)
-        console.warn("checkpoint failed", err)
-        void this.count("checkpoint.failed")
-        logEvent("checkpoint.failed")
-        // Keep the failure visible and retry from the alarm instead of losing the
-        // turn's work silently.
-        const retryAt = Date.now() + CHECKPOINT_RETRY_MS
-        await this.ctx.storage.transaction(async () => {
-          await this.store.patch({ checkpointPending: true, checkpointRetryAt: retryAt })
-          await this.scheduleConversationJob("checkpoint:retry", retryAt, { reason: "checkpoint-upload-retry" })
-        })
-        return false
-      }
-    })
   }
 
   /** Drop the cached port so the next call re-checks and restarts OpenCode. */
