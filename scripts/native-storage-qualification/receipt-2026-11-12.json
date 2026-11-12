@@ -1,0 +1,131 @@
+{
+  "date": "2026-11-12",
+  "kind": "isolated Cloudflare encrypted R2 cold recovery",
+  "sourceCommit": "0c43bdaa6f54a60f1808baab697ecc7f89330e58",
+  "wranglerVersion": "4.158.0",
+  "workerVersion": "10a2eaa8-5a60-4935-ab8c-1432cd610e89",
+  "workerAndBucket": "cf-opencode-c2-20261112-e70c250",
+  "localImageID": "sha256:8ae47350f2de6630c1dad9625fd686898c685855ca7f8da8689a4bf09cd09284",
+  "fixtureSHA256": {
+    "worker.ts": "510f4156246581f4f54818d4ee7647a3bac4a7f44431f38a48af11b25623ff20",
+    "container-probe.ts": "4411422d97bca3e257513e8f3e0d3c321a688a1b1e990075a69d318670d8ea84",
+    "qualification-contract.ts": "d04af1ed0c449764de8607c8e9cf05a0a0ff55839351b90ac215ed10c256018b",
+    "wrangler.template.jsonc": "8f2e7e9b1c43375ae95ddf482a78fbc20a6a7f678e25c2fa8cc914c2afc9a70f"
+  },
+  "unauthenticatedStatus": 401,
+  "actions": [
+    {
+      "action": "prepare",
+      "startedAt": "2026-11-12T15:44:25.272Z",
+      "completedAt": "2026-11-12T15:45:18.963Z",
+      "status": 200,
+      "result": {
+        "ok": true,
+        "stage": "prepared",
+        "workspaceID": "ws_7a5dd76d67fe2e80",
+        "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-native-c2@sha256:9f82e154e6d050e0f0d3daa72bb9b8bb387cf05c3c7aae1f74d787264455340f"
+      }
+    },
+    {
+      "action": "recycle",
+      "startedAt": "2026-11-12T15:45:26.068Z",
+      "completedAt": "2026-11-12T15:45:28.212Z",
+      "status": 200,
+      "result": {
+        "ok": true,
+        "stage": "checkpointed",
+        "manifest": {
+          "workspace": {
+            "key": "workspaces/19fd8e9bdb0e01abddc3ae976f4707edecb5d8c49d4266540ba64885640f822e/workspace-1794498326276.tar.gz",
+            "size": 842,
+            "encrypted": true
+          },
+          "state": {
+            "key": "workspaces/19fd8e9bdb0e01abddc3ae976f4707edecb5d8c49d4266540ba64885640f822e/state-1794498326276.tar.gz",
+            "size": 832364,
+            "encrypted": true
+          }
+        }
+      }
+    },
+    {
+      "action": "verify",
+      "startedAt": "2026-11-12T15:45:45.747Z",
+      "completedAt": "2026-11-12T15:46:11.809Z",
+      "status": 200,
+      "result": {
+        "ok": true,
+        "stage": "verified",
+        "workspaceID": "ws_7a5dd76d67fe2e80",
+        "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-native-c2@sha256:9f82e154e6d050e0f0d3daa72bb9b8bb387cf05c3c7aae1f74d787264455340f",
+        "controllerSHA256": "e70c25065a74c2d5384df19dd8c1612949b1b08d790b368a72cd0f5212cdd3a3",
+        "binarySHA256": "780c3ccf89abdb4355e1b943ab686693d7436bd08cefdffd0f315226815f27da",
+        "markerSHA256": {
+          "directFile": "8a93e0f67c72c818f579adbfda765a2efee9c97cdaa3cad45fad3395cf093152",
+          "s3Object": "b768b6a8de7cc1e2085dea81b4a22e8bd67a9754485727cc4496bfb1129892b7",
+          "metadata": "32bf5700300ddb45a96a8bcc1a93c019e5b116dd48d8d243c9fa91180ac9e593"
+        },
+        "manifest": {
+          "workspace": {
+            "key": "workspaces/19fd8e9bdb0e01abddc3ae976f4707edecb5d8c49d4266540ba64885640f822e/workspace-1794498326276.tar.gz",
+            "size": 842,
+            "encrypted": true
+          },
+          "state": {
+            "key": "workspaces/19fd8e9bdb0e01abddc3ae976f4707edecb5d8c49d4266540ba64885640f822e/state-1794498326276.tar.gz",
+            "size": 832364,
+            "encrypted": true
+          }
+        },
+        "firstProbe": {
+          "ok": true,
+          "workspaceID": "ws_7a5dd76d67fe2e80",
+          "directFileToS3GetMatches": true,
+          "s3PutToWorkspaceFileMatches": true,
+          "metadataTypeMatches": true,
+          "ephemeralSentinelAbsent": true,
+          "agentUID": 1001,
+          "controllerSHA256": "e70c25065a74c2d5384df19dd8c1612949b1b08d790b368a72cd0f5212cdd3a3",
+          "binarySHA256": "780c3ccf89abdb4355e1b943ab686693d7436bd08cefdffd0f315226815f27da"
+        },
+        "restoredProbe": {
+          "ok": true,
+          "workspaceID": "ws_7a5dd76d67fe2e80",
+          "directFileToS3GetMatches": true,
+          "s3PutToWorkspaceFileMatches": true,
+          "metadataTypeMatches": true,
+          "ephemeralSentinelAbsent": true,
+          "agentUID": 1001,
+          "controllerSHA256": "e70c25065a74c2d5384df19dd8c1612949b1b08d790b368a72cd0f5212cdd3a3",
+          "binarySHA256": "780c3ccf89abdb4355e1b943ab686693d7436bd08cefdffd0f315226815f27da"
+        },
+        "sessionCreated": false,
+        "snapshotUsed": false
+      }
+    },
+    {
+      "action": "cleanup",
+      "startedAt": "2026-11-12T15:46:37.506Z",
+      "completedAt": "2026-11-12T15:46:38.727Z",
+      "status": 200,
+      "result": {
+        "ok": true,
+        "runtimeStopped": true,
+        "qualificationR2ObjectsRemaining": 0
+      }
+    }
+  ],
+  "cleanup": {
+    "workerDeleted": true,
+    "containerApplicationDeleted": true,
+    "bucketDeleted": true,
+    "uploadedImageRetained": true,
+    "productionChanged": false
+  },
+  "limitations": [
+    "Synthetic natural-file keys and content type only",
+    "No multipart or escaped/reserved-key recovery claim",
+    "No arbitrary concurrent/background-writer consistency claim",
+    "No production deployment or data reset"
+  ]
+}

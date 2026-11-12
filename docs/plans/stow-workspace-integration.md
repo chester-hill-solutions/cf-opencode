@@ -1,8 +1,8 @@
 # Stow workspace integration and resource adoption
 
-Status: A, B1, local C1 and B2 startup integration verified. B2 passed the full
-rebuilt-container smoke on native amd64 CI. Cloudflare/R2 recovery and production
-cutover remain open.
+Status: A, B1, local C1, B2 startup integration and the bounded C2 Cloudflare/R2
+recovery proof verified. B2 passed the full rebuilt-container smoke on native
+amd64 CI. Production cutover and the wider storage qualification remain open.
 Decision date: 2026-11-11. Owner: Aboiteau. Roadmap: R0-15, then R2-4/R3-4.
 
 ## Problem and boundary
@@ -318,12 +318,21 @@ amd64 success does not turn that local failure into a pass. Logs are retained in
 `/tmp/cf-opencode-b2-native-ci.log`; the narrow diagnostic must distinguish its
 observations from an established cause.
 
+A later bounded run with the same image passed the host-streamed seed/start
+race and returned `/status` 200 plus `/opencode/api/info` 200 with PID 147. Root
+inspection found PID 147 sleeping with all UID slots set to 1001 and the
+OpenCode server-script command-line match; reading its `/proc` executable link
+as root returned `EACCES`. Earlier 500/count-zero observations remain
+unexplained, so this does not establish their cause. Private artifacts are in
+`/tmp/cf-opencode-b2-pid-final/` and `/tmp/cf-opencode-b2-piddiag.log`; the
+temporary agent-side inspector was unreadable due to its root-only file mode.
+
 B2 closes source integration and native local-container qualification. It does
 not close actual Cloudflare/R2 recovery, production deployment, arbitrary active
 writer consistency, multipart or escaped/reserved-key preservation, or the
 broader G0/G1 release gates.
 
-### C2 next: isolated Cloudflare/R2-only recovery
+### C2 isolated Cloudflare/R2-only recovery — passed 2026-11-12
 
 Use a unique test Worker/DO namespace, newly created empty R2 bucket and new
 test secrets. Pin the verified B2 image by its uploaded OCI digest. Reuse the
@@ -335,6 +344,44 @@ to one container. After recycle, require both encrypted R2 parts, no snapshot,
 an absent disk-only sentinel, unchanged identity and recovered bytes/content
 type. Record exact source/image evidence and remove only these test resources.
 Existing production settings, buckets and conversation keys are outside scope.
+
+The reviewed staging harness in `scripts/native-storage-qualification/` used
+the actual inherited Conversation lifecycle. Its three safety regressions,
+targeted TypeScript check, Wrangler type generation and deployment dry run
+passed. The current Durable Object scheduling policy accepts instance sizing
+in runtime `startOptions()` (`standard-1`), rather than app-level
+`instance_type`/`max_instances`; one fixed authenticated key addresses one DO.
+Use `exports` without a conflicting `migrations` block. The initial dry run
+caught those configuration errors before cloud mutation.
+
+Live prepare, recycle, verify and cleanup returned 200 between 15:44:25 and
+15:46:38 UTC. The unique Worker/bucket was
+`cf-opencode-c2-20261112-e70c250`, version
+`10a2eaa8-5a60-4935-ab8c-1432cd610e89`. The selected OCI image was
+`registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-native-c2@sha256:9f82e154e6d050e0f0d3daa72bb9b8bb387cf05c3c7aae1f74d787264455340f`.
+The first and replacement runtime verified the controller and Stow binary
+hashes recorded under B2, ran the probe as UID/GID 1001, and retained workspace
+ID `ws_7a5dd76d67fe2e80`.
+
+The real encrypted workspace/state R2 parts were 842 and 832,364 bytes. Their
+manifest sizes and encrypted metadata matched R2 heads before restore. A fresh
+image start, absent snapshot and absent `/tmp` sentinel excluded reuse of the
+old container disk. Direct-file/S3 reads, S3-write/file reads and content type
+matched after restore. No session, queued prompt or budget reservation existed.
+The unauthenticated API check returned 401. The committed
+[structured receipt](../../scripts/native-storage-qualification/receipt-2026-11-12.json)
+records the exact hashes, manifest and assertions. Cleanup stopped the runtime
+and removed its checkpoint objects, then deleted the unique Worker, container
+application and empty bucket. The uploaded qualified image is retained; local
+test secrets were removed. Production was unchanged.
+
+This passes cold recovery for the synthetic natural-file keys, content type
+and native Workspace identity exercised here. It does not qualify all S3 keys,
+multipart state, background-writer atomicity or a production cutover. Next,
+finish the remaining recovery inventory and D operations above, then select a
+concrete production cutover with named operator data retention/reset decisions.
+Do not restore a broad compatibility requirement merely because legacy
+characterization fixtures exist.
 
 ## C1 split-archive recovery qualification
 

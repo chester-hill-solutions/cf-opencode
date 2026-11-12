@@ -1,0 +1,52 @@
+{
+  // Copy to a private staging config, replace all placeholders, create a new
+  // empty bucket, then set API_TOKEN and VAULT_MASTER_KEY as Worker secrets.
+  // Do not point this config at production buckets or use production keys.
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cf-opencode-native-storage-qualification",
+  "account_id": "__SET_STAGING_ACCOUNT_ID__",
+  "main": "./worker.ts",
+  "compatibility_date": "2026-11-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "WORKSPACE_REPO": "",
+    "OPENCODE_MODEL": "",
+    "POLL_SECONDS": "2",
+    // The staging Worker can address only its fixed fresh qualification key.
+    // No explicit canary key is set because that path requires an admitted turn.
+    "EVENTED_FRESH_CONVERSATIONS": "true",
+    "ALLOW_PLAINTEXT_ARCHIVES": "0"
+  },
+  // The staging Worker addresses one fixed DO name. BaseConversation.startOptions
+  // selects the standard-1 runtime; this ContainerApp schema rejects an app-wide
+  // max_instances/instance_type for durable_object scheduling.
+  "containers": [
+    {
+      "class_name": "QualificationConversation",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "evented": {
+          "image": "__SET_PARENT_VERIFIED_PINNED_EVENTED_IMAGE_DIGEST__"
+        }
+      }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "class_name": "QualificationConversation", "name": "CONVERSATION" },
+      { "class_name": "Settings", "name": "SETTINGS" }
+    ]
+  },
+  "r2_buckets": [
+    {
+      "binding": "CHECKPOINTS",
+      "bucket_name": "__SET_UNIQUE_EMPTY_C2_BUCKET_NAME__"
+    }
+  ],
+  // Use exports for SQLite DO storage, matching production; do not combine this
+  // configuration with a migrations block.
+  "exports": {
+    "QualificationConversation": { "type": "durable-object", "storage": "sqlite" },
+    "Settings": { "type": "durable-object", "storage": "sqlite" }
+  }
+}
