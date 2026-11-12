@@ -106,7 +106,7 @@ describe("Slack failure delivery", () => {
     const result = await runInDurableObject(stub, async (instance, state) => {
       instance.transport = fakeContainer()
       const posts: Array<{ method: string; body: Record<string, unknown> }> = []
-      ;(instance as unknown as { slack: unknown }).slack = async (
+      ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async (
         method: string,
         body: Record<string, unknown>,
       ) => {
@@ -141,7 +141,7 @@ describe("Slack failure delivery", () => {
       const counters = { prompts: 0 }
       instance.transport = fakeContainer(true, counters)
       const posts: string[] = []
-      ;(instance as unknown as { slack: unknown }).slack = async (
+      ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async (
         _method: string,
         body: Record<string, unknown>,
       ) => {
@@ -191,7 +191,7 @@ describe("Slack failure delivery", () => {
       const counters = { prompts: 0 }
       instance.transport = fakeContainer(false, counters)
       const posts: string[] = []
-      ;(instance as unknown as { slack: unknown }).slack = async (
+      ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async (
         _method: string,
         body: Record<string, unknown>,
       ) => {

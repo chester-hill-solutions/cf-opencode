@@ -25,8 +25,7 @@ describe("sealed lifecycle cleanup", () => {
         configurable: true,
         value: stoppedContainer,
       })
-      const internal = instance as unknown as { key?: string; leases: { ensureHeld(): Promise<void> } }
-      internal.key = "native-sealed-cleanup"
+      const internal = instance as unknown as { leases: { ensureHeld(): Promise<void> } }
       await runtime.storage.put("state", {
         phase: "idle",
         seen: [],
@@ -47,7 +46,7 @@ describe("sealed lifecycle cleanup", () => {
       try {
         const response = await instance.fetch(new Request("https://conversation/reset", {
           method: "POST",
-          headers: { "x-conversation-key": "native-sealed-cleanup" },
+          headers: { "x-conversation-key": "C1:sealed-idle-reset" },
         }))
         responseStatus = response.status
         responseBody = await response.text()

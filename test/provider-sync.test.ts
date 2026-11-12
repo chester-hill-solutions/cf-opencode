@@ -163,7 +163,7 @@ describe("legacy provider credential synchronization", () => {
   it("exposes credentials only from the onboarding key", async () => {
     const stub = env.CONVERSATION.getByName("provider-sync-guard")
     const response = await stub.fetch("https://conversation/provider-credentials", {
-      headers: { "x-conversation-key": "ordinary-conversation" },
+      headers: { "x-conversation-key": "provider-sync-guard" },
     })
     expect(response.status).toBe(403)
   })

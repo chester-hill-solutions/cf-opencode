@@ -132,7 +132,6 @@ function installRuntime(instance: Conversation, options: Options = {}) {
     },
   }
   Object.defineProperty(internal.ctx, "container", { configurable: true, value: container })
-  internal.key = "C1:runtime-upgrade-test"
   runtimeCache(instance).invalidate()
   // Real container port startup is important here: the test records selected
   // image, start/destroy ordering, archive restore and the native API proof.

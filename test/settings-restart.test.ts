@@ -102,7 +102,8 @@ async function seedConversation(
   settingsVersion: number,
   patch: Partial<ConversationState> = {},
 ) {
-  await runInDurableObject(stub, async (_instance, runtime) => {
+  await runInDurableObject(stub, async (instance, runtime) => {
+    runtimeCache(instance).invalidate()
     await runtime.storage.deleteAll()
     await runtime.storage.put("state", {
       phase: "idle", sessionID: "ses_existing", settingsVersion: settingsVersion - 1,
@@ -248,7 +249,7 @@ describe("settings-driven container restart", () => {
 
   it("keeps the source runtime alive until an in-flight onboarding request finishes", async () => {
     const version = await resetSettings()
-    const stub = env.CONVERSATION.getByName("settings-restart-onboarding-race")
+    const stub = env.CONVERSATION.getByName("onboarding")
     await seedConversation(stub, version)
     const result = await runInDurableObject(stub, async (instance) => {
       const calls: string[] = []
@@ -299,7 +300,7 @@ describe("settings-driven container restart", () => {
 
   it("holds the restart fence until the onboarding snapshot stream is fully buffered", async () => {
     const version = await resetSettings()
-    const stub = env.CONVERSATION.getByName("settings-restart-snapshot-stream")
+    const stub = env.CONVERSATION.getByName("onboarding")
     await seedConversation(stub, version)
     const result = await runInDurableObject(stub, async (instance) => {
       const calls: string[] = []
