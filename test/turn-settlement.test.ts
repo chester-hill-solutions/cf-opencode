@@ -393,6 +393,11 @@ describe("turn settlement", () => {
         { ...assistant("a1", "done"), time: { created: now, completed: now }, cost: 0.25 },
       ]
       instance.transport = fakeContainer({ beforePrompt: before, afterPrompt: () => answers })
+      const telemetry: Array<{ event: string; result?: string; reasonCode?: string }> = []
+      const execution = instance as unknown as {
+        turnExecution: { options: { telemetry?: (input: { event: string; result?: string; reasonCode?: string }) => void } }
+      }
+      execution.turnExecution.options.telemetry = (input) => telemetry.push(input)
       let releaseCalls = 0
       interceptSettings(instance, (url) => {
         if (url.pathname === "/usage/release" && ++releaseCalls === 1) {
@@ -407,11 +412,12 @@ describe("turn settlement", () => {
       await sent.text()
       await driveConversationJobs(instance, runtime.storage, ["turn:observe"])
       const paused = await state(instance)
+      const pausedSettledTelemetry = telemetry.filter((event) => event.event === "turn.settled").length
       const savedState = await runtime.storage.get<Record<string, unknown>>("state")
       await runtime.storage.put("state", { ...savedState, runStartedAt: Date.now() - 20 * 60_000 })
       await driveConversationJobs(instance, runtime.storage, ["turn:observe"])
       const completed = await state(instance)
-      return { paused, completed, releaseCalls }
+      return { paused, completed, releaseCalls, pausedSettledTelemetry, telemetry }
     })
     const usage = await (await settings.fetch("https://settings/usage/today")).json() as {
       reservedUSD?: number
@@ -424,6 +430,16 @@ describe("turn settlement", () => {
     expect(result.completed.budgetReservation).toBeUndefined()
     expect(result.completed.settlementError).toBeUndefined()
     expect(result.releaseCalls).toBe(2)
+    expect(result.pausedSettledTelemetry).toBe(0)
+    expect(result.telemetry.filter((event) => event.event === "turn.settled")).toEqual([{
+      event: "turn.settled",
+      conversationID: expect.any(String),
+      sessionID: "ses_1",
+      turnID: expect.any(String),
+      durationMs: expect.any(Number),
+      result: "settled",
+      reasonCode: "terminal_usage_acknowledged",
+    }])
     expect(usage).toMatchObject({ costUSD: 0.25, reservedUSD: 0 })
   })
 

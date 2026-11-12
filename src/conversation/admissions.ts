@@ -3,9 +3,9 @@ import type { ConversationBudgetReservations } from "./budget-reservations"
 import type { ConversationJobKind, ConversationJobPayload } from "./jobs"
 import type { HarnessSettings } from "../settings"
 import type { ConversationEvent } from "../events"
-import { logEvent } from "../log"
 import { nextBudgetReset } from "../budget"
 import { CAPACITY_RETRY_MS, isCapacityRejection } from "../queue"
+import { emitConversationTelemetry, type ConversationTelemetrySink } from "./telemetry"
 
 const POLL_MS = 2000
 
@@ -19,6 +19,8 @@ function errorMessage(error: unknown): string {
 }
 
 export interface ConversationAdmissionsOptions {
+  conversationID?: string
+  telemetry?: ConversationTelemetrySink
   storage: DurableObjectStorage
   store: ConversationStore
   budgetReservations: ConversationBudgetReservations
@@ -51,6 +53,10 @@ export class ConversationAdmissions {
   private admitting = false
 
   constructor(private readonly options: ConversationAdmissionsOptions) {}
+
+  private emitLifecycle(input: Parameters<typeof emitConversationTelemetry>[0]): void {
+    emitConversationTelemetry({ ...input, conversationID: this.options.conversationID }, this.options.telemetry)
+  }
 
   get active(): boolean {
     return this.admitting
@@ -87,6 +93,7 @@ export class ConversationAdmissions {
         console.warn("admission claim was not persisted", { error: errorMessage(error) })
       }
       this.admitting = claimed
+      if (claimed) this.emitLifecycle({ event: "admission.started", result: "started" })
       return claimed
     })
   }
@@ -116,7 +123,7 @@ export class ConversationAdmissions {
     }
     if (!claimed) return false
     void this.options.delivery.count("queue.enqueued")
-    logEvent("queue.enqueued", { transport: slack ? "slack" : "http" })
+    this.emitLifecycle({ event: "queue.enqueued", result: "scheduled", reasonCode: "queued" })
     if (slack) {
       await this.options.delivery.postChunked(slack.channel, "⏳ Container busy — queued; I'll retry shortly.", slack.replyTs).catch(() => {})
     }
@@ -153,6 +160,7 @@ export class ConversationAdmissions {
       return state.queued
     })
     if (!queued) return false
+    this.emitLifecycle({ event: "admission.started", result: "started", reasonCode: "queued_admission" })
 
     let sessionID = ""
     let baseline: string | undefined
@@ -165,7 +173,9 @@ export class ConversationAdmissions {
       // frees up instead of burning the prompt-retry budget and dropping it.
       if (isCapacityRejection(error)) {
         const retryAt = Date.now() + CAPACITY_RETRY_MS
-        logEvent("queue.capacity", { attempts: queued.attempts })
+        this.emitLifecycle({
+          event: "queue.capacity", attempt: queued.attempts, result: "scheduled", reasonCode: "capacity",
+        })
         await this.scheduleQueuedRetry(queued, retryAt, { lastError: "container capacity reached" }, "queue-capacity-retry")
         return false
       }
@@ -174,7 +184,7 @@ export class ConversationAdmissions {
         await this.options.store.patch({ queued: undefined, lastTurnError: errorMessage(error) })
         await this.options.store.advance("idle")
         void this.options.delivery.count("queue.failed")
-        logEvent("queue.failed", { attempts })
+        this.emitLifecycle({ event: "queue.failed", attempt: attempts, result: "failed", reasonCode: "retry_limit" })
         await this.options.delivery.event(
           { type: "error", message: "queued message could not start: " + errorMessage(error) },
           { slack: false },
@@ -244,9 +254,9 @@ export class ConversationAdmissions {
       await this.options.prompt(sessionID, queued.text)
     } catch (error) {
       this.admitting = false
-      await this.recordAccepted(baseline)
+      await this.recordAccepted(baseline, "ambiguous")
       void this.options.delivery.count("queue.dispatch_ambiguous")
-      logEvent("queue.dispatch_ambiguous", { error: errorMessage(error) })
+      this.emitLifecycle({ event: "queue.dispatch_ambiguous", result: "failed", reasonCode: "dispatch_ambiguous" })
       await this.options.delivery.event({
         type: "error",
         message: "queued prompt dispatch outcome is unknown; reservation retained: " + errorMessage(error),
@@ -264,18 +274,23 @@ export class ConversationAdmissions {
     // The dispatch marker already consumed this queued item atomically. A new
     // follow-up may have been queued while the provider request was pending.
     void this.options.delivery.count("queue.drained")
-    logEvent("queue.drained", { attempts: queued.attempts })
-    await this.recordAccepted(baseline)
+    this.emitLifecycle({
+      event: "queue.drained", attempt: queued.attempts, result: "succeeded", reasonCode: "dispatch_acknowledged",
+    })
+    await this.recordAccepted(baseline, "acknowledged")
     const settings = await this.options.settings().catch(() => undefined)
     if (settings?.streaming) this.options.waitUntil(this.options.startStream(sessionID))
     return true
   }
 
-  async recordAccepted(baseline: string | undefined): Promise<void> {
+  async recordAccepted(
+    baseline: string | undefined,
+    dispatchOutcome?: "acknowledged" | "ambiguous",
+  ): Promise<void> {
     try {
       await this.startRun(baseline)
-    } catch (error) {
-      logEvent("turn.record_failed", { error: errorMessage(error) })
+    } catch {
+      this.emitLifecycle({ event: "turn.start.failed", result: "failed", reasonCode: "bookkeeping_failed" })
       await this.options.store.patch({ phase: "running", turnBaseline: baseline }).catch(() => {})
       const state = await this.options.store.get().catch(() => undefined)
       await this.options.jobs.schedule("turn:observe", Date.now() + POLL_MS, {
@@ -284,6 +299,17 @@ export class ConversationAdmissions {
         sessionID: state?.sessionID,
         reason: "accepted-turn-bookkeeping-recovery",
       }).catch(() => {})
+    } finally {
+      if (dispatchOutcome) {
+        const state = await this.options.store.get().catch(() => undefined)
+        this.emitLifecycle({
+          event: "admission.settled",
+          sessionID: state?.sessionID,
+          turnID: state?.budgetReservation?.reservationID,
+          result: "settled",
+          reasonCode: dispatchOutcome === "acknowledged" ? "dispatch_acknowledged" : "dispatch_ambiguous",
+        })
+      }
     }
   }
 
@@ -308,20 +334,30 @@ export class ConversationAdmissions {
       typeof current.runStartedAt === "number" && Number.isFinite(current.runStartedAt) && current.runStartedAt > 0
       ? current.runStartedAt
       : Date.now()
-    await this.options.store.patch({
-      lastReply: undefined,
-      lastSlackReply: undefined,
-      // Keep the pre-provider durable dispatch time so immediate provider
-      // failure records remain attributable to this accepted turn.
-      runStartedAt: dispatchedAt,
-      turnBaseline,
+    await this.options.storage.transaction(async () => {
+      await this.options.store.patch({
+        lastReply: undefined,
+        lastSlackReply: undefined,
+        // Keep the pre-provider durable dispatch time so immediate provider
+        // failure records remain attributable to this accepted turn.
+        runStartedAt: dispatchedAt,
+        turnBaseline,
+      })
+      if (!(await this.options.store.advance("running"))) {
+        await this.options.store.patch({ phase: "running" })
+      }
+      await this.options.jobs.schedule("turn:observe", Date.now() + POLL_MS, {
+        sessionID: (await this.options.store.get()).sessionID,
+        reason: "turn-started",
+      })
     })
-    if (!(await this.options.store.advance("running"))) {
-      await this.options.store.patch({ phase: "running" })
-    }
-    await this.options.jobs.schedule("turn:observe", Date.now() + POLL_MS, {
-      sessionID: (await this.options.store.get()).sessionID,
-      reason: "turn-started",
+    const state = await this.options.store.get()
+    this.emitLifecycle({
+      event: "turn.started",
+      sessionID: state.sessionID,
+      turnID: state.budgetReservation?.reservationID,
+      result: "started",
+      reasonCode: "dispatch_accepted",
     })
   }
 }

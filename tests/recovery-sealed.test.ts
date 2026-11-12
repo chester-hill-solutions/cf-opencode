@@ -130,6 +130,14 @@ describe("sealed idle recovery classification", () => {
     })).toEqual({ kind: "sealed_idle", blockers: [], actions: ["retry"] })
   })
 
+  it("accepts a recoverable close intent and blocks malformed idle intent", () => {
+    const base = { conversationID: "conv-1", state: idleState(), authority: authority(), live }
+    expect(classifyRecovery({ ...base, scheduler: scheduler({ idleIntent: {
+      version: 1, id: "idle-1", generation: "gen-1", dueAt: 100, phase: "closing",
+    } }) }).kind).toBe("sealed_idle")
+    expect(classifyRecovery({ ...base, scheduler: scheduler({ idleIntent: { phase: "closing" } }) }).blockers).toContain("idle_intent_malformed")
+  })
+
   it("keeps the existing financial classification branch unchanged", () => {
     const result = classifyRecovery({
       conversationID: "conv-1",
@@ -161,6 +169,7 @@ describe("sealed idle recovery classification", () => {
       scheduler({ leaseIntent: { version: 1, desired: "held", status: "pending", requestStartedAt: 1 } }),
       scheduler({ claims: { "turn:observe": { epoch: 3, claimID: "expired", until: 1 } } }),
       scheduler({ activeJobs: 1 }),
+      scheduler({ idleIntent: { version: 1, id: "idle-1", generation: "gen-1", dueAt: 100, phase: "closing" } }),
     ]) {
       expect(await recoverySnapshotID({ ...base, scheduler: changed })).not.toBe(schedulerSnapshot)
     }

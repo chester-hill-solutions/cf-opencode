@@ -47,6 +47,38 @@ function managerOptions(
 }
 
 describe("ConversationCheckpoints publication fence", () => {
+  it("authenticates both split archives and rejects corrupted bytes or plaintext idle close", async () => {
+    const stub = env.CONVERSATION.getByName("C1:checkpoint-split-verification")
+    await runInDurableObject(stub, async (_instance, runtime) => {
+      const id = runtime.id.toString()
+      const create = (archiveEnv: { VAULT_MASTER_KEY?: string; ALLOW_PLAINTEXT_ARCHIVES?: string }) => new ConversationCheckpoints(managerOptions(runtime, id, {
+        archiveEnv,
+        getControl: async () => ({ fetch: async () => {
+          const response = checkpointResponse("archive-body")
+          response.headers.set("x-aboiteau-checkpoint", "split")
+          return response
+        } }),
+      }))
+      const encrypted = create({ VAULT_MASTER_KEY: "aa".repeat(32) })
+      expect(await encrypted.captureOwned()).toBe(true)
+      const manifest = (await new ConversationStore(runtime.storage).get()).checkpointManifest!
+      await expect(encrypted.verifySplitArchive(manifest, true)).resolves.toBeUndefined()
+      const part = manifest.state!
+      const stored = await env.CHECKPOINTS.get(part.key)
+      const bytes = new Uint8Array(await stored!.arrayBuffer())
+      bytes[bytes.length - 1] ^= 1
+      await env.CHECKPOINTS.put(part.key, bytes, { customMetadata: { encrypted: "1" } })
+      await expect(encrypted.verifySplitArchive(manifest, true)).rejects.toThrow()
+
+      await runtime.storage.delete("state")
+      const plaintext = create({ ALLOW_PLAINTEXT_ARCHIVES: "1" })
+      expect(await plaintext.captureOwned()).toBe(true)
+      const plainManifest = (await new ConversationStore(runtime.storage).get()).checkpointManifest!
+      await expect(plaintext.verifySplitArchive(plainManifest)).resolves.toBeUndefined()
+      await expect(plaintext.verifySplitArchive(plainManifest, true)).rejects.toThrow("plaintext checkpoint archives are disabled")
+    })
+  })
+
   it("serializes concurrent archives through publication and pruning", async () => {
     const stub = env.CONVERSATION.getByName("C1:checkpoint-manager-concurrent")
     const result = await runInDurableObject(stub, async (_instance, runtime) => {

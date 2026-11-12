@@ -114,6 +114,40 @@ describe("conversation lifecycle telemetry", () => {
     expect(emitted).not.toHaveProperty("requestID")
   })
 
+  test("allows fixed queue outcomes and runtime failure events without free-form errors", () => {
+    const emitted: unknown[] = []
+    emitConversationTelemetry({
+      event: "queue.dispatch_ambiguous",
+      conversationID: "conv_789",
+      result: "failed",
+      reasonCode: "dispatch_ambiguous",
+      error: "private provider response",
+    } as never, (event) => emitted.push(event))
+    emitConversationTelemetry({
+      event: "container.stop.failed",
+      conversationID: "conv_789",
+      result: "failed",
+      reasonCode: "destroy_failed",
+      error: "private runtime error",
+    } as never, (event) => emitted.push(event))
+
+    expect(emitted[0]).toMatchObject({
+      event: "queue.dispatch_ambiguous",
+      component: "admission",
+      conversationID: "conv_789",
+      result: "failed",
+      reasonCode: "dispatch_ambiguous",
+    })
+    expect(emitted[0]).not.toHaveProperty("error")
+    expect(emitted[1]).toMatchObject({
+      event: "container.stop.failed",
+      component: "runtime",
+      result: "failed",
+      reasonCode: "destroy_failed",
+    })
+    expect(emitted[1]).not.toHaveProperty("error")
+  })
+
   test("swallows trace getter and sink failures", () => {
     expect(() => emitConversationTelemetry({ event: "lease.failed" }, () => {
       throw new Error("test sink failed")

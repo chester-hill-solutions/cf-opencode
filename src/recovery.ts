@@ -1,3 +1,4 @@
+import { isContainerIdleRecord } from "./conversation/idle-state"
 import type { BudgetReservation, ConversationState } from "./state"
 import { isConversationLeaseRecord } from "./conversation/lease-state"
 
@@ -34,6 +35,7 @@ export interface RecoverySchedulerEvidence {
   epoch: number
   checkpointPending: boolean
   checkpointRetryAt?: number
+  idleIntent?: unknown
   leaseIntent?: unknown
   claims?: unknown
   activeJobs: number
@@ -84,6 +86,10 @@ function schedulerEvidenceBlockers(scheduler: RecoverySchedulerEvidence): string
   if (typeof scheduler.pendingUpgrade !== "boolean") blockers.push("runtime_upgrade_state_malformed")
   if (scheduler.leaseIntent !== undefined && !isConversationLeaseRecord(scheduler.leaseIntent)) {
     blockers.push("lease_intent_malformed")
+  }
+
+  if (scheduler.idleIntent !== undefined && !isContainerIdleRecord(scheduler.idleIntent)) {
+    blockers.push("idle_intent_malformed")
   }
 
   const claims = scheduler.claims

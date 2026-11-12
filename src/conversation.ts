@@ -27,6 +27,8 @@ import type { ConversationEvent } from "./events"
 import { ConversationEventStream } from "./conversation/event-stream"
 import { ConversationCheckpoints } from "./conversation/checkpoints"
 import { ConversationRuntime } from "./conversation/runtime"
+import { ConversationIdleClose } from "./conversation/idle-close"
+import { ConversationRuntimeAccess } from "./conversation/runtime-access"
 import { ConversationUsage } from "./conversation/usage"
 import { ConversationRecoveryActions } from "./conversation/recovery-actions"
 import { ConversationControlPlane } from "./conversation/control-plane"
@@ -50,6 +52,7 @@ import { staleAction } from "./lifecycle"
 import { GITHUB_TOKEN_KEY, workspaceID } from "./vault"
 import { LEGACY_ACCOUNT_STATE_KEY, parseConversationKey } from "./tenancy"
 import { AccountingPolicyError } from "./accounting-policy"
+import { IdleClosePendingError } from "./conversation/idle-close"
 import { parseOperatorReconciliationProposal } from "./operator-reconciliation"
 import { handleSlackCommand } from "./slack-commands"
 import { hasConnectedProvider } from "./onboarding"
@@ -106,6 +109,8 @@ export type { BudgetReservationResult } from "./conversation/budget-reservations
 export class Conversation extends DurableObject<Env> {
   private readonly lifecycle: Lifecycle<Env>
   private readonly runtime: ConversationRuntime
+  private readonly idleClose: ConversationIdleClose
+  private readonly runtimeAccess: ConversationRuntimeAccess
   private readonly scheduler: ConversationScheduler
   private readonly store: ConversationStore
   private readonly eventStream: ConversationEventStream
@@ -123,14 +128,14 @@ export class Conversation extends DurableObject<Env> {
   private readonly admissions: ConversationAdmissions
   private readonly runtimeUpgrades: ConversationRuntimeUpgrades
   private consecutiveFailures = 0
-  /** Fences admissions and polling while an operator recovery action is in flight. */
-  /** Conversation key, sent by the Worker; admin traffic skips the cap. */
+  /** Canonical name when named; forwarded key is only a validated fallback. */
   private key?: string
   /** Source onboarding work must finish before its runtime can be restarted. */
   private onboardingOperations = 0
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
+    this.key = ctx.id.name
     this.store = new ConversationStore(ctx.storage)
     this.usage = new ConversationUsage({
       conversationID: ctx.id.toString(),
@@ -139,6 +144,7 @@ export class Conversation extends DurableObject<Env> {
       withClient: (fn, recoverOnRejection) => this.withClient(fn, recoverOnRejection),
     })
     this.runtime = new ConversationRuntime({
+      conversationID: ctx.id.toString(),
       network: {
         transport: () => this.transport,
         containerURL: () => this.env.CONTAINER_URL,
@@ -165,6 +171,16 @@ export class Conversation extends DurableObject<Env> {
         count: (name) => { void this.count(name) },
       },
     })
+    this.runtimeAccess = new ConversationRuntimeAccess({
+      prepareOwned: () => this.ensureReadyOwned(),
+      onUseComplete: () => this.idleClose.touch().then(() => undefined).catch(() => {}),
+      identity: () => ({
+        port: this.runtime.apiPort,
+        generation: this.runtime.generation,
+        ready: this.runtime.ready,
+        running: Boolean(this.transport || this.env.CONTAINER_URL || this.ctx.container?.running === true),
+      }),
+    })
     this.lifecycle = new Lifecycle(this)
     this.eventStream = new ConversationEventStream(this.store)
     this.lifecycle.use(this.eventStream)
@@ -179,6 +195,7 @@ export class Conversation extends DurableObject<Env> {
         checkpointRetry: (payload) => this.processCheckpointRetry(payload),
         recoveryWake: (payload) => this.processRecoveryWake(payload),
         leaseRenew: (payload) => this.processLeaseRenew(payload),
+        idleClose: (payload) => this.idleClose.run(payload),
       },
     })
     this.lifecycle.use(this.scheduler.capability)
@@ -259,6 +276,7 @@ export class Conversation extends DurableObject<Env> {
       },
       count: (name) => this.count(name),
       deliverError: (message) => this.deliver({ type: "error", message }),
+      withRuntimeUse: (task) => this.runtimeAccess.useReady(() => task()),
     })
     this.turnExecution = new ConversationTurnExecution({
       conversationID: ctx.id.toString(),
@@ -268,7 +286,7 @@ export class Conversation extends DurableObject<Env> {
       checkpoints: this.checkpoints,
       controlPlane: this.controlPlane,
       runtime: {
-        ensureReady: () => this.ensureReady(),
+        openStream: (open) => this.runtimeAccess.useReady(open),
         withClient: (fn, recoverOnRejection) => this.withClient(fn, recoverOnRejection),
       },
       guards: {
@@ -332,9 +350,13 @@ export class Conversation extends DurableObject<Env> {
       withAdmissionLock: (task) => this.admissions.withLock(task),
       live: () => ({ admitting: this.admissions.active, pumping: this.turnExecution.isPumping }),
       withClient: (fn, recoverOnRejection) => this.withClient(fn, recoverOnRejection),
-      ensureReady: () => this.ensureReady(),
+      withRuntimeUse: (task) => this.runtimeAccess.useReady(() => task()),
+      withRuntimeExclusive: (task) => this.runtimeAccess.exclusive(task),
+      prepareOwned: () => this.ensureReadyOwned(),
+      stopStream: () => this.turnExecution.stopStream(),
     })
     this.admissions = new ConversationAdmissions({
+      conversationID: ctx.id.toString(),
       storage: ctx.storage,
       store: this.store,
       budgetReservations: this.budgetReservations,
@@ -360,6 +382,37 @@ export class Conversation extends DurableObject<Env> {
       startStream: (sessionID) => this.turnExecution.startStream(sessionID),
       waitUntil: (promise) => ctx.waitUntil(promise),
     })
+    const runtime = this.runtime
+    this.idleClose = new ConversationIdleClose({
+      storage: ctx.storage,
+      store: this.store,
+      id: ctx.id.toString(),
+      runtime: {
+        get apiPort() { return runtime.apiPort },
+        get generation() { return runtime.generation },
+        get confirmedStopped() { return runtime.confirmedStopped },
+        port: (number) => runtime.port(number),
+        stop: () => runtime.stop(),
+        nativeRunning: () => ctx.container?.running === true,
+      },
+      access: this.runtimeAccess,
+      usage: this.usage,
+      checkpoints: this.checkpoints,
+      images: this.images,
+      leases: this.leases,
+      eligibleNative: () => this.nativeLeaseEnabled(),
+      locallyBusy: async () => this.admissions.active || this.turnExecution.isPumping ||
+        this.recoveryActions.active || this.onboardingOperations > 0 ||
+        this.scheduler.hasActiveOtherThan("container:idle") || await this.runtimeUpgrades.hasPending(),
+      withAdmissionLock: (task) => this.admissions.withLock(task),
+      stopStream: () => this.turnExecution.stopStream(),
+      prove: (client, sessionID) => this.runtimeUpgrades.proveSession(client, sessionID),
+      jobs: {
+        schedule: (at, payload) => this.scheduler.schedule("container:idle", at, { ...payload, reason: "unused-runtime" }),
+        cancel: () => this.scheduler.cancel("container:idle"),
+      },
+    })
+
     this.reconciliation = new ConversationReconciliation({
       storage: ctx.storage,
       store: this.store,
@@ -391,7 +444,7 @@ export class Conversation extends DurableObject<Env> {
   }
 
   private nativeLeaseEnabled(): boolean {
-    return Boolean(this.ctx.container && !this.transport && !this.env.CONTAINER_URL && this.key !== ONBOARDING_KEY)
+    return Boolean(this.ctx.container && !this.transport && !this.env.CONTAINER_URL && (this.key ?? this.ctx.id.name) !== ONBOARDING_KEY)
   }
 
   /** Old native containers may predate the durable lease intent and renewal job. */
@@ -403,12 +456,26 @@ export class Conversation extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    const identityError = this.acceptForwardedIdentity(request)
+    if (identityError) return identityError
     await this.scheduler.captureLegacyAlarmMigration(false)
     return this.lifecycle.fetch(request)
   }
 
   async onRequest(request: Request): Promise<Response> {
-    this.key = request.headers.get("x-conversation-key") ?? this.key
+    const identityError = this.acceptForwardedIdentity(request)
+    if (identityError) return identityError
+    try {
+      return await this.routeRequest(request)
+    } catch (error) {
+      if (error instanceof IdleClosePendingError) {
+        return Response.json({ error: "container close is pending; retry after stop recovery", retryable: true }, { status: 503 })
+      }
+      throw error
+    }
+  }
+
+  private async routeRequest(request: Request): Promise<Response> {
     const url = new URL(request.url)
     if (url.pathname === "/message") return this.onMessage((await request.json()) as MessageRequest)
     if (url.pathname === "/slack") return this.onSlackEvent((await request.json()) as SlackEventRequest)
@@ -530,6 +597,17 @@ export class Conversation extends DurableObject<Env> {
     return new Response("not found", { status: 404 })
   }
 
+  private acceptForwardedIdentity(request: Request): Response | undefined {
+    const forwardedKey = request.headers.get("x-conversation-key") ?? undefined
+    const canonicalKey = this.ctx.id.name
+    if ((canonicalKey && forwardedKey && forwardedKey !== canonicalKey) ||
+      (this.key && forwardedKey && forwardedKey !== this.key)) {
+      return Response.json({ error: "conversation identity mismatch" }, { status: 400 })
+    }
+    if (!this.key && forwardedKey) this.key = forwardedKey
+    return undefined
+  }
+
   // --------------------------------------------------------------- HTTP adapter
 
   private async onMessage(input: MessageRequest): Promise<Response> {
@@ -633,7 +711,7 @@ export class Conversation extends DurableObject<Env> {
       // ambiguous: keep the hold and never turn it into queueable work.
       await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
     } catch (err) {
-      await this.admissions.recordAccepted(baseline)
+      await this.admissions.recordAccepted(baseline, "ambiguous")
       if (idempotencyKey) await this.store.markTombstone(`msg:${idempotencyKey}`).catch(() => {})
       await this.deliver({
         type: "error",
@@ -646,7 +724,7 @@ export class Conversation extends DurableObject<Env> {
     }
     // The prompt is accepted; a bookkeeping or stream failure must not
     // re-enqueue it, or the model would be charged twice for one message.
-    await this.admissions.recordAccepted(baseline)
+    await this.admissions.recordAccepted(baseline, "acknowledged")
     if (idempotencyKey) {
       await this.store.markTombstone(`msg:${idempotencyKey}`).catch(() => {})
     }
@@ -772,30 +850,25 @@ export class Conversation extends DurableObject<Env> {
           )
           return Response.json(models)
         }
-        await this.ensureReady()
-        const control = await this.runtime.port(CONTROL_PORT)
         const body =
           request.method === "GET" || request.method === "HEAD" ? undefined : await request.text()
-        const res = await control.fetch(`http://container${path}`, {
-          method: request.method,
-          ...(body === undefined ? {} : { body }),
-          signal: AbortSignal.timeout(120_000),
+        return await this.runtimeAccess.useReady(async () => {
+          const control = await this.runtime.port(CONTROL_PORT)
+          const res = await control.fetch(`http://container${path}`, {
+            method: request.method,
+            ...(body === undefined ? {} : { body }),
+            signal: AbortSignal.timeout(120_000),
+          })
+          // Consume the complete control response while this runtime generation
+          // is borrowed. Returning a live body stream would outlive the gate.
+          const bytes = await res.arrayBuffer()
+          // The state snapshot pauses OpenCode; the next call must start it again.
+          if (path === "/state-checkpoint" && res.ok) this.runtime.pauseServer()
+          const headers = new Headers(res.headers)
+          headers.delete("content-encoding")
+          headers.delete("content-length")
+          return new Response(bytes.byteLength ? bytes : null, { status: res.status, headers })
         })
-        let responseBody: BodyInit | null = res.body
-        // The state snapshot pauses OpenCode; the next call must start it again.
-        if (path === "/state-checkpoint" && res.ok) {
-          this.runtime.pauseServer()
-          // This endpoint is a streamed account archive. Finish consuming it
-          // before dropping the onboarding operation fence; a settings-driven
-          // restart must not interrupt the archive stream.
-          responseBody = await res.arrayBuffer()
-        }
-        // fetch has already decoded the body. Keeping the upstream encoding here
-        // makes a second service-binding consumer try to decompress it again.
-        const headers = new Headers(res.headers)
-        headers.delete("content-encoding")
-        headers.delete("content-length")
-        return new Response(responseBody, { status: res.status, headers })
       } catch (error) {
         // A cold start can outlast the port wait. Report it so the wizard can
         // retry instead of surfacing an opaque Worker exception.
@@ -815,6 +888,9 @@ export class Conversation extends DurableObject<Env> {
       if (await this.runtimeUpgrades.hasPending()) return Response.json({ error: "runtime upgrade is pending; resume it before reset" }, { status: 409 })
       const blocked = await this.blockLifecycleDuringActiveTurn()
       if (blocked) return blocked
+      if (!await this.turnExecution.stopStream()) {
+        return Response.json({ ok: false, error: "runtime stream did not drain; state was kept" }, { status: 503 })
+      }
       return this.withUsageLifecycle(async () => {
         if (!(await this.runtime.stop())) {
           return Response.json({ ok: false, error: "container stop was not confirmed; state was kept" }, { status: 503 })
@@ -842,25 +918,23 @@ export class Conversation extends DurableObject<Env> {
       if (await this.runtimeUpgrades.hasPending()) return Response.json({ error: "runtime upgrade is pending; resume it before recycling" }, { status: 409 })
       const blocked = await this.blockLifecycleDuringActiveTurn()
       if (blocked) return blocked
-
-      // R2 checkpoints are portable across image versions. Capturing the old
-      // rootfs here would pin the next start to its retired control server.
-      // Keep the old runtime intact unless its current state is checkpointed.
-      const saved = await this.checkpoints.capture()
-      if (!saved) {
-        return Response.json(
-          { ok: false, error: "checkpoint failed; not recycling" },
-          { status: 503 },
-        )
+      if (!await this.turnExecution.stopStream()) {
+        return Response.json({ ok: false, error: "runtime stream did not drain; not recycling" }, { status: 503 })
       }
-      if (!(await this.runtime.stop())) {
-        return Response.json({ ok: false, error: "container stop was not confirmed; not recycling" }, { status: 503 })
-      }
-      if (!(await this.leases.releaseAfterStop())) {
-        return Response.json({ ok: false, error: "container lease release is pending; not recycling" }, { status: 503 })
-      }
-      await this.images.clearSnapshot()
-      return Response.json({ ok: true })
+      return this.withUsageLifecycle(async () => {
+        // R2 checkpoints are portable across image versions. Capture the
+        // current runtime under exclusive ownership before stopping it.
+        const saved = await this.checkpoints.captureOwned()
+        if (!saved) return Response.json({ ok: false, error: "checkpoint failed; not recycling" }, { status: 503 })
+        if (!(await this.runtime.stop())) {
+          return Response.json({ ok: false, error: "container stop was not confirmed; not recycling" }, { status: 503 })
+        }
+        if (!(await this.leases.releaseAfterStop())) {
+          return Response.json({ ok: false, error: "container lease release is pending; not recycling" }, { status: 503 })
+        }
+        await this.images.clearSnapshot()
+        return Response.json({ ok: true })
+      })
     })
   }
 
@@ -870,6 +944,9 @@ export class Conversation extends DurableObject<Env> {
       if (await this.runtimeUpgrades.hasPending()) return Response.json({ error: "runtime upgrade is pending; resume it before deleting this conversation" }, { status: 409 })
       const blocked = await this.blockLifecycleDuringActiveTurn()
       if (blocked) return blocked
+      if (!await this.turnExecution.stopStream()) {
+        return Response.json({ ok: false, error: "runtime stream did not drain; state was kept" }, { status: 503 })
+      }
       return this.withUsageLifecycle(async () => {
         if (!(await this.runtime.stop())) {
           return Response.json({ ok: false, error: "container stop was not confirmed; state was kept" }, { status: 503 })
@@ -923,7 +1000,7 @@ export class Conversation extends DurableObject<Env> {
         await this.store.patch({ usageError: message }).catch(() => {})
         return Response.json({ ok: false, error: `usage replay failed: ${message}`, retryable: true }, { status: 503 })
       }
-      return cleanup()
+      return this.runtimeAccess.exclusive(cleanup)
     })
   }
 
@@ -1358,7 +1435,7 @@ export class Conversation extends DurableObject<Env> {
       }))
     } catch (err) {
       imageAttachment = undefined
-      await this.admissions.recordAccepted(baseline)
+      await this.admissions.recordAccepted(baseline, "ambiguous")
       if (input.eventID) await this.store.markTombstone(input.eventID).catch(() => {})
       await this.deliver({
         type: "error",
@@ -1370,7 +1447,7 @@ export class Conversation extends DurableObject<Env> {
     imageAttachment = undefined
 
     // The prompt is accepted; bookkeeping and stream failures must not re-send it.
-    await this.admissions.recordAccepted(baseline)
+    await this.admissions.recordAccepted(baseline, "acknowledged")
     if (input.eventID) {
       // Mark event as processed so it stays blocked beyond the 200-event window
       await this.store.markTombstone(input.eventID).catch(() => {})
@@ -1734,14 +1811,16 @@ export class Conversation extends DurableObject<Env> {
   transport?: (number: number) => ContainerPort
 
   private async withClient<T>(fn: (client: ReturnType<typeof makeClient>) => Promise<T>, recoverOnRejection = true): Promise<T> {
+    let used: { port: ContainerPort; generation?: string } | undefined
     try {
-      const port = await this.ensureReady()
-      const client = makeClient(portFetch(port))
-      const result = await fn(client)
+      const result = await this.runtimeAccess.useReady(async (port) => {
+        used = { port, generation: this.runtime.generation }
+        return await this.withClientOwned(fn, port)
+      })
       this.consecutiveFailures = 0
       return result
     } catch (error) {
-      if (error instanceof AccountingPolicyError) throw error
+      if (error instanceof AccountingPolicyError || error instanceof IdleClosePendingError) throw error
       // An invalid command/form or an unsupported optional endpoint does not
       // prove the container is wedged. Never recycle live work for that. Real
       // transport failures keep the existing recovery behavior.
@@ -1750,21 +1829,45 @@ export class Conversation extends DurableObject<Env> {
       // it as a failure or recycle the container out from under itself.
       if (error instanceof Error && error.message.includes("did not become ready")) throw error
       this.consecutiveFailures++
-      this.runtime.invalidate()
       // Two consecutive failures: assume the container is wedged and recycle it.
-      if (this.consecutiveFailures >= 2) {
+      const recycle = this.consecutiveFailures >= 2
+      if (recycle) {
         this.consecutiveFailures = 0
         void this.count("container.recycled")
         logEvent("container.recycled")
-        if (await this.runtime.stop()) await this.leases.releaseAfterStop()
+      }
+      if (used) {
+        await this.runtimeAccess.exclusive(async () => {
+          // A newer prepare may have replaced this generation after the read
+          // borrow ended. Never invalidate or destroy that newer runtime.
+          if (this.runtime.apiPort !== used!.port || this.runtime.generation !== used!.generation) return
+          this.runtime.invalidate()
+          if (recycle && await this.runtime.stop()) await this.leases.releaseAfterStop()
+        })
       }
       throw error
     }
   }
 
+  /** Invoke a client on a port already owned by an exclusive/runtime borrower. */
+  private async withClientOwned<T>(
+    fn: (client: ReturnType<typeof makeClient>) => Promise<T>,
+    port: ContainerPort = this.runtime.apiPort!,
+  ): Promise<T> {
+    if (!port) throw new Error("runtime port is unavailable")
+    return await fn(makeClient(portFetch(port)))
+  }
+
+  /** Prepare the runtime without acquiring a second RuntimeAccess borrow. */
+  private async ensureReadyOwned(): Promise<ContainerPort> {
+    if (!this.key) throw new Error("conversation identity unavailable; runtime preparation is blocked")
+    await this.idleClose.beforePrepareOwned()
+    return this.runtime.ensureReady(() => this.readiness.prepare())
+  }
+
   /** Start the container, restore the checkpoint on first boot, start OpenCode. */
   private ensureReady(): Promise<ContainerPort> {
-    return this.runtime.ensureReady(() => this.readiness.prepare())
+    return this.runtimeAccess.prepare()
   }
 
   // -------------------------------------------------------------------- Slack

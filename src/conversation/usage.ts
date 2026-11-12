@@ -172,8 +172,8 @@ export class ConversationUsage {
     })
   }
 
-  /** Call only from a serialized `recordContext`/`refresh` task. */
-  async replayLogLocked(sessionID: string, terminalMessageID?: string): Promise<void> {
+  /** Call under usage serialization. ownedClient additionally requires caller-held runtime access. */
+  async replayLogLocked(sessionID: string, terminalMessageID?: string, ownedClient?: OpenCodeClient): Promise<void> {
     const state = await this.options.store.get()
     const ledger = await this.ledger()
     const receipt = ledger.receipt
@@ -198,7 +198,7 @@ export class ConversationUsage {
     let logWatermark = replayAfter
     // Retain the runtime borrow through iterator consumption and final proof.
     // Invalid ledger evidence must not trigger transport recycling.
-    await this.options.withClient(async (client) => {
+    const replay = async (client: OpenCodeClient): Promise<void> => {
       const log = await client.experimental.session.log({ sessionID, after: replayAfter, follow: false })
       let latestSeq = replayAfter
       for await (const item of log) {
@@ -290,7 +290,9 @@ export class ConversationUsage {
         fences.terminalSeq <= terminal.seq || fences.startedSeq > fences.terminalSeq) {
         throw new Error("terminal assistant usage is not acknowledged in the durable log")
       }
-    }, false)
+    }
+    if (ownedClient) await replay(ownedClient)
+    else await this.options.withClient(replay, false)
   }
 
   private async report(usage: NonNullable<ReturnType<typeof durableUsageEvent>>, cutoverID?: string): Promise<void> {

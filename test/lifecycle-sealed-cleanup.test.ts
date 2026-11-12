@@ -114,6 +114,7 @@ describe("sealed lifecycle cleanup", () => {
       await instance.fetch(new Request("https://conversation/health"))
       const retryAt = Date.now() + 60_000
       await runtime.storage.put("state", { phase: "idle", checkpointPending: true, checkpointRetryAt: retryAt, seen: [], pending: {} })
+      await runtime.storage.put("containerIdle", { version: 1, id: "idle-pending", generation: "generation-old", dueAt: retryAt, phase: "waiting" })
       await runtime.storage.put("lifecycleJobsSealed", true)
       const inspect = async () => (await (await instance.fetch(new Request("https://conversation/recovery"))).json()) as { snapshotID: string; kind: string }
       const retry = async (snapshotID: string) => instance.fetch(new Request("https://conversation/recovery", {
@@ -136,7 +137,9 @@ describe("sealed lifecycle cleanup", () => {
       const rows = runtime.storage.sql.exec<{ id: string; time: number }>(
         "SELECT id, time FROM cf_agents_jobs WHERE capability = ?", "conversation-jobs",
       ).toArray()
-      expect(rows).toEqual([{ id: "checkpoint:retry", time: retryAt }])
+      expect(rows.slice().sort((a, b) => a.id.localeCompare(b.id))).toEqual([
+        { id: "checkpoint:retry", time: retryAt }, { id: "container:idle", time: retryAt },
+      ])
       expect((await runtime.storage.get<ConversationState>("state"))?.checkpointPending).toBe(true)
     })
   })
@@ -153,6 +156,25 @@ describe("sealed lifecycle cleanup", () => {
         method: "POST", body: JSON.stringify({ action: "retry", expectedSnapshotID: snapshot.snapshotID }),
       }))
       expect(response.status).toBe(409)
+      expect(await runtime.storage.get("lifecycleJobsSealed")).toBe(true)
+    })
+  })
+
+
+  it("uses the durable epoch rather than a stale process cache for sealed recovery snapshots", async () => {
+    const stub = env.CONVERSATION.getByName("C1:sealed-epoch-cache")
+    await runInDurableObject(stub, async (instance, runtime) => {
+      await instance.fetch(new Request("https://conversation/health"))
+      await runtime.storage.put("state", { phase: "idle", seen: [], pending: {} })
+      await runtime.storage.put("lifecycleJobsSealed", true)
+      const before = await (await instance.fetch(new Request("https://conversation/recovery"))).json() as { snapshotID: string }
+      const epoch = await runtime.storage.get<number>("conversationJobEpoch")
+      await runtime.storage.put("conversationJobEpoch", epoch! + 5)
+      const stale = await instance.fetch(new Request("https://conversation/recovery", {
+        method: "POST", body: JSON.stringify({ action: "retry", expectedSnapshotID: before.snapshotID }),
+      }))
+      expect(stale.status).toBe(409)
+      expect(await runtime.storage.get("conversationJobEpoch")).toBe(epoch! + 5)
       expect(await runtime.storage.get("lifecycleJobsSealed")).toBe(true)
     })
   })

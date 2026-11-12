@@ -1,3 +1,4 @@
+import { isContainerIdleRecord } from "./idle-state"
 import type { RecoverySchedulerEvidence } from "../recovery"
 import type { MemoryLimitContext, LifecycleJobOutcome } from "agents/lifecycle"
 import { ConversationJobs, type ConversationJobKind, type ConversationJobPayload } from "./jobs"
@@ -21,6 +22,7 @@ export interface ConversationSchedulerOptions {
     checkpointRetry: DomainWork
     recoveryWake: DomainWork
     leaseRenew: DomainWork
+    idleClose?: DomainWork
   }
 }
 
@@ -39,6 +41,7 @@ export class ConversationScheduler {
       recoveryWake: (payload) => this.handoff("recovery:wake", payload, () => options.work.recoveryWake(payload)),
       legacyBootstrap: (payload) => this.runLegacyAlarmBootstrap(payload),
       leaseRenew: (payload) => this.handoff("lease:renew", payload, () => options.work.leaseRenew(payload)),
+      idleClose: (payload) => this.handoff("container:idle", payload, () => options.work.idleClose?.(payload) ?? Promise.resolve(undefined)),
       onJobError: (kind, payload, error) => this.handleJobError(kind, payload, error),
       onMemoryLimit: (context) => this.onMemoryLimit(context),
     })
@@ -46,6 +49,10 @@ export class ConversationScheduler {
 
   get activeCount(): number {
     return this.active.size
+  }
+
+  hasActiveOtherThan(kind: ConversationJobKind): boolean {
+    return [...this.active].some((active) => active !== kind)
   }
 
   async epoch(): Promise<number> {
@@ -190,9 +197,10 @@ export class ConversationScheduler {
     const state = await this.options.store.get()
     return {
       sealed: await this.options.storage.get<boolean>("lifecycleJobsSealed") === true,
-      epoch: await this.epoch(),
+      epoch: await this.options.storage.get<number>("conversationJobEpoch") ?? await this.epoch(),
       checkpointPending: state.checkpointPending === true,
       ...(state.checkpointRetryAt === undefined ? {} : { checkpointRetryAt: state.checkpointRetryAt }),
+      idleIntent: await this.options.storage.get<unknown>("containerIdle"),
       leaseIntent: await this.options.storage.get<unknown>("containerLease"),
       claims: await this.options.storage.get<unknown>("conversationJobClaims"),
       activeJobs: this.activeCount,
@@ -205,13 +213,14 @@ export class ConversationScheduler {
     const nextEpoch = expected.epoch + 1
     if (!Number.isSafeInteger(nextEpoch)) throw new Error("conversation job epoch is exhausted")
     await this.options.storage.transaction(async (txn) => {
+      if (await txn.get<number>("conversationJobEpoch") !== expected.epoch) throw new Error("sealed recovery epoch changed")
       const current = await this.evidence()
       const state = await this.options.store.get()
       if (!expected.sealed || JSON.stringify(current) !== JSON.stringify(expected) ||
         JSON.stringify(state) !== JSON.stringify(expectedState)) {
         throw new Error("sealed recovery evidence changed")
       }
-      for (const kind of ["turn:observe", "admission:retry", "checkpoint:retry", "recovery:wake", "legacy:bootstrap", "lease:renew"] as const) {
+      for (const kind of ["turn:observe", "admission:retry", "checkpoint:retry", "recovery:wake", "legacy:bootstrap", "lease:renew", "container:idle"] as const) {
         await this.capability.cancel(kind)
       }
       await txn.put("conversationJobEpoch", nextEpoch)
@@ -224,6 +233,13 @@ export class ConversationScheduler {
       if (state.checkpointPending) {
         const at = Math.max(Date.now(), state.checkpointRetryAt ?? Date.now())
         await this.capability.schedule("checkpoint:retry", at, { epoch: nextEpoch, dueAt: at, reason: "sealed-idle-recovery" })
+      }
+      if (isContainerIdleRecord(current.idleIntent)) {
+        const at = Math.max(Date.now(), current.idleIntent.dueAt)
+        await this.capability.schedule("container:idle", at, {
+          epoch: nextEpoch, dueAt: at, idleID: current.idleIntent.id,
+          runtimeGeneration: current.idleIntent.generation, reason: "sealed-idle-recovery",
+        })
       }
       if (current.leaseIntent !== undefined) {
         const at = Date.now()
@@ -244,6 +260,7 @@ export class ConversationScheduler {
       await this.capability.cancel("recovery:wake")
       await this.capability.cancel("legacy:bootstrap")
       await this.capability.cancel("lease:renew")
+      await this.capability.cancel("container:idle")
       await this.options.storage.put<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY, {
         version: 1,
         dueAt: null,
@@ -253,7 +270,7 @@ export class ConversationScheduler {
       const stored = await this.options.storage.list()
       for (const key of stored.keys()) {
         if (key === "conversationJobEpoch") continue
-        if (key === "state" || key === "seq" || key === "events" || key === "controlToken" ||
+        if (key === "containerIdle" || key === "state" || key === "seq" || key === "events" || key === "controlToken" ||
           key === "snapshot" || key === "containerImageVariant" || key === "runtimeUpgradePending" ||
           key === "runtimeUpgradeCompletion" || key === "conversationJobClaims" || key === "lifecycleJobsSealed" ||
           key.startsWith("tombstones:")) {

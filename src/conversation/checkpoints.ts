@@ -88,6 +88,36 @@ export class ConversationCheckpoints {
     return legacy ? { workspace: legacy, state: null, split: false } : null
   }
 
+  /** Validate both portable archives without buffering their plaintext in memory. */
+  async verifySplitArchive(manifest: CheckpointManifest, requireEncrypted = false): Promise<void> {
+    if (!manifest.state || manifest.workspace.key === manifest.state.key) throw new Error("split checkpoint is incomplete")
+    for (const part of [manifest.workspace, manifest.state]) {
+      if (!part.key.startsWith(this.prefix()) || !Number.isSafeInteger(part.size) || part.size <= 0 ||
+        typeof part.encrypted !== "boolean") throw new Error("split checkpoint metadata is invalid")
+      if (!part.encrypted && (requireEncrypted || !plaintextArchivesAllowed(this.options.archiveEnv))) {
+        throw new Error("plaintext checkpoint archives are disabled")
+      }
+      const object = await this.options.bucket.get(part.key)
+      if (!object || object.size !== part.size || object.customMetadata?.encrypted !== (part.encrypted ? "1" : "0")) {
+        throw new Error("split checkpoint object does not match its manifest")
+      }
+      const clear = await this.decryptBody(object.body, part.encrypted)
+      const reader = clear.getReader()
+      let bytes = 0
+      try {
+        for (;;) {
+          const chunk = await reader.read()
+          if (chunk.done) break
+          bytes += chunk.value.byteLength
+          if (!Number.isSafeInteger(bytes)) throw new Error("split checkpoint archive is too large")
+        }
+      } finally {
+        reader.releaseLock()
+      }
+      if (bytes === 0) throw new Error("split checkpoint archive is empty")
+    }
+  }
+
   async objects(): Promise<R2Object[]> {
     const objects: R2Object[] = []
     let cursor: string | undefined

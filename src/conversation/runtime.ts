@@ -1,11 +1,14 @@
 import { opencodeViaControl } from "../opencode-proxy"
 import type { ContainerPort } from "../opencode"
 import { logEvent } from "../log"
-import { withSpan } from "../telemetry"
+import { traceId, withSpan } from "../telemetry"
+import { emitConversationTelemetry, type ConversationTelemetrySink } from "./telemetry"
 
 type RuntimeContainer = NonNullable<DurableObjectState["container"]>
 
 export interface ConversationRuntimePorts {
+  conversationID?: string
+  telemetry?: ConversationTelemetrySink
   network: {
     transport(): ((port: number) => ContainerPort) | undefined
     containerURL(): string | undefined
@@ -102,17 +105,39 @@ export class ConversationRuntime {
       this.resetAfterStop()
       return true
     }
-    this.ports.lifecycle?.beforeStop()
-    if (container.running !== false) {
-      try {
-        await container.destroy()
-      } catch {
-        return false
+    const startedAt = Date.now()
+    const generation = this.generationValue
+    return withSpan("container.stop", async (span) => {
+      this.ports.lifecycle?.beforeStop()
+      if (container.running !== false) {
+        try {
+          await container.destroy()
+        } catch {
+          this.ports.observations.count("container.stop.failed")
+          span.setAttribute("container.stop.result", "failed")
+          this.emitLifecycle({
+            event: "container.stop.failed",
+            runtimeGeneration: generation,
+            result: "failed",
+            durationMs: Date.now() - startedAt,
+            reasonCode: "destroy_failed",
+          })
+          return false
+        }
       }
-    }
-    this.stopConfirmedValue = true
-    this.resetAfterStop()
-    return true
+      this.stopConfirmedValue = true
+      this.resetAfterStop()
+      const durationMs = Date.now() - startedAt
+      span.setAttribute("container.stop.result", "stopped")
+      this.ports.observations.count("container.stopped")
+      this.emitLifecycle({
+        event: "container.stopped",
+        runtimeGeneration: generation,
+        result: "stopped",
+        durationMs,
+      })
+      return true
+    })
   }
 
   ensureReady(load: () => Promise<ContainerPort>): Promise<ContainerPort> {
@@ -131,33 +156,66 @@ export class ConversationRuntime {
   }
 
   async startBoundContainer(container: RuntimeContainer): Promise<boolean> {
-    return withSpan("container.start", async (span) => {
-      await this.ports.startup.prepareImage(container)
-      const options = this.ports.startup.options()
-      const snapshot = await this.ports.snapshots.snapshotHandle()
-      if (snapshot) {
-        try {
-          container.start({ ...options, image: undefined, containerSnapshot: snapshot } as ContainerStartupOptions)
-          this.stopConfirmedValue = false
-          this.startModeValue = "snapshot"
-          this.applyInactivity(container)
-          span.setAttribute("container.start_mode", "snapshot")
-          logEvent("snapshot.restored")
-          this.ports.observations.count("snapshot.restored")
-          return true
-        } catch {
-          this.ports.observations.snapshotStale()
-          span.setAttribute("container.snapshot_stale", true)
-          await this.ports.snapshots.clearSnapshot()
+    const startedAt = Date.now()
+    try {
+      return await withSpan("container.start", async (span) => {
+        await this.ports.startup.prepareImage(container)
+        const options = this.ports.startup.options()
+        const snapshot = await this.ports.snapshots.snapshotHandle()
+        if (snapshot) {
+          try {
+            container.start({ ...options, image: undefined, containerSnapshot: snapshot } as ContainerStartupOptions)
+            this.stopConfirmedValue = false
+            this.startModeValue = "snapshot"
+            this.applyInactivity(container)
+            span.setAttribute("container.start_mode", "snapshot")
+            span.setAttribute("container.start.result", "started")
+            logEvent("snapshot.restored")
+            this.ports.observations.count("snapshot.restored")
+            this.recordStarted("snapshot", startedAt)
+            return true
+          } catch {
+            this.ports.observations.snapshotStale()
+            span.setAttribute("container.snapshot_stale", true)
+            await this.ports.snapshots.clearSnapshot()
+          }
         }
-      }
-      container.start(options)
-      this.stopConfirmedValue = false
-      this.startModeValue = "image"
-      this.applyInactivity(container)
-      span.setAttribute("container.start_mode", "image")
-      return false
+        container.start(options)
+        this.stopConfirmedValue = false
+        this.startModeValue = "image"
+        this.applyInactivity(container)
+        span.setAttribute("container.start_mode", "image")
+        span.setAttribute("container.start.result", "started")
+        this.recordStarted("image", startedAt)
+        return false
+      })
+    } catch (error) {
+      this.ports.observations.count("container.start.failed")
+      this.emitLifecycle({
+        event: "container.start.failed",
+        runtimeGeneration: this.generationValue,
+        result: "failed",
+        durationMs: Date.now() - startedAt,
+        reasonCode: "start_failed",
+      })
+      throw error
+    }
+  }
+
+  private recordStarted(mode: "image" | "snapshot", startedAt: number): void {
+    const durationMs = Date.now() - startedAt
+    this.ports.observations.count("container.started")
+    this.emitLifecycle({
+      event: "container.started",
+      runtimeGeneration: this.generationValue,
+      result: "succeeded",
+      durationMs,
+      reasonCode: mode,
     })
+  }
+
+  private emitLifecycle(input: Parameters<typeof emitConversationTelemetry>[0]): void {
+    emitConversationTelemetry({ ...input, conversationID: this.ports.conversationID }, this.ports.telemetry, traceId)
   }
 
   async port(number: number): Promise<ContainerPort> {

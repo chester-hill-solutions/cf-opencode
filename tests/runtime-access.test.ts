@@ -144,4 +144,50 @@ describe("ConversationRuntimeAccess", () => {
     expect(access.activeUses).toBe(0)
     expect(await access.exclusive(() => "gate released")).toBe("gate released")
   })
+
+  it("uses a warm runtime under the shared gate without preparing or touching activity", async () => {
+    const readyPort = port("warm")
+    const callbackStarted = deferred()
+    const finishCallback = deferred()
+    let completeHooks = 0
+    let prepareCalls = 0
+    const access = new ConversationRuntimeAccess({
+      prepareOwned: async () => { prepareCalls++; throw new Error("must not prepare") },
+      identity: () => ({ port: readyPort, generation: "gen-warm", ready: true, running: true }),
+      onUseComplete: () => { completeHooks++ },
+    })
+
+    const before = access.activityEpoch
+    const borrowed = access.useWarm(async (usedPort) => {
+      callbackStarted.resolve()
+      await finishCallback.promise
+      return usedPort
+    })
+    await callbackStarted.promise
+    expect(access.activeUses).toBe(1)
+    expect(access.activityEpoch).toBe(before)
+    const writerStarted = deferred()
+    const writer = access.exclusive(() => { writerStarted.resolve() })
+    expect(access.exclusivePending).toBe(1)
+    finishCallback.resolve()
+    expect(await borrowed).toBe(readyPort)
+    await writerStarted.promise
+    await writer
+    expect(prepareCalls).toBe(0)
+    expect(completeHooks).toBe(0)
+  })
+
+  it("rejects warm borrowing with a fixed error when runtime identity is unavailable", async () => {
+    let callbackCalls = 0
+    const access = new ConversationRuntimeAccess({
+      prepareOwned: async () => { throw new Error("must not prepare") },
+      identity: () => ({ ready: false, running: false }),
+    })
+
+    await expect(access.useWarm(async () => { callbackCalls++; return "unreachable" }))
+      .rejects.toThrow("warm runtime unavailable")
+    expect(callbackCalls).toBe(0)
+    expect(access.activityEpoch).toBe(0)
+    expect(access.activeUses).toBe(0)
+  })
 })

@@ -5,9 +5,10 @@ import {
   type LifecycleJobOutcome,
 } from "agents/lifecycle"
 
-export type ConversationJobKind = "turn:observe" | "admission:retry" | "checkpoint:retry" | "recovery:wake" | "legacy:bootstrap" | "lease:renew"
+export type ConversationJobKind = "turn:observe" | "admission:retry" | "checkpoint:retry" | "recovery:wake" | "legacy:bootstrap" | "lease:renew" | "container:idle"
 
 export interface ConversationJobPayload {
+  idleID?: string
   epoch?: number
   claimID?: string
   admissionID?: string
@@ -30,6 +31,7 @@ export interface ConversationJobHandlers {
   recoveryWake(payload: ConversationJobPayload): Promise<LifecycleJobOutcome>
   legacyBootstrap(payload: ConversationJobPayload): Promise<LifecycleJobOutcome>
   leaseRenew(payload: ConversationJobPayload): Promise<LifecycleJobOutcome>
+  idleClose?(payload: ConversationJobPayload): Promise<LifecycleJobOutcome>
   onJobError(kind: ConversationJobKind, payload: ConversationJobPayload, error: unknown): Promise<LifecycleJobOutcome>
   onMemoryLimit(context: MemoryLimitContext): Promise<void>
 }
@@ -41,6 +43,7 @@ const JOBS: Record<ConversationJobKind, { id: string; fn: string }> = {
   "recovery:wake": { id: "recovery:wake", fn: "recoveryWake" },
   "legacy:bootstrap": { id: "legacy:bootstrap", fn: "legacyBootstrap" },
   "lease:renew": { id: "lease:renew", fn: "leaseRenew" },
+  "container:idle": { id: "container:idle", fn: "idleClose" },
 }
 
 const KIND_BY_FUNCTION = new Map(Object.entries(JOBS).map(([kind, value]) => [value.fn, kind as ConversationJobKind]))
@@ -114,6 +117,7 @@ export class ConversationJobs extends LifecycleCapability {
         case "recovery:wake": return this.handlers.recoveryWake(payload)
         case "legacy:bootstrap": return this.handlers.legacyBootstrap(payload)
         case "lease:renew": return this.handlers.leaseRenew(payload)
+        case "container:idle": return this.handlers.idleClose?.(payload)
       }
     }) as LifecycleJobOutcome
   }
@@ -135,6 +139,7 @@ function parsePayload(value: unknown): ConversationJobPayload {
   const raw = value as Record<string, unknown>
   return {
     ...(typeof raw.epoch === "number" && Number.isSafeInteger(raw.epoch) && raw.epoch >= 0 ? { epoch: raw.epoch } : {}),
+    ...(typeof raw.idleID === "string" ? { idleID: raw.idleID } : {}),
     ...(typeof raw.claimID === "string" ? { claimID: raw.claimID } : {}),
     ...(typeof raw.admissionID === "string" ? { admissionID: raw.admissionID } : {}),
     ...(typeof raw.queueID === "string" ? { queueID: raw.queueID } : {}),
@@ -148,7 +153,7 @@ function parsePayload(value: unknown): ConversationJobPayload {
 }
 
 function sameJobOwner(left: ConversationJobPayload, right: ConversationJobPayload): boolean {
-  return left.epoch === right.epoch && left.claimID === right.claimID && left.admissionID === right.admissionID &&
+  return left.idleID === right.idleID && left.epoch === right.epoch && left.claimID === right.claimID && left.admissionID === right.admissionID &&
     left.queueID === right.queueID && left.reservationID === right.reservationID &&
     left.reservationDate === right.reservationDate && left.sessionID === right.sessionID &&
     left.runtimeGeneration === right.runtimeGeneration

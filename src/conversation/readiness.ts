@@ -64,6 +64,8 @@ export class ConversationReadiness {
   }
 
   async prepare(): Promise<ContainerPort> {
+    const key = this.options.identity.key()
+    if (!key) throw new Error("conversation identity unavailable; runtime preparation is blocked")
     const upgradePending = await this.options.upgrade.pending()
     if (upgradePending && !this.options.activity.upgradeResuming()) {
       throw new Error("runtime upgrade is pending; an operator must resume verification before this conversation can run")
@@ -94,7 +96,6 @@ export class ConversationReadiness {
       state.phase === "running" ||
       state.phase === "settling"
     const providerSyncAt = settings.onboarding.opencodeConnectedAt
-    const key = this.options.identity.key()
     const providerSyncEligible = Boolean(providerSyncAt && key && key !== ONBOARDING_KEY && !parseConversationKey(key))
     if (!providerSyncEligible) this.providerSyncAt = undefined
     const providerSyncNeeded = providerSyncEligible && this.providerSyncAt !== providerSyncAt

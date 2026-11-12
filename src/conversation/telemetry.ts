@@ -3,7 +3,13 @@ import { logEvent } from "../log"
 export type ConversationTelemetryEventName =
   | "admission.started"
   | "admission.settled"
+  | "queue.enqueued"
+  | "queue.capacity"
+  | "queue.failed"
+  | "queue.dispatch_ambiguous"
+  | "queue.drained"
   | "turn.started"
+  | "turn.start.failed"
   | "turn.settled"
   | "checkpoint.started"
   | "checkpoint.saved"
@@ -27,7 +33,9 @@ export type ConversationTelemetryEventName =
   | "permission.reply.blocked"
   | "permission.reply.failed"
   | "container.started"
+  | "container.start.failed"
   | "container.stopped"
+  | "container.stop.failed"
 
 export type ConversationTelemetryResult =
   | "started"
@@ -84,7 +92,13 @@ export type ConversationTelemetryTraceId = () => string | undefined
 const COMPONENT_BY_EVENT: Record<ConversationTelemetryEventName, ConversationTelemetryEnvelope["component"]> = {
   "admission.started": "admission",
   "admission.settled": "admission",
+  "queue.enqueued": "admission",
+  "queue.capacity": "admission",
+  "queue.failed": "admission",
+  "queue.dispatch_ambiguous": "admission",
+  "queue.drained": "admission",
   "turn.started": "turns",
+  "turn.start.failed": "turns",
   "turn.settled": "turns",
   "checkpoint.started": "checkpoints",
   "checkpoint.saved": "checkpoints",
@@ -108,7 +122,9 @@ const COMPONENT_BY_EVENT: Record<ConversationTelemetryEventName, ConversationTel
   "permission.reply.blocked": "permissions",
   "permission.reply.failed": "permissions",
   "container.started": "runtime",
+  "container.start.failed": "runtime",
   "container.stopped": "runtime",
+  "container.stop.failed": "runtime",
 }
 
 const RESULTS = new Set<ConversationTelemetryResult>([

@@ -236,13 +236,9 @@ describe("Conversation lease job integration", () => {
     const first = await runInDurableObject(stub, async (instance, runtime) => {
       const container = { running: true, async destroy() { this.running = false }, async setInactivityTimeout() {} }
       Object.defineProperty((instance as unknown as { ctx: object }).ctx, "container", { configurable: true, value: container })
-      const internal = instance as unknown as {
-        key?: string
-        leases: ConversationLease
-      }
-      internal.key = "native-lease-job"
+      const internal = instance as unknown as { leases: ConversationLease }
       await instance.fetch(new Request("https://conversation/state", {
-        headers: { "x-conversation-key": "native-lease-job" },
+        headers: { "x-conversation-key": "C1:lease-job-after-eviction" },
       }))
       await internal.leases.ensureHeld()
       return {
@@ -266,13 +262,11 @@ describe("Conversation lease job integration", () => {
       }
       Object.defineProperty((instance as unknown as { ctx: object }).ctx, "container", { configurable: true, value: container })
       const internal = instance as unknown as {
-        key?: string
         leases: ConversationLease
         runtime: { stop(): Promise<boolean> }
       }
-      internal.key = "native-lease-job"
       await instance.fetch(new Request("https://conversation/state", {
-        headers: { "x-conversation-key": "native-lease-job" },
+        headers: { "x-conversation-key": "C1:lease-job-after-eviction" },
       }))
       await driveConversationJobs(instance, runtime.storage, ["lease:renew"])
       const renewed = await runtime.storage.get<Awaited<ReturnType<ConversationLease["status"]>>>("containerLease")
@@ -303,7 +297,7 @@ describe("Conversation lease job integration", () => {
         runtime: { stop(): Promise<boolean> }
       }
       const state = await instance.fetch(new Request("https://conversation/state", {
-        headers: { "x-conversation-key": "old-native-conversation" },
+        headers: { "x-conversation-key": "C1:lease-job-adoption" },
       }))
       const before = await runtime.storage.get("containerLease")
       const pendingJob = runtime.storage.sql.exec<{ id: string; capability: string }>(
@@ -330,17 +324,16 @@ describe("Conversation lease job integration", () => {
     const result = await runInDurableObject(stub, async (instance, runtime) => {
       const container = { running: true, async destroy() { throw new Error("destroy failed") }, async setInactivityTimeout() {} }
       Object.defineProperty((instance as unknown as { ctx: object }).ctx, "container", { configurable: true, value: container })
-      const internal = instance as unknown as { key?: string; leases: ConversationLease }
-      internal.key = "native-lease-stop-failure"
+      const internal = instance as unknown as { leases: ConversationLease }
       await runtime.storage.put("state", { phase: "idle", sessionID: "ses_keep", marker: "keep", seen: [], pending: {} })
       await instance.fetch(new Request("https://conversation/state", {
-        headers: { "x-conversation-key": "native-lease-stop-failure" },
+        headers: { "x-conversation-key": "C1:lease-stop-failure" },
       }))
       await internal.leases.ensureHeld()
       const beforeLease = await runtime.storage.get<Awaited<ReturnType<ConversationLease["status"]>>>("containerLease")
       const response = await instance.fetch(new Request("https://conversation/reset", {
         method: "POST",
-        headers: { "x-conversation-key": "native-lease-stop-failure" },
+        headers: { "x-conversation-key": "C1:lease-stop-failure" },
       }))
       return {
         status: response.status,

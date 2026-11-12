@@ -69,6 +69,17 @@ export class ConversationRuntimeAccess {
     }
   }
 
+  /** Borrow an already warm runtime without preparing, touching activity, or extending idle time. */
+  async useWarm<T>(operation: (port: ContainerPort) => Promise<T>): Promise<T> {
+    return this.gate.use(async () => {
+      const identity = this.options.identity()
+      if (!identity.ready || !identity.running || !identity.port || !identity.generation) {
+        throw new Error("warm runtime unavailable")
+      }
+      return operation(identity.port)
+    })
+  }
+
   /** Exclusive runtime transition. Do not call prepare/useReady from inside it. */
   exclusive<T>(operation: () => T | Promise<T>): Promise<T> {
     return this.gate.exclusive(operation)

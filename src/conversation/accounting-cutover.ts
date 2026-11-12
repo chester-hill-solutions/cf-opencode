@@ -53,27 +53,26 @@ export class ConversationAccountingCutover {
     let logState: UnknownRecord | undefined
     if (sessionID) {
       try {
-        await this.options.ensureReady()
-        const control = await this.options.runtime.port(CONTROL_PORT)
-        const proofResponse = await control.fetch("http://container/start", {
-          method: "POST",
-          signal: AbortSignal.timeout(120_000),
-        })
-        if (!proofResponse.ok) throw new Error("runtime proof could not be refreshed")
-        const proof = await proofResponse.json().catch(() => undefined) as {
-          ok?: unknown
-          accountingPolicy?: unknown
-          opencodeGeneration?: unknown
-          eventPersistence?: unknown
-        } | undefined
-        if (proof?.ok !== true || proof.accountingPolicy !== ACCOUNTING_POLICY_ID ||
-          typeof proof.opencodeGeneration !== "string" || !proof.opencodeGeneration) {
-          throw new Error("runtime generation proof is unavailable")
-        }
-        runtimeGeneration = proof.opencodeGeneration
-        this.options.runtime.recordProof(runtimeGeneration, proof.eventPersistence === true)
-
         const inspected = await this.options.withClient(async (client) => {
+          const control = await this.options.runtime.port(CONTROL_PORT)
+          const proofResponse = await control.fetch("http://container/start", {
+            method: "POST",
+            signal: AbortSignal.timeout(120_000),
+          })
+          if (!proofResponse.ok) throw new Error("runtime proof could not be refreshed")
+          const proof = await proofResponse.json().catch(() => undefined) as {
+            ok?: unknown
+            accountingPolicy?: unknown
+            opencodeGeneration?: unknown
+            eventPersistence?: unknown
+          } | undefined
+          if (proof?.ok !== true || proof.accountingPolicy !== ACCOUNTING_POLICY_ID ||
+            typeof proof.opencodeGeneration !== "string" || !proof.opencodeGeneration) {
+            throw new Error("runtime generation proof is unavailable")
+          }
+          runtimeGeneration = proof.opencodeGeneration
+          this.options.runtime.recordProof(runtimeGeneration, proof.eventPersistence === true)
+
           assertAccountingPolicy(await client.config.get())
           const session = await client.session.get({ sessionID })
           let latestSeq = 0
@@ -136,7 +135,7 @@ export class ConversationAccountingCutover {
             latestExecutionTerminalSeq,
             latestStepSeq,
           }
-        })
+        }, false)
         runtimeStatus = {
           accountingPolicy: ACCOUNTING_POLICY_ID,
           generation: runtimeGeneration,

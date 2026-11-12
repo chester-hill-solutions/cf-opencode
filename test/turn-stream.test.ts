@@ -60,7 +60,7 @@ describe("turn native stream ownership", () => {
         checkpoints: { capture: async () => true } as unknown as ConversationCheckpoints,
         controlPlane: { pendingForms: async () => [] } as unknown as ConversationControlPlane,
         runtime: {
-          ensureReady: async () => ({
+          openStream: async (open) => open({
             async fetch() {
               fetches++
               if (fetches === 1) {
@@ -139,7 +139,7 @@ describe("turn native stream ownership", () => {
         checkpoints: { capture: async () => true } as unknown as ConversationCheckpoints,
         controlPlane: { pendingForms: async () => [] } as unknown as ConversationControlPlane,
         runtime: {
-          ensureReady: async () => ({ fetch: async () => new Response(null) }),
+          openStream: async (open) => open({ fetch: async () => new Response(null) }),
           withClient: async () => { throw new Error("guarded poll must not read OpenCode") },
         },
         guards: { recovering: () => false, hasPendingUpgrade: async () => {
@@ -184,7 +184,7 @@ describe("turn native stream ownership", () => {
         checkpoints: { capture: async () => true } as unknown as ConversationCheckpoints,
         controlPlane: { pendingForms: async () => [] } as unknown as ConversationControlPlane,
         runtime: {
-          ensureReady: async () => ({ fetch: async () => { markFetchStarted(); return await responseReady } }),
+          openStream: async (open) => open({ fetch: async () => { markFetchStarted(); return await responseReady } }),
           withClient: async () => { throw new Error("unexpected client call") },
         },
         guards: { recovering: () => false, hasPendingUpgrade: async () => false },
@@ -233,7 +233,7 @@ describe("turn native stream ownership", () => {
         checkpoints: { capture: async () => true } as unknown as ConversationCheckpoints,
         controlPlane: { pendingForms: async () => [] } as unknown as ConversationControlPlane,
         runtime: {
-          ensureReady: async () => ({ fetch: async () => new Response(null) }),
+          openStream: async (open) => open({ fetch: async () => new Response(null) }),
           withClient: async (fn) => await fn({
             session: { context: async () => messages },
             permission: { list: async () => [] },

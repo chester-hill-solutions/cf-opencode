@@ -8,7 +8,7 @@ import type { ConversationImages } from "./images"
 import type { ConversationCheckpoints } from "./checkpoints"
 import type { ConversationLease } from "./lease"
 import { ACCOUNTING_POLICY_ID, assertAccountingPolicy } from "../accounting-policy"
-import { plaintextArchivesAllowed, type ArchivePolicyEnv } from "../archive-policy"
+import { type ArchivePolicyEnv } from "../archive-policy"
 import { proveRuntimeQuiescence } from "../runtime-quiescence"
 import {
   parseRuntimeUpgradePending,
@@ -50,7 +50,10 @@ export interface ConversationRuntimeUpgradesOptions {
   withAdmissionLock<T>(task: () => Promise<T>): Promise<T>
   live(): { admitting: boolean; pumping: boolean }
   withClient<T>(fn: (client: ReturnType<typeof makeClient>) => Promise<T>, recoverOnRejection?: boolean): Promise<T>
-  ensureReady(): Promise<ContainerPort>
+  withRuntimeUse<T>(task: () => Promise<T>): Promise<T>
+  withRuntimeExclusive<T>(task: () => Promise<T>): Promise<T>
+  prepareOwned(): Promise<ContainerPort>
+  stopStream(): Promise<boolean>
 }
 
 const CONTROL_PORT = 4001
@@ -108,7 +111,7 @@ export class ConversationRuntimeUpgrades {
     })
   }
 
-  private async buildPlan(): Promise<RuntimeUpgradePlanSuccess | RuntimeUpgradePlanFailure> {
+  private async buildPlan(owned = false): Promise<RuntimeUpgradePlanSuccess | RuntimeUpgradePlanFailure> {
     const state = await this.options.store.get()
     const sessionID = state.sessionID
     const blockers: string[] = []
@@ -141,61 +144,64 @@ export class ConversationRuntimeUpgrades {
       }
     }
     try {
-      await this.options.ensureReady()
-      const port = this.options.runtime.apiPort
-      const generation = this.options.runtime.generation
-      if (!port || !generation) throw new Error("runtime generation unavailable")
-      const client = makeClient(portFetch(port))
-      assertAccountingPolicy(await client.config.get())
-      const quiescent = await this.proveSession(client, sessionID!)
-      if (quiescent.proof.sessionID !== sessionID || quiescent.proof.runtimeGeneration !== generation) {
-        throw new Error("runtime changed during quiescence proof")
-      }
-      const localSnapshot = await this.runtimeUpgradeLocalSnapshot()
-      const localSnapshotID = await this.sha256(JSON.stringify(localSnapshot))
-      const sourceGeneration = generation
-      const planCore = {
-        conversationID: this.options.id,
-        sessionID,
-        contextDigest: quiescent.proof.contextDigest,
-        sourceGeneration,
-        targetImage,
-        localSnapshotID,
-        centralSnapshotID: ledger!.snapshotID,
-      }
-      const planID = await this.sha256(JSON.stringify(planCore))
-      const manifest: CheckpointManifest = {
-        workspace: { key: "preview/workspace.tar.gz", size: 1, encrypted: true },
-        state: { key: "preview/state.tar.gz", size: 1, encrypted: true },
-        createdAt: 1,
-      }
-      const intent: RuntimeUpgradePending = {
-        planID,
-        conversationID: this.options.id,
-        sessionID: sessionID!,
-        contextDigest: quiescent.proof.contextDigest,
-        sourceGeneration,
-        targetImage,
-        checkpointManifest: manifest,
-        startedAt: Math.max(1, Date.now()),
-      }
-      return {
-        ok: true,
-        pending: intent,
-        body: {
-          canApply: true,
-          planID,
+      const inspect = async (): Promise<RuntimeUpgradePlanSuccess> => {
+        if (owned) await this.options.prepareOwned()
+        const port = this.options.runtime.apiPort
+        const generation = this.options.runtime.generation
+        if (!port || !generation) throw new Error("runtime generation unavailable")
+        const client = makeClient(portFetch(port))
+        assertAccountingPolicy(await client.config.get())
+        const quiescent = await this.proveSession(client, sessionID!)
+        if (quiescent.proof.sessionID !== sessionID || quiescent.proof.runtimeGeneration !== generation) {
+          throw new Error("runtime changed during quiescence proof")
+        }
+        const localSnapshot = await this.runtimeUpgradeLocalSnapshot()
+        const localSnapshotID = await this.sha256(JSON.stringify(localSnapshot))
+        const sourceGeneration = generation
+        const planCore = {
           conversationID: this.options.id,
           sessionID,
+          contextDigest: quiescent.proof.contextDigest,
           sourceGeneration,
           targetImage,
-          contextDigest: quiescent.proof.contextDigest,
           localSnapshotID,
           centralSnapshotID: ledger!.snapshotID,
-          checkpointParts: ["workspace", "state"],
-          note: "Applying checkpoints and verifies the saved session before switching this conversation to the evented runtime.",
-        },
+        }
+        const planID = await this.sha256(JSON.stringify(planCore))
+        const manifest: CheckpointManifest = {
+          workspace: { key: "preview/workspace.tar.gz", size: 1, encrypted: true },
+          state: { key: "preview/state.tar.gz", size: 1, encrypted: true },
+          createdAt: 1,
+        }
+        const intent: RuntimeUpgradePending = {
+          planID,
+          conversationID: this.options.id,
+          sessionID: sessionID!,
+          contextDigest: quiescent.proof.contextDigest,
+          sourceGeneration,
+          targetImage,
+          checkpointManifest: manifest,
+          startedAt: Math.max(1, Date.now()),
+        }
+        return {
+          ok: true,
+          pending: intent,
+          body: {
+            canApply: true,
+            planID,
+            conversationID: this.options.id,
+            sessionID,
+            sourceGeneration,
+            targetImage,
+            contextDigest: quiescent.proof.contextDigest,
+            localSnapshotID,
+            centralSnapshotID: ledger!.snapshotID,
+            checkpointParts: ["workspace", "state"],
+            note: "Applying checkpoints and verifies the saved session before switching this conversation to the evented runtime.",
+          },
+        }
       }
+      return owned ? await inspect() : await this.options.withRuntimeUse(inspect)
     } catch {
       return { ok: false, status: 503, error: "runtime upgrade quiescence could not be verified", blockers: ["runtime_or_session_unavailable"] }
     }
@@ -244,26 +250,8 @@ export class ConversationRuntimeUpgrades {
     })
   }
 
-  private async validateRuntimeUpgradeArchive(manifest: CheckpointManifest): Promise<void> {
-    if (!manifest.state || manifest.workspace.size <= 0 || manifest.state.size <= 0 ||
-      manifest.workspace.key === manifest.state.key) throw new Error("split checkpoint is incomplete")
-    const keyPrefix = `workspaces/${this.options.id}/`
-    for (const part of [manifest.workspace, manifest.state]) {
-      if (!part.key.startsWith(keyPrefix) || !Number.isSafeInteger(part.size) || part.size <= 0) {
-        throw new Error("split checkpoint metadata is invalid")
-      }
-      const object = await this.options.archives.bucket.get(part.key)
-      if (!object || object.size !== part.size ||
-        object.customMetadata?.encrypted !== (part.encrypted ? "1" : "0")) {
-        throw new Error("split checkpoint object does not match its manifest")
-      }
-      if (!part.encrypted && !plaintextArchivesAllowed(this.options.archives.policyEnv)) {
-        throw new Error("plaintext checkpoint archives are disabled")
-      }
-      const clear = await this.options.checkpoints.decryptBody(object.body, part.encrypted)
-      const bytes = await new Response(clear).arrayBuffer()
-      if (bytes.byteLength <= 0) throw new Error("split checkpoint archive is empty")
-    }
+  private validateRuntimeUpgradeArchive(manifest: CheckpointManifest): Promise<void> {
+    return this.options.checkpoints.verifySplitArchive(manifest)
   }
 
   async apply(expectedPlanID: string): Promise<Response> {
@@ -273,70 +261,73 @@ export class ConversationRuntimeUpgrades {
         return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
       }
       try {
-        return await this.options.recoveryActions.runAction(() => this.options.usage.serialize(async () => {
-          const completed = await this.options.storage.get<RuntimeUpgradeCompletion>("runtimeUpgradeCompletion")
-          if (completed?.planID === expectedPlanID && completed.conversationID === this.options.id) {
-            return Response.json({ ok: true, completed: true, replayed: true, receipt: completed })
-          }
-          let pending = await this.pending()
-          if (!pending) {
-            const plan = await this.buildPlan()
-            if (!plan.ok) return Response.json({ error: plan.error, blockers: plan.blockers }, { status: plan.status })
-            if (plan.pending.planID !== expectedPlanID) return Response.json({ error: "runtime upgrade plan changed; review a fresh preview" }, { status: 409 })
-            if (!await this.options.checkpoints.capture()) return Response.json({ error: "checkpoint failed; current runtime was kept" }, { status: 503 })
-            const latestState = await this.options.store.get()
-            const manifest = latestState.checkpointManifest
-            if (!manifest) return Response.json({ error: "a published split checkpoint is required; current runtime was kept" }, { status: 503 })
-            await this.validateRuntimeUpgradeArchive(manifest)
-            if (!this.options.runtime.apiPort) return Response.json({ error: "runtime port changed after checkpoint; current runtime was kept" }, { status: 409 })
-            const afterCheckpoint = await this.proveSession(
-              makeClient(portFetch(this.options.runtime.apiPort)),
-              plan.pending.sessionID,
-            )
-            if (afterCheckpoint.proof.contextDigest !== plan.pending.contextDigest ||
-              afterCheckpoint.proof.runtimeGeneration !== plan.pending.sourceGeneration) {
-              return Response.json({ error: "session changed after checkpoint; current runtime was kept" }, { status: 409 })
+        return await this.options.recoveryActions.runAction(async () => {
+          if (!await this.options.stopStream()) return Response.json({ error: "native stream did not drain; runtime was kept" }, { status: 503 })
+          return this.options.usage.serialize(() => this.options.withRuntimeExclusive(async () => {
+            const completed = await this.options.storage.get<RuntimeUpgradeCompletion>("runtimeUpgradeCompletion")
+            if (completed?.planID === expectedPlanID && completed.conversationID === this.options.id) {
+              return Response.json({ ok: true, completed: true, replayed: true, receipt: completed })
             }
-            pending = parseRuntimeUpgradePending({ ...plan.pending, checkpointManifest: manifest })
-            await this.options.storage.transaction(async (txn) => {
-              await txn.put("runtimeUpgradePending", pending!)
-              await txn.put("containerImageVariant", "evented")
-            })
-          } else if (pending.planID !== expectedPlanID) {
-            return Response.json({ error: "another runtime upgrade is pending" }, { status: 409 })
-          }
-          const current = await this.options.store.get()
-          const ledger = await this.options.usage.ledger().catch(() => undefined)
-          const currentLive = this.options.live()
-          if (!ledger || ledger.conversationID !== this.options.id || ledger.holds.length || ledger.blockers.length ||
-            current.sessionID !== pending.sessionID || current.queued || current.budgetReservation || current.checkpointPending ||
-            (current.phase ?? "idle") !== "idle" || currentLive.admitting || currentLive.pumping) {
-            return Response.json({ error: "runtime upgrade resume is blocked by changed work or usage state" }, { status: 409 })
-          }
-          await this.validateRuntimeUpgradeArchive(pending.checkpointManifest)
-          const container = this.options.container()
-          if (!container) return Response.json({ error: "container binding unavailable; upgrade remains pending" }, { status: 503 })
-          if (container.images?.evented !== pending.targetImage) {
-            return Response.json({ error: "configured evented image changed; upgrade remains pending" }, { status: 409 })
-          }
-          if (!(await this.options.runtime.stop())) {
-            return Response.json({ error: "container stop was not confirmed; upgrade remains pending" }, { status: 503 })
-          }
-          if (!(await this.options.leases.releaseAfterStop())) {
-            return Response.json({ error: "container lease release is pending; upgrade remains pending" }, { status: 503 })
-          }
-          this.runtimeUpgradeResuming = true
-          try {
-            await this.options.ensureReady()
-          } finally {
-            this.runtimeUpgradeResuming = false
-          }
-          const receipt = await this.options.storage.get<RuntimeUpgradeCompletion>("runtimeUpgradeCompletion")
-          if (!receipt || receipt.planID !== expectedPlanID) {
-            return Response.json({ error: "restored runtime proof is incomplete; upgrade remains pending" }, { status: 503 })
-          }
-          return Response.json({ ok: true, completed: true, receipt })
-        }))
+            let pending = await this.pending()
+            if (!pending) {
+              const plan = await this.buildPlan(true)
+              if (!plan.ok) return Response.json({ error: plan.error, blockers: plan.blockers }, { status: plan.status })
+              if (plan.pending.planID !== expectedPlanID) return Response.json({ error: "runtime upgrade plan changed; review a fresh preview" }, { status: 409 })
+              if (!await this.options.checkpoints.captureOwned()) return Response.json({ error: "checkpoint failed; current runtime was kept" }, { status: 503 })
+              const latestState = await this.options.store.get()
+              const manifest = latestState.checkpointManifest
+              if (!manifest) return Response.json({ error: "a published split checkpoint is required; current runtime was kept" }, { status: 503 })
+              await this.validateRuntimeUpgradeArchive(manifest)
+              if (!this.options.runtime.apiPort) return Response.json({ error: "runtime port changed after checkpoint; current runtime was kept" }, { status: 409 })
+              const afterCheckpoint = await this.proveSession(
+                makeClient(portFetch(this.options.runtime.apiPort)),
+                plan.pending.sessionID,
+              )
+              if (afterCheckpoint.proof.contextDigest !== plan.pending.contextDigest ||
+                afterCheckpoint.proof.runtimeGeneration !== plan.pending.sourceGeneration) {
+                return Response.json({ error: "session changed after checkpoint; current runtime was kept" }, { status: 409 })
+              }
+              pending = parseRuntimeUpgradePending({ ...plan.pending, checkpointManifest: manifest })
+              await this.options.storage.transaction(async (txn) => {
+                await txn.put("runtimeUpgradePending", pending!)
+                await txn.put("containerImageVariant", "evented")
+              })
+            } else if (pending.planID !== expectedPlanID) {
+              return Response.json({ error: "another runtime upgrade is pending" }, { status: 409 })
+            }
+            const current = await this.options.store.get()
+            const ledger = await this.options.usage.ledger().catch(() => undefined)
+            const currentLive = this.options.live()
+            if (!ledger || ledger.conversationID !== this.options.id || ledger.holds.length || ledger.blockers.length ||
+              current.sessionID !== pending.sessionID || current.queued || current.budgetReservation || current.checkpointPending ||
+              (current.phase ?? "idle") !== "idle" || currentLive.admitting || currentLive.pumping) {
+              return Response.json({ error: "runtime upgrade resume is blocked by changed work or usage state" }, { status: 409 })
+            }
+            await this.validateRuntimeUpgradeArchive(pending.checkpointManifest)
+            const container = this.options.container()
+            if (!container) return Response.json({ error: "container binding unavailable; upgrade remains pending" }, { status: 503 })
+            if (container.images?.evented !== pending.targetImage) {
+              return Response.json({ error: "configured evented image changed; upgrade remains pending" }, { status: 409 })
+            }
+            if (!(await this.options.runtime.stop())) {
+              return Response.json({ error: "container stop was not confirmed; upgrade remains pending" }, { status: 503 })
+            }
+            if (!(await this.options.leases.releaseAfterStop())) {
+              return Response.json({ error: "container lease release is pending; upgrade remains pending" }, { status: 503 })
+            }
+            this.runtimeUpgradeResuming = true
+            try {
+              await this.options.prepareOwned()
+            } finally {
+              this.runtimeUpgradeResuming = false
+            }
+            const receipt = await this.options.storage.get<RuntimeUpgradeCompletion>("runtimeUpgradeCompletion")
+            if (!receipt || receipt.planID !== expectedPlanID) {
+              return Response.json({ error: "restored runtime proof is incomplete; upgrade remains pending" }, { status: 503 })
+            }
+            return Response.json({ ok: true, completed: true, receipt })
+          }))
+        })
       } catch (error) {
         return Response.json({ error: errorMessage(error), pending: true, retryable: true }, { status: 503 })
       }

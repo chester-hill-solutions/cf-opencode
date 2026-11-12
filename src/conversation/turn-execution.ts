@@ -22,7 +22,8 @@ import type { ConversationJobKind, ConversationJobPayload } from "./jobs"
 import type { HarnessSettings } from "../settings"
 import { answerHint, describeForm, formButtons, type Form } from "../slack-forms"
 import { logEvent } from "../log"
-import { withSpan } from "../telemetry"
+import { traceId, withSpan } from "../telemetry"
+import { emitConversationTelemetry, type ConversationTelemetryInput } from "./telemetry"
 
 export interface PermissionSummary {
   id: string
@@ -47,7 +48,7 @@ export interface ConversationTurnExecutionOptions {
   checkpoints: ConversationCheckpoints
   controlPlane: ConversationControlPlane
   runtime: {
-    ensureReady(): Promise<ContainerPort>
+    openStream(open: (port: ContainerPort) => Promise<Response>): Promise<Response>
     withClient<T>(fn: (client: ReturnType<typeof makeClient>) => Promise<T>, recoverOnRejection?: boolean): Promise<T>
   }
   guards: {
@@ -68,6 +69,7 @@ export interface ConversationTurnExecutionOptions {
   settings(): Promise<HarnessSettings>
   releaseBudgetReservation(reservation: BudgetReservation): Promise<boolean>
   waitUntil(promise: Promise<unknown>): void
+  telemetry?(input: ConversationTelemetryInput): void
 }
 
 const POLL_MS = 2_000
@@ -140,12 +142,10 @@ export class ConversationTurnExecution {
     try {
       const settings = await this.options.settings().catch(() => undefined)
       if (!this.owns(owner) || !settings?.streaming) return
-      const port = await this.options.runtime.ensureReady()
-      if (!this.owns(owner)) return
-      const response = await port.fetch("http://container/api/event", {
+      const response = await this.options.runtime.openStream((port) => port.fetch("http://container/api/event", {
         headers: { accept: "text/event-stream" },
         signal: owner.controller.signal,
-      })
+      }))
       if (!this.owns(owner)) {
         await response.body?.cancel().catch(() => {})
         return
@@ -289,12 +289,6 @@ export class ConversationTurnExecution {
     messages?: MessageInfo[],
   ): Promise<void> {
     await this.options.store.advance("settling")
-    void this.options.delivery.count(failure ? "turn.failed" : "turn.settled")
-    logEvent(failure ? "turn.failed" : "turn.settled", {
-      ...(state.runStartedAt ? { durationMs: Date.now() - state.runStartedAt } : {}),
-      ...(failure ? { error: failure.message.slice(0, 200) } : {}),
-      queued: Boolean(state.queued),
-    })
     if (state.budgetReservation?.dispatched) {
       const currentTurn = messages ? turnMessages(messages, state.turnBaseline) : []
       const terminalAssistant = currentTurn.filter((message) => message.type === "assistant").at(-1)
@@ -360,6 +354,18 @@ export class ConversationTurnExecution {
         { queueID: afterSettle.queued.id, reason: "turn-settled-queue-wake" },
       )
     })
+    void this.options.delivery.count(failure ? "turn.failed" : "turn.settled")
+    const telemetry = {
+      event: "turn.settled",
+      conversationID: this.options.conversationID,
+      sessionID: state.sessionID,
+      turnID: state.budgetReservation?.reservationID,
+      ...(state.runStartedAt ? { durationMs: Math.max(0, Date.now() - state.runStartedAt) } : {}),
+      result: failure ? "failed" : "settled",
+      reasonCode: failure ? "provider_failure" : "terminal_usage_acknowledged",
+    } satisfies ConversationTelemetryInput
+    if (this.options.telemetry) this.options.telemetry(telemetry)
+    else emitConversationTelemetry(telemetry, undefined, traceId)
   }
 
   private async pollPermissions(sessionID: string, pending: PermissionSummary[]): Promise<void> {

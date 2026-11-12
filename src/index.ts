@@ -231,9 +231,8 @@ export default {
 }
 
 /**
- * Conversation DO handle that carries the key with every call. Durable Objects
- * cannot look up their own name, and the DO needs it to exempt admin traffic
- * from the container cap.
+ * Conversation DO handle that carries the key with every call. The DO checks
+ * this forwarded value against its canonical id name before routing or seeding.
  */
 function conversationStub(env: Env, key: string) {
   const stub = env.CONVERSATION.getByName(key)
