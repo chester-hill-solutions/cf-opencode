@@ -1,7 +1,8 @@
 # Conversation Lifecycle adoption
 
-Status: execution authorized; LC-0 compatibility fixture in progress. Source/SDK
-research and focused plan review complete; production alarm wiring unchanged.
+Status: execution authorized; LC-0, EventStream and LC-1a's complete alarm cutover
+pass integrated local verification on the isolated branch;
+lease renewal, remaining extraction, idle close and telemetry remain open.
 Date: 2026-11-12. Baseline: `0c90963`. Owner: platform/runtime.
 
 ## Outcome
@@ -103,9 +104,15 @@ engine, extra prompt queue, multi-turn concurrency or alternate runtime.
    `lifecycle.alarm()`. Do not rely on `Lifecycle.install()` replacing methods
    already present. Start Lifecycle explicitly for retained direct RPC methods.
    Preserve protected runtime test/staging seams until their callers move too.
-2. Register capabilities before startup. `onStart()` performs local schema,
-   identity and missing-job reconciliation only: it runs under an SDK input
-   gate, so it must not fetch Settings/R2 or start a container. Named routing
+2. Register capabilities before startup. `onStart()` performs local schema and
+   identity setup only: it runs under an SDK input gate and must not activate
+   dormant domain work. Before SDK rearming, translate an existing legacy
+   physical alarm once to `legacy:bootstrap`, preserving its due time; a first
+   alarm-only entry supplies the firing signal if `getAlarm()` is already null.
+   With no legacy alarm, mark initialization complete without inventing a wake.
+   The bootstrap reconstructs missing domain intents once, respecting sealing.
+   New operations already publish their jobs atomically. Passive reads and SSE
+   heartbeat-only alarms must never bootstrap a dormant hold. Named routing
    already uses `getByName`; prove alarm-only startup with the same identity.
 3. Jobs contain schema version, reason and ownership fences such as session,
    reservation/date, runtime generation and activity/reset epoch. They do not
@@ -181,6 +188,7 @@ ownership; EventStream owns its own SDK capability and heartbeat job.
 | `lease:renew` | ContainerRuntime capability | Renew the Settings-owned lease before TTL while runtime work needs it; release only after confirmed stop. |
 | `runtime:idle-close` | ContainerRuntime capability | Proposed 30-second unused-runtime deadline, fenced by activity/generation and checkpoint success. |
 | `sse:heartbeat` | EventStream capability | 15-second comments only while this instance has subscribers; cancel after disconnect or eviction with no live subscribers. |
+| `legacy:bootstrap` | Conversation jobs adapter | One-time translation of an existing pre-SDK alarm; preserve its deadline and never treat subsequent heartbeat alarms as legacy work. No runtime format migration or periodic legacy pump. |
 
 ## Extraction boundaries
 
@@ -389,3 +397,38 @@ prove these contracts; the review is not runtime qualification.
   slow stream and removes its heartbeat. Replay, comments, last-disconnect
   cleanup and actual orphan-job eviction remain covered. Coordinator wiring and
   lease renewal are still pending; this is not LC-1b completion.
+- LC-1a review found and corrected lost detached-task retry wakes, conflicting
+  stale-admission/queue intents, sealing without resumable recovery, expired live
+  claim replacement and new metadata breaking fresh-image guards. A final
+  classifier regression was reproduced for lost Settings release acknowledgements;
+  the implementation now reuses the existing classification rather than impose
+  a live-hold-only retry policy. Ten focused job/recovery fault tests pass.
+- First integrated Worker gate: 260/279 passed. The nine old timing suites were
+  adapted to explicitly drive typed deadlines without weakening assertions.
+  A genuine cold-inspection race also surfaced: unconditional startup rehydration
+  could activate a turn during passive recovery inspection. A narrow review
+  selected the one-time alarm translation above; it replaces ad hoc route
+  bypasses and is under implementation with dedicated startup regressions.
+- Current independent gate: 351 Bun tests plus five runtime tests pass; config
+  consistency and UI build pass. The two readiness-listener tests required the
+  usual authorized listener access. Integrated Worker/type/native checks must
+  be rerun after the startup-policy repair; LC-1 is not yet accepted.
+- Startup policy now has five passing Worker tests: passive held-state reads,
+  preservation of a future legacy deadline, one-shot alarm-only conversion,
+  and both public fetch/alarm launch orders. An earlier fixture called both
+  handlers concurrently inside one incoming test callback; that does not model
+  native input gates, as Cloudflare's
+  [same-event concurrency caveat](https://blog.cloudflare.com/durable-objects-easy-fast-correct-choose-three/)
+  explains. Separate `stub.fetch()` and `runDurableObjectAlarm()` events preserve
+  observation work and held usage evidence without submitting another prompt.
+  This resolves the reproduced fixture concern; it is not proof of every
+  platform scheduling interleaving. Integrated Worker verification is running.
+- LC-1a integrated gate passed: all 285 Worker tests, full typecheck, config
+  consistency and diff checks. The working tree also passed 355 Bun tests and
+  five runtime tests (four Bun tests belong to the separate telemetry foundation).
+  Earlier full runs exposed nondeterministic assumptions about automatic past
+  alarm delivery and three five-second timeouts under concurrent test load;
+  the final complete Worker run passed on its own without increasing timeouts.
+  Protected policy/accounting/Settings source hashes match the baseline. Native
+  image code is unchanged; final native smoke remains a release gate. Runtime,
+  lease renewal, checkpoint extraction, idle close and telemetry wiring remain.

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
 import type { ContainerStartupOptions } from "@cloudflare/workers-types"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
+import { driveConversationJobs } from "./helpers/conversation-jobs"
 
 const BASE_IMAGE = "registry.cloudflare.com/test/conversation-base@sha256:base"
 const EVENTED_IMAGE = "registry.cloudflare.com/test/conversation-evented@sha256:evented"
@@ -550,7 +551,7 @@ describe("isolated evented container image selection", () => {
         ...state,
         queued: { ...state.queued, nextAttemptAt: Date.now() - 1 },
       })
-      await instance.alarm()
+      await driveConversationJobs(instance, runtime.storage, ["admission:retry"], { queued: true })
 
       return {
         firstStatus: first.status,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
+import { driveConversationJobs } from "./helpers/conversation-jobs"
 
 /** The approval path must reach OpenCode and only then clear the request. */
 
@@ -45,7 +46,7 @@ function fakeContainer(replies: Array<Record<string, unknown>>) {
 describe("permission decisions", () => {
   it("forwards the decision to opencode, then clears the pending request", async () => {
     const stub = env.CONVERSATION.getByName("C1:approval")
-    await runInDurableObject(stub, async (instance) => {
+    await runInDurableObject(stub, async (instance, state) => {
       const replies: Array<Record<string, unknown>> = []
       instance.transport = fakeContainer(replies)
 
@@ -57,7 +58,7 @@ describe("permission decisions", () => {
       )
       expect(sent.status).toBe(200)
       // The pump records the pending request and emits it.
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["turn:observe"])
 
       const pending = (await (await instance.fetch(new Request("https://conversation/state"))).json()) as {
         pending: Record<string, string>

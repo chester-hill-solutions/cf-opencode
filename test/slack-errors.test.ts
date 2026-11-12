@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
 import { usageLogResponse } from "./helpers/usage-log"
+import { driveConversationJobs } from "./helpers/conversation-jobs"
 
 /**
  * A failed turn must be visible in the thread. Error events used to go to SSE
@@ -102,7 +103,7 @@ describe("Slack failure delivery", () => {
 
   it("posts a turn error to the Slack thread", async () => {
     const stub = env.CONVERSATION.getByName("C1:slack-error")
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDurableObject(stub, async (instance, state) => {
       instance.transport = fakeContainer()
       const posts: Array<{ method: string; body: Record<string, unknown> }> = []
       ;(instance as unknown as { slack: unknown }).slack = async (
@@ -124,7 +125,7 @@ describe("Slack failure delivery", () => {
         }),
       )
       await response.text()
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["turn:observe"])
       return posts
     })
 
@@ -219,7 +220,7 @@ describe("Slack failure delivery", () => {
     const stub = env.CONVERSATION.getByName("C1:immediate-provider-error")
     let idleAt = 0
     let promptCount = 0
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDurableObject(stub, async (instance, runtime) => {
       instance.transport = (port) => ({
         async fetch(input) {
           const request = input instanceof Request ? input : new Request(input)
@@ -259,7 +260,7 @@ describe("Slack failure delivery", () => {
         method: "POST", body: JSON.stringify({ text: "hello" }),
       }))
       await response.text()
-      await instance.alarm()
+      await driveConversationJobs(instance, runtime.storage, ["turn:observe"])
       const state = await (await instance.fetch(new Request("https://conversation/state"))).json() as {
         phase?: string
         runStartedAt?: number

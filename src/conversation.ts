@@ -1,4 +1,6 @@
 import { DurableObject } from "cloudflare:workers"
+import { Lifecycle } from "agents/lifecycle"
+import type { MemoryLimitContext } from "agents/lifecycle"
 import { ClientError, type CredentialEntry } from "@opencode/client"
 import { makeClient, portFetch, type ContainerPort } from "./opencode"
 import { opencodeViaControl } from "./opencode-proxy"
@@ -28,7 +30,8 @@ import {
   type MessageInfo,
   type TurnFailure,
 } from "./messages"
-import { formatSse, isSlowSubscriber, type ConversationEvent } from "./events"
+import type { ConversationEvent } from "./events"
+import { ConversationEventStream } from "./conversation/event-stream"
 import { createSseParser } from "./sse"
 import { parseModelRef, type Env } from "./env"
 import { withRetries } from "./retry"
@@ -78,8 +81,28 @@ import {
   type RuntimeUpgradeCompletion,
   type RuntimeUpgradePending,
 } from "./runtime-upgrade"
+import {
+  ConversationJobs,
+  type ConversationJobKind,
+  type ConversationJobPayload,
+} from "./conversation/jobs"
 
 type UnknownRecord = Record<string, unknown>
+
+interface LegacyAlarmMigration {
+  version: 1
+  dueAt: number | null
+  scheduled: boolean
+  consumed: boolean
+}
+
+const LEGACY_ALARM_MIGRATION_KEY = "lifecycleLegacyAlarmMigration"
+
+function isFreshLegacyAlarmMigration(value: unknown): value is LegacyAlarmMigration {
+  if (!isRecord(value)) return false
+  return Object.keys(value).length === 4 && value.version === 1 && value.dueAt === null &&
+    value.scheduled === false && value.consumed === true
+}
 
 interface UsageCutoverReceipt {
   cutoverID: string
@@ -201,13 +224,16 @@ export type BudgetReservationResult =
  * emitted to SSE subscribers, and delivered to Slack when a Slack target is set.
  */
 export class Conversation extends DurableObject<Env> {
+  private readonly lifecycle: Lifecycle<Env>
+  private readonly jobs: ConversationJobs
   private readonly store: ConversationStore
+  private readonly eventStream: ConversationEventStream
+  private jobEpoch = 0
+  private readonly activeLifecycleJobs = new Set<ConversationJobKind>()
   /** Serialize durable usage replays (settlement may race the alarm pump). */
   private usageTail: Promise<void> = Promise.resolve()
   /** Serialize checkpoint publication through pruning within this instance. */
   private checkpointTail: Promise<void> = Promise.resolve()
-  private readonly subscribers = new Set<ReadableStreamDefaultController<Uint8Array>>()
-  private heartbeat: ReturnType<typeof setInterval> | undefined
   private streaming = false
   private pumping = false
   private consecutiveFailures = 0
@@ -248,9 +274,186 @@ export class Conversation extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
     this.store = new ConversationStore(ctx.storage)
+    this.lifecycle = new Lifecycle(this)
+    this.eventStream = new ConversationEventStream(this.store)
+    this.lifecycle.use(this.eventStream)
+    this.jobs = new ConversationJobs({
+      onStart: () => this.installLegacyAlarmBootstrap(),
+      turnObserve: (payload) => this.runTurnObservation(payload),
+      admissionRetry: (payload) => this.runAdmissionRetry(payload),
+      checkpointRetry: (payload) => this.runCheckpointRetry(payload),
+      recoveryWake: (payload) => this.runRecoveryWake(payload),
+      legacyBootstrap: (payload) => this.runLegacyAlarmBootstrap(payload),
+      onJobError: (kind, payload, error) => this.handleConversationJobError(kind, payload, error),
+      onMemoryLimit: (context) => this.onLifecycleMemoryLimit(context),
+    })
+    this.lifecycle.use(this.jobs)
+  }
+
+  private async ensureJobEpoch(): Promise<number> {
+    if (this.jobEpoch > 0) return this.jobEpoch
+    const stored = await this.ctx.storage.get<number>("conversationJobEpoch")
+    this.jobEpoch = Number.isSafeInteger(stored) && (stored as number) > 0 ? stored as number : 1
+    if (stored === undefined) await this.ctx.storage.put("conversationJobEpoch", this.jobEpoch)
+    return this.jobEpoch
+  }
+
+  private async scheduleConversationJob(
+    kind: ConversationJobKind,
+    at: number,
+    payload: Omit<ConversationJobPayload, "epoch" | "dueAt"> = {},
+    allowSealed = false,
+  ): Promise<void> {
+    const epoch = await this.ensureJobEpoch()
+    if (!allowSealed && await this.ctx.storage.get<boolean>("lifecycleJobsSealed")) {
+      throw new Error("conversation recovery jobs are sealed after an alarm memory limit")
+    }
+    await this.jobs.schedule(kind, at, { ...payload, epoch, dueAt: at })
+  }
+
+  /** Capture an old physical alarm before Lifecycle can replace the alarm source. */
+  private async captureLegacyAlarmMigration(alarmEntry: boolean): Promise<void> {
+    await this.ctx.storage.transaction(async (txn) => {
+      if (await txn.get<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY)) return
+      // Read and write under the same local transaction: SDK startup must not
+      // replace an old alarm between observing it and publishing the marker.
+      const physicalAlarm = await txn.getAlarm()
+      const dueAt = physicalAlarm ?? (alarmEntry ? Date.now() : null)
+      await txn.put<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY, {
+        version: 1,
+        dueAt,
+        scheduled: false,
+        consumed: dueAt === null,
+      })
+    })
+  }
+
+  /** Publish a one-shot translated wake only when a legacy alarm was observed. */
+  private async installLegacyAlarmBootstrap(): Promise<void> {
+    await this.ensureJobEpoch()
+    await this.ctx.storage.transaction(async (txn) => {
+      const migration = await txn.get<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY)
+      if (!migration || migration.version !== 1 || migration.dueAt === null ||
+        migration.scheduled || migration.consumed || await txn.get<boolean>("lifecycleJobsSealed")) return
+      const dueAt = Math.max(Date.now(), migration.dueAt)
+      await this.scheduleConversationJob("legacy:bootstrap", dueAt, { reason: "legacy-alarm-bootstrap" })
+      await txn.put<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY, { ...migration, dueAt, scheduled: true })
+    })
+  }
+
+  /** One legacy alarm reconstructs missing domain intents once; it never prompts. */
+  private async runLegacyAlarmBootstrap(payload: ConversationJobPayload): Promise<undefined> {
+    if (!(await this.jobIsCurrent(payload))) return undefined
+    await this.ctx.storage.transaction(async (txn) => {
+      const migration = await txn.get<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY)
+      if (!migration || migration.version !== 1 || !migration.scheduled || migration.consumed) return
+      if (await txn.get<boolean>("lifecycleJobsSealed")) {
+        await txn.put<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY, {
+          ...migration,
+          scheduled: false,
+          consumed: true,
+        })
+        return
+      }
+      await this.rehydrateConversationJobs()
+      await txn.put<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY, {
+        ...migration,
+        scheduled: false,
+        consumed: true,
+      })
+    })
+  }
+
+  /** Recreate lost SDK wake rows from durable domain state; no external I/O. */
+  private async rehydrateConversationJobs(): Promise<void> {
+    const epoch = await this.ensureJobEpoch()
+    if (await this.ctx.storage.get<boolean>("lifecycleJobsSealed")) return
+    const state = await this.store.get()
+    const phase = state.phase ?? "idle"
+    if (!this.jobs.has("turn:observe") &&
+      (state.budgetReservation?.dispatched || phase === "running" || phase === "settling")) {
+      await this.scheduleConversationJob("turn:observe", Date.now(), {
+        reservationID: state.budgetReservation?.reservationID,
+        reservationDate: state.budgetReservation?.date,
+        sessionID: state.sessionID,
+        reason: "startup-rehydrate",
+      })
+    }
+    if (!this.jobs.has("recovery:wake") && phase === "admitting" && !state.budgetReservation?.dispatched) {
+      await this.scheduleConversationJob("recovery:wake", Date.now() + POLL_MS, {
+        ...(state.admissionID ? { admissionID: state.admissionID } : {}),
+        reason: "stale-admission-recovery",
+      })
+    }
+    if (state.queued) {
+      if (!this.jobs.has("admission:retry")) {
+        const queueID = state.queued.id ?? crypto.randomUUID()
+        if (!state.queued.id) await this.store.patch({ queued: { ...state.queued, id: queueID } })
+        await this.scheduleConversationJob("admission:retry", state.queued.nextAttemptAt ?? Date.now(), {
+          queueID,
+          reason: "queued-admission",
+        })
+      }
+    }
+    if (state.checkpointPending && !this.jobs.has("checkpoint:retry")) {
+      const retryAt = state.checkpointRetryAt ?? Date.now() + CHECKPOINT_RETRY_MS
+      if (!state.checkpointRetryAt) await this.store.patch({ checkpointRetryAt: retryAt })
+      await this.scheduleConversationJob("checkpoint:retry", retryAt, { reason: "checkpoint-retry" })
+    }
+    // Keep the local cache synchronized if a prior instance committed a reset epoch.
+    this.jobEpoch = epoch
+  }
+
+  private async onLifecycleMemoryLimit(context: MemoryLimitContext): Promise<void> {
+    if (!context.sealed) return
+    const message = "lifecycle recovery sealed after repeated alarm memory limits"
+    await this.ctx.storage.transaction(async (txn) => {
+      await txn.put("lifecycleJobsSealed", true)
+      const state = await txn.get<ConversationState>("state")
+      if (state) await txn.put("state", {
+        ...state,
+        lifecycleJobsSealed: true,
+        lifecycleJobError: { kind: "memory-limit", message, at: Date.now() },
+      })
+    })
+  }
+
+  private async resetConversationJobs(): Promise<void> {
+    const epoch = await this.ensureJobEpoch()
+    const nextEpoch = epoch + 1
+    await this.ctx.storage.transaction(async () => {
+      await this.ctx.storage.put("conversationJobEpoch", nextEpoch)
+      await this.jobs.cancel("turn:observe")
+      await this.jobs.cancel("admission:retry")
+      await this.jobs.cancel("checkpoint:retry")
+      await this.jobs.cancel("recovery:wake")
+      await this.jobs.cancel("legacy:bootstrap")
+      await this.ctx.storage.put<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY, {
+        version: 1,
+        dueAt: null,
+        scheduled: false,
+        consumed: true,
+      })
+      const stored = await this.ctx.storage.list()
+      for (const key of stored.keys()) {
+        if (key === "conversationJobEpoch") continue
+        if (key === "state" || key === "seq" || key === "events" || key === "controlToken" ||
+          key === "snapshot" || key === "containerImageVariant" || key === "runtimeUpgradePending" ||
+          key === "runtimeUpgradeCompletion" || key === "conversationJobClaims" || key === "lifecycleJobsSealed" ||
+          key.startsWith("tombstones:")) {
+          await this.ctx.storage.delete(key)
+        }
+      }
+    })
+    this.jobEpoch = nextEpoch
   }
 
   async fetch(request: Request): Promise<Response> {
+    await this.captureLegacyAlarmMigration(false)
+    return this.lifecycle.fetch(request)
+  }
+
+  async onRequest(request: Request): Promise<Response> {
     this.key = request.headers.get("x-conversation-key") ?? this.key
     const url = new URL(request.url)
     if (url.pathname === "/message") return this.onMessage((await request.json()) as MessageRequest)
@@ -505,17 +708,29 @@ export class Conversation extends DurableObject<Env> {
     } catch (err) {
       logEvent("turn.record_failed", { error: errorMessage(err) })
       await this.store.patch({ phase: "running", turnBaseline: baseline }).catch(() => {})
-      await this.ctx.storage.setAlarm(Date.now() + POLL_MS).catch(() => {})
+      const state = await this.store.get().catch(() => undefined)
+      await this.scheduleConversationJob("turn:observe", Date.now() + POLL_MS, {
+        reservationID: state?.budgetReservation?.reservationID,
+        reservationDate: state?.budgetReservation?.date,
+        sessionID: state?.sessionID,
+        reason: "accepted-turn-bookkeeping-recovery",
+      }).catch(() => {})
     }
   }
 
   /** Resume polling a persisted ambiguous dispatch without resetting its turn metadata. */
-  private async resumeDispatchedTurn(): Promise<void> {
+  private async resumeDispatchedTurn(scheduleRecovery = true): Promise<void> {
     this.admitting = false
     if (!(await this.store.advance("running"))) {
       await this.store.patch({ phase: "running" }).catch(() => {})
     }
-    await this.ctx.storage.setAlarm(Date.now() + POLL_MS).catch(() => {})
+    const state = await this.store.get()
+    if (scheduleRecovery) await this.scheduleConversationJob("recovery:wake", Date.now() + POLL_MS, {
+      reservationID: state.budgetReservation?.reservationID,
+      reservationDate: state.budgetReservation?.date,
+      sessionID: state.sessionID,
+      reason: "dispatched-turn-recovery",
+    }).catch(() => {})
   }
 
   private async settings(): Promise<HarnessSettings> {
@@ -694,7 +909,9 @@ export class Conversation extends DurableObject<Env> {
         // A reset must not leave a checkpoint that the next cold start would
         // restore over the freshly cleared conversation.
         await this.deleteCheckpoints()
-        await this.ctx.storage.deleteAll()
+        await this.resetConversationJobs()
+        this.controlTokenValue = undefined
+        this.providerSyncAt = undefined
         return Response.json({ ok: true })
       })
     })
@@ -768,7 +985,9 @@ export class Conversation extends DurableObject<Env> {
         this.eventPersistence = undefined
         this.eventPersistenceGeneration = undefined
         await this.deleteCheckpoints()
-        await this.ctx.storage.deleteAll()
+        await this.resetConversationJobs()
+        this.controlTokenValue = undefined
+        this.providerSyncAt = undefined
         logEvent("conversation.deleted")
         return Response.json({ ok: true })
       })
@@ -780,7 +999,7 @@ export class Conversation extends DurableObject<Env> {
     const state = await this.store.get()
     const phase = state.phase ?? "idle"
     const active = phase === "admitting" || phase === "running" || phase === "settling" || phase === "queued"
-    if (state.budgetReservation || active) {
+    if (state.budgetReservation || active || this.recoveryAction || this.activeLifecycleJobs.size > 0 || state.checkpointPending) {
       return Response.json(
         { ok: false, error: "conversation has unresolved work; wait for it to settle before reset or delete" },
         { status: 409 },
@@ -890,6 +1109,15 @@ export class Conversation extends DurableObject<Env> {
     const stored = await this.ctx.storage.list()
     for (const key of stored.keys()) {
       if (key === "state") continue
+      if (key === "conversationJobEpoch") {
+        const epoch = await this.ctx.storage.get<number>(key)
+        if (!Number.isSafeInteger(epoch) || (epoch ?? 0) < 1) return false
+        continue
+      }
+      if (key === LEGACY_ALARM_MIGRATION_KEY) {
+        if (!isFreshLegacyAlarmMigration(await this.ctx.storage.get(key))) return false
+        continue
+      }
       const match = /^tombstones:(\d{4}-\d{2}-\d{2})$/.exec(key)
       if (!match) return false
       const date = match[1]!
@@ -906,7 +1134,7 @@ export class Conversation extends DurableObject<Env> {
     const state = value as Record<string, unknown>
     const allowed = new Set([
       "phase", "seen", "pending", "slackEngaged", "modelOverride",
-      "transport", "slack", "announcedForms",
+      "transport", "slack", "announcedForms", "admissionID", "admissionStartedAt",
     ])
     if (Object.entries(state).some(([key, field]) => field !== undefined && !allowed.has(key))) return false
     if (state.phase !== undefined && state.phase !== "idle" && state.phase !== "admitting") return false
@@ -916,6 +1144,10 @@ export class Conversation extends DurableObject<Env> {
       (!state.pending || typeof state.pending !== "object" || Array.isArray(state.pending) ||
         Object.keys(state.pending).length !== 0)) return false
     if (state.slackEngaged !== undefined && typeof state.slackEngaged !== "boolean") return false
+    if (state.admissionID !== undefined && (typeof state.admissionID !== "string" || !state.admissionID ||
+      !Number.isSafeInteger(state.admissionStartedAt) || (state.admissionStartedAt as number) <= 0)) return false
+    if (state.admissionStartedAt !== undefined && (typeof state.admissionStartedAt !== "number" ||
+      !Number.isSafeInteger(state.admissionStartedAt) || state.admissionStartedAt <= 0 || !state.admissionID)) return false
     if (state.modelOverride !== undefined && typeof state.modelOverride !== "string") return false
     if (state.transport !== undefined && state.transport !== "http" && state.transport !== "slack") return false
     if (state.slack !== undefined) {
@@ -962,19 +1194,41 @@ export class Conversation extends DurableObject<Env> {
 
   private async assertFreshEventedCanary(): Promise<void> {
     const keys = await this.ctx.storage.list()
-    // A binding can only be written after this check, so any existing token or
-    // other key is evidence this is not a genuinely fresh conversation.
-    if ([...keys.keys()].some((key) => key !== "state")) {
+    // The lifecycle scheduler writes one strictly validated epoch before the
+    // first request. Any other unrecognized key remains evidence of history.
+    for (const key of keys.keys()) {
+      if (key === "state") continue
+      if (key === "conversationJobEpoch") {
+        const epoch = await this.ctx.storage.get<number>(key)
+        if (Number.isSafeInteger(epoch) && (epoch ?? 0) > 0) continue
+      }
+      if (key === LEGACY_ALARM_MIGRATION_KEY &&
+        isFreshLegacyAlarmMigration(await this.ctx.storage.get(key))) continue
       throw new Error("evented canary requires a fresh conversation with no history or holds")
     }
     const state = await this.ctx.storage.get<ConversationState>("state")
     if (!state) return
-    const allowedKeys = new Set(["phase", "seen", "pending", "slackEngaged"])
+    const allowedKeys = new Set([
+      "phase", "seen", "pending", "slackEngaged", "modelOverride", "transport", "slack",
+      "announcedForms", "admissionID", "admissionStartedAt",
+    ])
     if (Object.keys(state).some((key) => !allowedKeys.has(key)) ||
       state.phase !== "admitting" ||
       (state.seen?.length ?? 0) > 1 ||
+      (state.seen !== undefined && (!Array.isArray(state.seen) || !state.seen.every((id) => typeof id === "string"))) ||
       Object.keys(state.pending ?? {}).length > 0 ||
-      (state.slackEngaged !== undefined && state.slackEngaged !== true)) {
+      (state.slackEngaged !== undefined && state.slackEngaged !== true) ||
+      (state.pending !== undefined && (!state.pending || typeof state.pending !== "object" || Array.isArray(state.pending))) ||
+      (state.admissionID !== undefined && (typeof state.admissionID !== "string" || !state.admissionID ||
+        !Number.isSafeInteger(state.admissionStartedAt) || (state.admissionStartedAt ?? 0) <= 0)) ||
+      (state.admissionStartedAt !== undefined && (typeof state.admissionStartedAt !== "number" ||
+        !Number.isSafeInteger(state.admissionStartedAt) || state.admissionStartedAt <= 0 || !state.admissionID)) ||
+      (state.modelOverride !== undefined && typeof state.modelOverride !== "string") ||
+      (state.transport !== undefined && state.transport !== "http" && state.transport !== "slack") ||
+      (state.announcedForms !== undefined && (!Array.isArray(state.announcedForms) || state.announcedForms.length !== 0)) ||
+      (state.slack !== undefined && (!state.slack || Object.keys(state.slack).some((key) => key !== "channel" && key !== "replyTs") ||
+        typeof state.slack.channel !== "string" || !state.slack.channel ||
+        (state.slack.replyTs !== undefined && typeof state.slack.replyTs !== "string")))) {
       throw new Error("evented canary requires a fresh conversation with no history or holds")
     }
   }
@@ -1133,11 +1387,25 @@ export class Conversation extends DurableObject<Env> {
 
   private claimAdmission(): Promise<boolean> {
     return this.withAdmissionLock(async () => {
-      const state = await this.store.get()
-      if (this.recoveryAction || await this.hasPendingRuntimeUpgrade() || state.queued || this.isBusy(state.phase)) return false
-      await this.store.advance("admitting")
-      this.admitting = true
-      return true
+      let claimed = false
+      try {
+        await this.ctx.storage.transaction(async () => {
+          const state = await this.store.get()
+          if (this.recoveryAction || await this.hasPendingRuntimeUpgrade() || state.queued || this.isBusy(state.phase)) return
+          const admissionID = crypto.randomUUID()
+          const admissionStartedAt = Date.now()
+          await this.store.patch({ phase: "admitting", admissionID, admissionStartedAt })
+          await this.scheduleConversationJob("recovery:wake", admissionStartedAt + POLL_MS, {
+            admissionID,
+            reason: "inflight-admission-recovery",
+          })
+          claimed = true
+        })
+      } catch (error) {
+        console.warn("admission claim was not persisted", { error: errorMessage(error) })
+      }
+      this.admitting = claimed
+      return claimed
     })
   }
 
@@ -1279,7 +1547,12 @@ export class Conversation extends DurableObject<Env> {
       // Interrupting proves neither zero spend nor successful settlement. The
       // normal log/context reconciliation retains and eventually releases holds.
       await this.store.patch({ queued: undefined })
-      await this.ctx.storage.setAlarm(Date.now() + 1000)
+      await this.scheduleConversationJob("turn:observe", Date.now() + 1000, {
+        reservationID: state.budgetReservation?.reservationID,
+        reservationDate: state.budgetReservation?.date,
+        sessionID: state.sessionID,
+        reason: "slack-stop-settlement",
+      })
       return "Stop requested; queued follow-ups cleared. Usage settlement will finish before the next turn."
     })
   }
@@ -1302,7 +1575,12 @@ export class Conversation extends DurableObject<Env> {
       if (form.sessionID !== sessionID || form.state.status !== "pending") throw new Error("This question is no longer waiting for an answer.")
       if (answer) await this.withClient((client) => client.session.form.reply({ sessionID, formID, answer }), false)
       else await this.withClient((client) => client.session.form.cancel({ sessionID, formID, message: "Cancelled from Slack" }), false)
-      await this.ctx.storage.setAlarm(Date.now() + 1000)
+      await this.scheduleConversationJob("turn:observe", Date.now() + 1000, {
+        reservationID: (await this.store.get()).budgetReservation?.reservationID,
+        reservationDate: (await this.store.get()).budgetReservation?.date,
+        sessionID,
+        reason: "form-completion-poll",
+      })
     })
   }
 
@@ -1604,90 +1882,13 @@ export class Conversation extends DurableObject<Env> {
   // -------------------------------------------------------------------- SSE
 
   private async onEvents(request: Request): Promise<Response> {
-    const lastID = Number(request.headers.get("last-event-id") ?? "0") || 0
-    const oldest = await this.store.oldestSeq()
-    const replay = await this.store.eventsAfter(lastID)
-    const encoder = new TextEncoder()
-    let ref: ReadableStreamDefaultController<Uint8Array> | undefined
-
-    const stream = new ReadableStream<Uint8Array>({
-      start: (controller) => {
-        ref = controller
-        if (lastID > 0 && oldest !== undefined && lastID < oldest - 1) {
-          controller.enqueue(encoder.encode(formatSse({ type: "reset" })))
-        }
-        for (const entry of replay) controller.enqueue(encoder.encode(formatSse(entry.event, entry.seq)))
-        controller.enqueue(encoder.encode(": connected\n\n"))
-        this.subscribers.add(controller)
-        this.syncHeartbeat()
-      },
-      cancel: () => {
-        if (ref) this.subscribers.delete(ref)
-        this.syncHeartbeat()
-      },
-    })
-    return new Response(stream, {
-      headers: {
-        "content-type": "text/event-stream",
-        "cache-control": "no-cache",
-        connection: "keep-alive",
-      },
-    })
-  }
-
-  private broadcast(event: ConversationEvent, seq: number): void {
-    const chunk = new TextEncoder().encode(formatSse(event, seq))
-    for (const controller of this.subscribers) {
-      if (isSlowSubscriber(controller.desiredSize)) {
-        this.subscribers.delete(controller)
-        try {
-          controller.close()
-        } catch {
-          /* already closed */
-        }
-        continue
-      }
-      try {
-        controller.enqueue(chunk)
-      } catch {
-        this.subscribers.delete(controller)
-      }
-    }
-    this.syncHeartbeat()
-  }
-
-  /** Keep idle SSE connections alive without holding a container. */
-  private syncHeartbeat(): void {
-    if (this.subscribers.size > 0 && !this.heartbeat) {
-      this.heartbeat = setInterval(() => {
-        const chunk = new TextEncoder().encode(": heartbeat\n\n")
-        for (const controller of this.subscribers) {
-          if (isSlowSubscriber(controller.desiredSize)) {
-            this.subscribers.delete(controller)
-            try {
-              controller.close()
-            } catch {
-              /* already closed */
-            }
-            continue
-          }
-          try {
-            controller.enqueue(chunk)
-          } catch {
-            this.subscribers.delete(controller)
-          }
-        }
-      }, 15_000)
-    } else if (this.subscribers.size === 0 && this.heartbeat) {
-      clearInterval(this.heartbeat)
-      this.heartbeat = undefined
-    }
+    return this.eventStream.open(request)
   }
 
   /** Emit to SSE and, when the conversation has a Slack target, post there too. */
   private async deliver(event: ConversationEvent, options: { slack?: boolean } = {}): Promise<void> {
     const seq = await this.store.appendEvent(event)
-    this.broadcast(event, seq)
+    await this.eventStream.publish(event, seq)
     if (options.slack === false) return
     await this.deliverToSlack(event)
   }
@@ -1833,7 +2034,10 @@ export class Conversation extends DurableObject<Env> {
       // sent, so force the phase rather than leaving the turn invisible.
       await this.store.patch({ phase: "running" })
     }
-    await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
+    await this.scheduleConversationJob("turn:observe", Date.now() + POLL_MS, {
+      sessionID: (await this.store.get()).sessionID,
+      reason: "turn-started",
+    })
   }
 
   private async buildPrompt(channel: string, ts: string, threadTs: string | undefined, text: string): Promise<string> {
@@ -1938,7 +2142,15 @@ export class Conversation extends DurableObject<Env> {
     } finally {
       clearTimeout(timeout)
       this.streaming = false
-      await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
+      const state = await this.store.get()
+      if (state.budgetReservation?.dispatched) {
+        await this.scheduleConversationJob("turn:observe", Date.now() + POLL_MS, {
+          reservationID: state.budgetReservation.reservationID,
+          reservationDate: state.budgetReservation.date,
+          sessionID,
+          reason: "stream-ended",
+        })
+      }
     }
   }
 
@@ -2100,18 +2312,33 @@ export class Conversation extends DurableObject<Env> {
         message: "workspace checkpoint failed; retrying in the background",
       })
     }
-    if ((await this.store.get()).queued) await this.ctx.storage.setAlarm(Date.now() + 1000)
-    await this.store.advance("idle")
+    const afterSettle = await this.store.get()
+    await this.ctx.storage.transaction(async () => {
+      await this.store.advance("idle")
+      if (afterSettle.queued) await this.scheduleConversationJob(
+        "admission:retry",
+        Math.max(Date.now() + 1000, afterSettle.queued.nextAttemptAt ?? 0),
+        { queueID: afterSettle.queued.id, reason: "turn-settled-queue-wake" },
+      )
+    })
   }
 
   /** Keep terminal work visible and retry without promoting queued work. */
   private async pauseSettlement(message: string): Promise<void> {
     const current = await this.store.get()
-    if (current.settlementError !== message) {
-      await this.store.patch({ settlementError: message })
+    const newlyPaused = current.settlementError !== message
+    await this.ctx.storage.transaction(async () => {
+      if (newlyPaused) await this.store.patch({ settlementError: message })
+      await this.scheduleConversationJob("turn:observe", Date.now() + POLL_MS, {
+        reservationID: current.budgetReservation?.reservationID,
+        reservationDate: current.budgetReservation?.date,
+        sessionID: current.sessionID,
+        reason: "settlement-paused",
+      })
+    }).catch(() => {})
+    if (newlyPaused) {
       await this.deliver({ type: "error", message: `Settlement paused: ${message}` }).catch(() => {})
     }
-    await this.ctx.storage.setAlarm(Date.now() + POLL_MS).catch(() => {})
   }
 
   private async usageCutoverLedger(reservationID?: string): Promise<UsageCutoverLedger> {
@@ -2283,7 +2510,7 @@ export class Conversation extends DurableObject<Env> {
   ): Promise<Response> {
     return this.withAdmissionLock(async () => {
       const act = async (): Promise<Response> => {
-        if (this.admitting || this.pumping || this.recoveryAction) {
+        if (this.admitting || this.pumping || this.recoveryAction || this.activeLifecycleJobs.size > 0) {
           return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
         }
         const status = await this.recoveryStatus()
@@ -2302,7 +2529,34 @@ export class Conversation extends DurableObject<Env> {
           }
           try {
             this.recoveryAction = true
-            await this.ctx.storage.setAlarm(Date.now())
+            const refreshed = await this.recoveryStatus()
+            const refreshedState = await this.store.get()
+            const refreshedReservation = refreshedState.budgetReservation
+            if (refreshed.snapshotID !== expectedSnapshotID ||
+              !Array.isArray(refreshed.actions) || !refreshed.actions.includes("retry") ||
+              refreshedState.sessionID !== current.sessionID || !refreshedReservation?.dispatched ||
+              refreshedReservation.reservationID !== reservation.reservationID ||
+              refreshedReservation.date !== reservation.date) {
+              return Response.json({ error: "recovery snapshot changed or retry owner is no longer current", recovery: refreshed }, { status: 409 })
+            }
+            const epoch = await this.ensureJobEpoch()
+            await this.ctx.storage.transaction(async (txn) => {
+              if (await txn.get<number>("conversationJobEpoch") !== epoch) throw new Error("recovery epoch changed")
+              const live = await txn.get<ConversationState>("state")
+              const liveReservation = live?.budgetReservation
+              if (!liveReservation?.dispatched || liveReservation.reservationID !== reservation.reservationID ||
+                liveReservation.date !== reservation.date || live?.sessionID !== current.sessionID) {
+                throw new Error("recovery owner changed")
+              }
+              await txn.delete("lifecycleJobsSealed")
+              if (live?.lifecycleJobsSealed) await txn.put("state", { ...live, lifecycleJobsSealed: false })
+              await this.scheduleConversationJob("recovery:wake", Date.now(), {
+                reservationID: reservation.reservationID,
+                reservationDate: reservation.date,
+                sessionID: current.sessionID,
+                reason: "operator-recovery-retry",
+              }, true)
+            })
             return Response.json({ ok: true, scheduled: true }, { status: 202 })
           } catch (error) {
             return Response.json({ error: errorMessage(error), retryable: true }, { status: 503 })
@@ -3207,6 +3461,8 @@ export class Conversation extends DurableObject<Env> {
    * call, so an ambiguous response can be retried with the same owner ID.
    */
   async acquireBudgetReservation(): Promise<BudgetReservationResult> {
+    await this.captureLegacyAlarmMigration(false)
+    await this.lifecycle.start()
     let proposed: BudgetReservation
     try {
       proposed = await this.store.ensureBudgetReservation(crypto.randomUUID())
@@ -3296,6 +3552,8 @@ export class Conversation extends DurableObject<Env> {
     turnBaseline: string | undefined,
     fromQueue = false,
   ): Promise<boolean> {
+    await this.captureLegacyAlarmMigration(false)
+    await this.lifecycle.start()
     if (!reservation.date) return false
     try {
       return await this.ctx.storage.transaction(async () => {
@@ -3306,9 +3564,15 @@ export class Conversation extends DurableObject<Env> {
           fromQueue,
         )
         if (!marked) return false
-        // The alarm is part of the same storage transaction as the marker:
-        // a crash after commit can always recover an ambiguous prompt send.
-        await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
+        // A crash after commit must always recover an ambiguous prompt send.
+        const state = await this.store.get()
+        await this.jobs.cancel("admission:retry")
+        await this.scheduleConversationJob("turn:observe", Date.now() + POLL_MS, {
+          reservationID: reservation.reservationID,
+          reservationDate: reservation.date,
+          sessionID: state.sessionID,
+          reason: fromQueue ? "queued-prompt-dispatched" : "prompt-dispatched",
+        })
         return true
       })
     } catch {
@@ -3318,6 +3582,8 @@ export class Conversation extends DurableObject<Env> {
 
   /** Release a known hold; keep local ownership unless Settings acknowledges it. */
   async releaseBudgetReservation(reservation: BudgetReservation): Promise<boolean> {
+    await this.captureLegacyAlarmMigration(false)
+    await this.lifecycle.start()
     if (!reservation.date) return false
     const current = await this.store.get().then((state) => state.budgetReservation).catch(() => undefined)
     if (
@@ -3361,82 +3627,237 @@ export class Conversation extends DurableObject<Env> {
     return this.store.clearBudgetReservation(reservation.reservationID, reservation.date).catch(() => false)
   }
 
-  /** Alarm fallback: poll while a stream is not covering the run. */
+  /** Platform alarms are dispatched only by the Lifecycle-owned SQLite queue. */
   async alarm(): Promise<void> {
-    try {
-      if (await this.hasPendingRuntimeUpgrade()) return
-      if (this.recoveryAction) {
-        await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
-        return
+    await this.captureLegacyAlarmMigration(true)
+    await this.lifecycle.alarm()
+  }
+
+  private async jobIsCurrent(payload: ConversationJobPayload): Promise<boolean> {
+    return payload.epoch === await this.ensureJobEpoch()
+  }
+
+  private async handoffConversationJob(
+    kind: ConversationJobKind,
+    payload: ConversationJobPayload,
+    work: () => Promise<{ rescheduleAt: number } | undefined>,
+  ): Promise<{ rescheduleAt: number } | undefined> {
+    if (!(await this.jobIsCurrent(payload))) return undefined
+    if (this.activeLifecycleJobs.has(kind)) return { rescheduleAt: Date.now() + POLL_MS }
+    const now = Date.now()
+    const claimID = crypto.randomUUID()
+    const claimUntil = now + 120_000
+    const epoch = payload.epoch!
+    const decision = await this.ctx.storage.transaction(async (txn) => {
+      const currentEpoch = await txn.get<number>("conversationJobEpoch")
+      if (currentEpoch !== epoch || await txn.get<boolean>("lifecycleJobsSealed")) return { kind: "stale" as const }
+      const claims = await txn.get<Record<string, { epoch: number; claimID: string; until: number }>>("conversationJobClaims") ?? {}
+      const current = claims[kind]
+      if (current?.epoch === epoch && current.until > now) return { kind: "active" as const, until: current.until }
+      claims[kind] = { epoch, claimID, until: claimUntil }
+      await txn.put("conversationJobClaims", claims)
+      await this.jobs.schedule(kind, claimUntil, { ...payload, epoch, claimID, dueAt: claimUntil })
+      return { kind: "claimed" as const }
+    })
+    if (decision.kind === "stale") return undefined
+    if (decision.kind === "active") return { rescheduleAt: decision.until }
+
+    this.activeLifecycleJobs.add(kind)
+    const task = this.jobs.runHostTask(async () => {
+      let outcome: { rescheduleAt: number } | undefined
+      let failure: unknown
+      try {
+        outcome = await work()
+      } catch (error) {
+        failure = error
       }
-      const before = await this.store.get()
-      const phase = before.phase ?? "idle"
-      if (before.budgetReservation?.dispatched && (this.admitting || this.pumping)) {
-        // A live provider request or poll owns this turn. Do not consume the
-        // persisted recovery alarm while it is still in flight.
-        await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
-        return
-      }
-      if (
-        !this.admitting &&
-        !this.pumping &&
-        before.budgetReservation?.dispatched &&
-        phase !== "running" &&
-        phase !== "settling"
-      ) {
-        await this.resumeDispatchedTurn()
-        if (await this.pumpOnce()) return
-        await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
-        return
-      }
-      if (phase === "settling") {
-        if (await this.pumpOnce()) return
-        await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
-        return
-      }
-      const action = staleAction(before, Date.now(), this.pumping || this.admitting)
-      if (action === "admission") {
-        // The request that was admitting died with the previous DO instance.
-        await this.store.advance("idle")
-        logEvent("admission.stale")
-      } else if (action === "settlement") {
-        // A settle interrupted by a crash or deploy must not strand the DO.
-        logEvent("settlement.stale", {
-          ...(before.runStartedAt ? { durationMs: Date.now() - before.runStartedAt } : {}),
+      try {
+        await this.ctx.storage.transaction(async (txn) => {
+          if (await txn.get<number>("conversationJobEpoch") !== epoch) return
+          const claims = await txn.get<Record<string, { epoch: number; claimID: string; until: number }>>("conversationJobClaims") ?? {}
+          if (claims[kind]?.claimID !== claimID || claims[kind]?.epoch !== epoch) return
+          delete claims[kind]
+          await txn.put("conversationJobClaims", claims)
+          const state = await txn.get<ConversationState>("state")
+          const jobPayload = this.jobs.getPayload(kind)
+          if (jobPayload?.claimID === claimID) {
+            await this.jobs.cancel(kind)
+            const retryAt = failure ? Date.now() + 30_000 : outcome?.rescheduleAt
+            if (retryAt !== undefined) await this.scheduleConversationJob(kind, Math.max(Date.now(), retryAt), payload)
+          }
+          if (state) {
+            const lifecycleJobError = failure
+              ? { kind, message: "job failed; owned work remains pending", at: Date.now() }
+              : state.lifecycleJobError?.kind === kind ? undefined : state.lifecycleJobError
+            await txn.put("state", { ...state, lifecycleJobError })
+          }
         })
-        await this.store.advance("idle")
-      } else if (action === "timeout") {
-        if (before.budgetReservation?.dispatched) {
-          await this.pauseSettlement("turn exceeded its time limit; dispatched reservation retained while context is checked")
-          if (await this.pumpOnce()) return
-          await this.ctx.storage.setAlarm(Date.now() + POLL_MS)
-          return
-        }
-        // No terminal message and no error: abandon the turn so the container
-        // is not pinned forever.
-        void this.count("turn.timedout")
-        logEvent("turn.timedout", {
-          ...(before.runStartedAt ? { durationMs: Date.now() - before.runStartedAt } : {}),
-        })
-        await this.finishTurn(before, before.lastReply ?? "", { message: "turn timed out" })
-        return
+      } catch (error) {
+        console.warn("conversation lifecycle handoff completion failed", { kind, error: errorMessage(error) })
+      } finally {
+        this.activeLifecycleJobs.delete(kind)
       }
-      if (await this.retryCheckpoint()) return
-      if (await this.drainQueue()) return
-      const settled = await this.pumpOnce()
-      if (settled) return
-    } catch (err) {
-      console.warn("pump failed", err)
+      if (failure) throw failure
+    })
+    this.ctx.waitUntil(task.catch(() => {
+      console.warn("conversation lifecycle handoff failed", { kind })
+    }))
+    this.jobs.trackAlarmWork(task)
+    return undefined
+  }
+
+  private async runTurnObservation(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
+    return this.handoffConversationJob("turn:observe", payload, () => this.processTurnObservation(payload))
+  }
+
+  private async processTurnObservation(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
+    if (!(await this.jobIsCurrent(payload)) || await this.hasPendingRuntimeUpgrade()) return undefined
+    const before = await this.store.get()
+    const reservation = before.budgetReservation
+    if (payload.reservationID && (!reservation?.dispatched || reservation.reservationID !== payload.reservationID ||
+      reservation.date !== payload.reservationDate)) return undefined
+    if (!reservation?.dispatched && !["running", "settling"].includes(before.phase ?? "idle")) return undefined
+    if (this.recoveryAction || this.admitting || this.pumping) return { rescheduleAt: Date.now() + POLL_MS }
+
+    const phase = before.phase ?? "idle"
+    if (reservation?.dispatched && phase !== "running" && phase !== "settling") {
+      await this.resumeDispatchedTurn(false)
     }
     const state = await this.store.get()
+    const action = staleAction(state, Date.now(), false)
+    if (action === "settlement") {
+      logEvent("settlement.stale", {
+        ...(state.runStartedAt ? { durationMs: Date.now() - state.runStartedAt } : {}),
+      })
+      if (state.budgetReservation?.dispatched) {
+        await this.store.patch({ phase: "running" })
+      } else {
+        await this.store.advance("idle")
+        return undefined
+      }
+    }
+    if (action === "timeout") {
+      if (state.budgetReservation?.dispatched) {
+        await this.pauseSettlement("turn exceeded its time limit; dispatched reservation retained while context is checked")
+      } else {
+        void this.count("turn.timedout")
+        logEvent("turn.timedout", {
+          ...(state.runStartedAt ? { durationMs: Date.now() - state.runStartedAt } : {}),
+        })
+        await this.finishTurn(state, state.lastReply ?? "", { message: "turn timed out" })
+        return undefined
+      }
+    }
+    const settled = await this.pumpOnce()
+    if (settled) {
+      const after = await this.store.get()
+      if (!after.budgetReservation?.dispatched) return undefined
+    }
     const settings = await this.settings().catch(() => undefined)
-    // A queued admission retries on its own backoff; do not shorten it to the poll interval.
-    const delay = this.streaming
-      ? 30_000
-      : state.queued
-        ? Math.min(5000 * (state.queued.attempts + 1), 30_000)
-        : (settings?.pollSeconds ?? 2) * 1000
-    await this.ctx.storage.setAlarm(Date.now() + delay)
+    return { rescheduleAt: Date.now() + (this.streaming ? 30_000 : (settings?.pollSeconds ?? 2) * 1000) }
+  }
+
+  private async runAdmissionRetry(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
+    return this.handoffConversationJob("admission:retry", payload, () => this.processAdmissionRetry(payload))
+  }
+
+  private async processAdmissionRetry(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
+    if (!(await this.jobIsCurrent(payload)) || await this.hasPendingRuntimeUpgrade()) return undefined
+    const state = await this.store.get()
+    if (payload.queueID) {
+      if (!state.queued || state.queued.id !== payload.queueID) return undefined
+      const due = state.queued.nextAttemptAt ?? 0
+      if (Date.now() < due) return { rescheduleAt: due }
+      if (this.admitting || this.pumping || this.recoveryAction) return { rescheduleAt: Date.now() + POLL_MS }
+      await this.drainQueue()
+      const after = await this.store.get()
+      if (!after.queued || after.queued.id !== payload.queueID) return undefined
+      return { rescheduleAt: Math.max(after.queued.nextAttemptAt ?? 0, Date.now() + POLL_MS) }
+    }
+    return undefined
+  }
+
+  private async runCheckpointRetry(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
+    return this.handoffConversationJob("checkpoint:retry", payload, () => this.processCheckpointRetry(payload))
+  }
+
+  private async processCheckpointRetry(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
+    if (!(await this.jobIsCurrent(payload)) || await this.hasPendingRuntimeUpgrade()) return undefined
+    const state = await this.store.get()
+    if (!state.checkpointPending) return undefined
+    const due = state.checkpointRetryAt ?? Date.now() + CHECKPOINT_RETRY_MS
+    if (!state.checkpointRetryAt) await this.store.patch({ checkpointRetryAt: due })
+    if (Date.now() < due) return { rescheduleAt: due }
+    if ((state.phase ?? "idle") !== "idle" || this.admitting || this.pumping || this.recoveryAction) {
+      return { rescheduleAt: Date.now() + POLL_MS }
+    }
+    this.recoveryAction = true
+    try {
+      await this.retryCheckpoint()
+    } finally {
+      this.recoveryAction = false
+    }
+    return undefined
+  }
+
+  private async runRecoveryWake(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
+    return this.handoffConversationJob("recovery:wake", payload, () => this.processRecoveryWake(payload))
+  }
+
+  private async processRecoveryWake(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
+    if (!(await this.jobIsCurrent(payload)) || await this.hasPendingRuntimeUpgrade()) return undefined
+    const state = await this.store.get()
+    if (payload.reason === "stale-admission-recovery") {
+      if ((state.phase ?? "idle") !== "admitting" || state.budgetReservation?.dispatched ||
+        (payload.admissionID && state.admissionID !== payload.admissionID)) return undefined
+      if (this.recoveryAction || this.admitting || this.pumping) return { rescheduleAt: Date.now() + POLL_MS }
+      if (staleAction(state, Date.now(), false) !== "admission") return undefined
+      const queueID = state.queued?.id ?? (state.queued ? crypto.randomUUID() : undefined)
+      const retryAt = state.queued ? Math.max(state.queued.nextAttemptAt ?? 0, Date.now()) : undefined
+      await this.ctx.storage.transaction(async () => {
+        const current = await this.store.get()
+        if ((current.phase ?? "idle") !== "admitting" || current.budgetReservation?.dispatched ||
+          (payload.admissionID && current.admissionID !== payload.admissionID)) return
+        await this.store.patch({
+          admissionID: undefined,
+          admissionStartedAt: undefined,
+          phase: current.queued ? "queued" : "idle",
+          ...(current.queued && queueID ? { queued: { ...current.queued, id: queueID, nextAttemptAt: retryAt } } : {}),
+        })
+        if (current.queued && queueID && retryAt !== undefined) await this.scheduleConversationJob("admission:retry", retryAt, {
+          queueID,
+          reason: "queued-after-stale-admission",
+        })
+      })
+      logEvent("admission.stale")
+      return undefined
+    }
+    const reservation = state.budgetReservation
+    if (!reservation?.dispatched || reservation.reservationID !== payload.reservationID ||
+      reservation.date !== payload.reservationDate) return undefined
+    if (this.recoveryAction || this.admitting || this.pumping) return { rescheduleAt: Date.now() + POLL_MS }
+    // This wake only observes/reconciles the already dispatched prompt.
+    if (!(["running", "settling"].includes(state.phase ?? "idle"))) await this.resumeDispatchedTurn(false)
+    await this.scheduleConversationJob("turn:observe", Date.now() + POLL_MS, {
+      reservationID: reservation.reservationID,
+      reservationDate: reservation.date,
+      sessionID: state.sessionID,
+      reason: "recovery-wake-observation",
+    })
+    return undefined
+  }
+
+  private async handleConversationJobError(
+    kind: ConversationJobKind,
+    payload: ConversationJobPayload,
+    error: unknown,
+  ): Promise<{ rescheduleAt: number } | undefined> {
+    if (!(await this.jobIsCurrent(payload))) return undefined
+    console.warn("conversation lifecycle job failed", { kind })
+    await this.store.patch({ lifecycleJobError: { kind, message: "job failed; owned work remains pending", at: Date.now() } })
+    // Retain the existing owner and work; SDK retries are disabled so a failed
+    // wake is retried only by this bounded domain backoff.
+    return { rescheduleAt: Date.now() + 30_000 }
   }
 
   private async pollPermissions(sessionID: string, pending: PermissionSummary[]): Promise<void> {
@@ -4156,20 +4577,46 @@ export class Conversation extends DurableObject<Env> {
   private async enqueue(text: string, slack?: SlackTarget): Promise<boolean> {
     if (this.recoveryAction || await this.hasPendingRuntimeUpgrade()) return false
     const nextAttemptAt = Date.now() + 5000
-    const claimed = await this.store.enqueue({
+    const entry = {
+      id: crypto.randomUUID(),
       text,
       ...(slack ? { slack } : {}),
       attempts: 0,
       nextAttemptAt,
-    })
+    }
+    let claimed = false
+    try {
+      claimed = await this.ctx.storage.transaction(async () => {
+        const wasClaimed = await this.store.enqueue(entry)
+        if (wasClaimed) await this.scheduleConversationJob("admission:retry", nextAttemptAt, {
+          queueID: entry.id,
+          reason: "queued-admission",
+        })
+        return wasClaimed
+      })
+    } catch (error) {
+      console.warn("queue admission was not persisted", { error: errorMessage(error) })
+    }
     if (!claimed) return false
     void this.count("queue.enqueued")
     logEvent("queue.enqueued", { transport: slack ? "slack" : "http" })
     if (slack) {
       await this.postChunked(slack.channel, "⏳ Container busy — queued; I'll retry shortly.", slack.replyTs).catch(() => {})
     }
-    await this.ctx.storage.setAlarm(nextAttemptAt)
     return true
+  }
+
+  private async scheduleQueuedRetry(
+    queued: NonNullable<ConversationState["queued"]>,
+    retryAt: number,
+    updates: Partial<NonNullable<ConversationState["queued"]>> = {},
+    reason: string,
+  ): Promise<void> {
+    await this.ctx.storage.transaction(async () => {
+      await this.store.patch({ queued: { ...queued, ...updates, nextAttemptAt: retryAt } })
+      await this.store.advance("queued")
+      await this.scheduleConversationJob("admission:retry", retryAt, { queueID: queued.id, reason })
+    })
   }
 
   private async drainQueue(): Promise<boolean> {
@@ -4180,6 +4627,7 @@ export class Conversation extends DurableObject<Env> {
       const state = await this.store.get()
       // The warm stream stays connected while idle; it must not block the queue.
       if (!state.queued || this.admitting || this.pumping || this.recoveryAction || state.budgetReservation?.dispatched) return undefined
+      if (Date.now() < (state.queued.nextAttemptAt ?? 0)) return undefined
       const phase = state.phase ?? "idle"
       if (phase === "running" || phase === "settling" || phase === "admitting") return undefined
       await this.store.advance("admitting")
@@ -4199,12 +4647,8 @@ export class Conversation extends DurableObject<Env> {
       // frees up instead of burning the prompt-retry budget and dropping it.
       if (isCapacityRejection(err)) {
         const retryAt = Date.now() + CAPACITY_RETRY_MS
-        await this.store.patch({
-          queued: { ...queued, lastError: "container capacity reached", nextAttemptAt: retryAt },
-        })
-        await this.store.advance("queued")
         logEvent("queue.capacity", { attempts: queued.attempts })
-        await this.ctx.storage.setAlarm(retryAt)
+        await this.scheduleQueuedRetry(queued, retryAt, { lastError: "container capacity reached" }, "queue-capacity-retry")
         return false
       }
       const attempts = queued.attempts + 1
@@ -4226,16 +4670,8 @@ export class Conversation extends DurableObject<Env> {
         }
         return false
       }
-      await this.store.patch({
-        queued: {
-          ...queued,
-          attempts,
-          lastError: errorMessage(err),
-          nextAttemptAt: Date.now() + Math.min(5000 * attempts, 30_000),
-        },
-      })
-      await this.store.advance("queued")
-      await this.ctx.storage.setAlarm(Date.now() + Math.min(5000 * attempts, 30_000))
+      const retryAt = Date.now() + Math.min(5000 * attempts, 30_000)
+      await this.scheduleQueuedRetry(queued, retryAt, { attempts, lastError: errorMessage(err) }, "queue-session-retry")
       return false
     }
 
@@ -4251,9 +4687,7 @@ export class Conversation extends DurableObject<Env> {
           queued.slack.replyTs,
         ).catch(() => {})
       }
-      await this.store.patch({ queued: { ...queued, lastError: notice, nextAttemptAt: retryAt } })
-      await this.store.advance("queued")
-      await this.ctx.storage.setAlarm(retryAt)
+      await this.scheduleQueuedRetry(queued, retryAt, { lastError: notice }, "queue-budget-reset")
       return false
     }
     if (reservation.kind === "conflict" || reservation.kind === "unavailable") {
@@ -4266,11 +4700,7 @@ export class Conversation extends DurableObject<Env> {
           queued.slack.replyTs,
         ).catch(() => {})
       }
-      await this.store.patch({
-        queued: { ...queued, lastError: reservation.message, nextAttemptAt: retryAt },
-      })
-      await this.store.advance("queued")
-      await this.ctx.storage.setAlarm(retryAt)
+      await this.scheduleQueuedRetry(queued, retryAt, { lastError: reservation.message }, "queue-budget-retry")
       return false
     }
     if (reservation.kind === "already-dispatched") {
@@ -4287,11 +4717,7 @@ export class Conversation extends DurableObject<Env> {
     if (!(await this.markBudgetReservationDispatched(reservation.reservation, baseline, true))) {
       this.admitting = false
       const retryAt = Date.now() + 30_000
-      await this.store.patch({
-        queued: { ...queued, lastError: "could not persist budget dispatch state", nextAttemptAt: retryAt },
-      })
-      await this.store.advance("queued")
-      await this.ctx.storage.setAlarm(retryAt)
+      await this.scheduleQueuedRetry(queued, retryAt, { lastError: "could not persist budget dispatch state" }, "queue-dispatch-marker-retry")
       return false
     }
     try {
@@ -4421,7 +4847,8 @@ export class Conversation extends DurableObject<Env> {
     if ((state.phase ?? "idle") !== "idle") return false
     const attempts = state.checkpointAttempts ?? 0
     if (attempts >= CHECKPOINT_RETRY_LIMIT) {
-      await this.store.patch({ checkpointPending: undefined, checkpointAttempts: undefined })
+      await this.store.patch({ checkpointPending: undefined, checkpointAttempts: undefined, checkpointRetryAt: undefined })
+      await this.jobs.cancel("checkpoint:retry")
       logEvent("checkpoint.abandoned", { attempts })
       await this.deliver({
         type: "error",
@@ -4431,7 +4858,8 @@ export class Conversation extends DurableObject<Env> {
     }
     const saved = await this.checkpoint()
     if (saved) {
-      await this.store.patch({ checkpointPending: undefined, checkpointAttempts: undefined })
+      await this.store.patch({ checkpointPending: undefined, checkpointAttempts: undefined, checkpointRetryAt: undefined })
+      await this.jobs.cancel("checkpoint:retry")
       logEvent("checkpoint.recovered", { attempts })
       return false
     }
@@ -4688,6 +5116,7 @@ export class Conversation extends DurableObject<Env> {
         await this.store.patch({
           checkpointPending: undefined,
           checkpointAttempts: undefined,
+          checkpointRetryAt: undefined,
         })
         return true
       } catch (err) {
@@ -4697,8 +5126,11 @@ export class Conversation extends DurableObject<Env> {
         logEvent("checkpoint.failed")
         // Keep the failure visible and retry from the alarm instead of losing the
         // turn's work silently.
-        await this.store.patch({ checkpointPending: true })
-        await this.ctx.storage.setAlarm(Date.now() + CHECKPOINT_RETRY_MS)
+        const retryAt = Date.now() + CHECKPOINT_RETRY_MS
+        await this.ctx.storage.transaction(async () => {
+          await this.store.patch({ checkpointPending: true, checkpointRetryAt: retryAt })
+          await this.scheduleConversationJob("checkpoint:retry", retryAt, { reason: "checkpoint-upload-retry" })
+        })
         return false
       }
     })

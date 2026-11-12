@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
+import { driveConversationJobs } from "./helpers/conversation-jobs"
 import { deriveWorkspaceKey } from "@chester-hill-solutions/vault/core"
 import { decryptBytes } from "../src/archive-crypto"
 import type { CheckpointManifest, ConversationState } from "../src/state"
@@ -389,7 +390,7 @@ describe("split checkpoints", () => {
     const checkpointed = await runInDurableObject(stub, async (instance, state) => {
       instance.transport = fake.transport
       await send(instance, "hello")
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["turn:observe"])
       return {
         stored: await state.storage.get<ConversationState>("state"),
         prefix: `workspaces/${state.id.toString()}/`,
@@ -439,7 +440,7 @@ describe("split checkpoints", () => {
     const first = await runInDurableObject(stub, async (instance, state) => {
       instance.transport = fake.transport
       await send(instance, "hello")
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["turn:observe"])
       return (await state.storage.get<ConversationState>("state"))?.checkpointManifest
     })
     expect(first?.state).toBeTruthy()
