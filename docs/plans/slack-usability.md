@@ -7,6 +7,16 @@ without provider credit, model selection must affect only its conversation, and
 questions/permission requests must have actionable replies. Complete provider
 setup with the operator and verify the deployed behavior.
 
+**Roadmap alignment — 2026-11-11:** Slack is the first connector to the durable
+execution service. Complete the authorized S8/S10 slices below within their
+existing scope and rollout conditions. The [execution-service delivery plan](execution-service-delivery.md)
+then brings shared turn/status/question/cancellation/replay behavior into the
+public API and verifies a non-Slack reference client. Slack-specific presentation
+and download handling remain in the adapter; do not duplicate admission,
+accounting or recovery for another connector. Optional Slack OAuth is not a
+prerequisite for own-account installation or API use. This update changes no
+S8 receipt/approval rules or S10 immediate-admission limits.
+
 ## Locked decisions
 
 - Port the original bot's ten controls and aliases; reuse its pure formatting

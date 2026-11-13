@@ -4,6 +4,7 @@ import type { Conversation } from "../src/conversation"
 import type { ConversationState } from "../src/state"
 import { ACCOUNTING_POLICY_ID } from "../src/accounting-policy"
 import { accountingPolicyConfig } from "./helpers/accounting-policy"
+import { runtimeCache } from "./helpers/runtime-cache"
 
 const API = { authorization: "Bearer test-token" }
 const BASE_IMAGE = `registry.cloudflare.com/test/runtime-base@sha256:${"1".repeat(64)}`
@@ -23,10 +24,6 @@ function installRuntime(instance: Conversation, options: Options = {}) {
     ctx: object
     key?: string
     transport?: unknown
-    ready: boolean
-    opencodePort?: unknown
-    opencodeGeneration?: string
-    eventPersistence?: boolean
   }
   const calls: string[] = []
   const restores: string[] = []
@@ -135,11 +132,7 @@ function installRuntime(instance: Conversation, options: Options = {}) {
     },
   }
   Object.defineProperty(internal.ctx, "container", { configurable: true, value: container })
-  internal.key = "C1:runtime-upgrade-test"
-  internal.ready = false
-  internal.opencodePort = undefined
-  internal.opencodeGeneration = undefined
-  internal.eventPersistence = undefined
+  runtimeCache(instance).invalidate()
   // Real container port startup is important here: the test records selected
   // image, start/destroy ordering, archive restore and the native API proof.
   internal.transport = undefined

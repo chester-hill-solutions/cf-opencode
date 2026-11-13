@@ -3,6 +3,7 @@ import { env, runInDurableObject, SELF } from "cloudflare:test"
 import type { Conversation } from "../src/conversation"
 import { usageLogResponse } from "./helpers/usage-log"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
+import { driveConversationJobs } from "./helpers/conversation-jobs"
 
 const API = { authorization: "Bearer test-token" }
 const settings = () => env.SETTINGS.getByName("global")
@@ -241,13 +242,14 @@ describe("recovery inspection and actions", () => {
       const before = await state.storage.get("state")
       const preview = await (await recovery(instance)).json() as { kind: string; actions: string[]; snapshotID: string }
       const response = await recovery(instance, "retry", preview.snapshotID)
+      const responseBody = await response.json()
       const alarm = await state.storage.getAlarm()
       const after = await state.storage.get("state")
-      return { preview, status: response.status, body: await response.json(), alarm, before, after }
+      return { preview, status: response.status, body: responseBody, alarm, before, after }
     })
     expect(result.preview.kind).toBe("dispatched")
     expect(result.preview.actions).toEqual(["retry"])
-    expect(result.status).toBe(202)
+    expect({ status: result.status, body: result.body }).toEqual({ status: 202, body: { ok: true, scheduled: true } })
     expect(result.body).toEqual({ ok: true, scheduled: true })
     expect(result.alarm).toBeTypeOf("number")
     expect(result.after).toEqual(result.before)
@@ -301,7 +303,8 @@ describe("recovery inspection and actions", () => {
       const preview = await (await recovery(instance)).json() as { actions: string[]; snapshotID: string }
       const triggered = await recovery(instance, "retry", preview.snapshotID)
       const beforeAlarmPrompts = promptCalls
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["recovery:wake"])
+      await driveConversationJobs(instance, state.storage, ["turn:observe"])
       const current = await state.storage.get<{ phase?: string; budgetReservation?: unknown } & Record<string, unknown>>("state")
       const ledger = await (await settings().fetch(
         `https://settings/usage/cutover?conversationID=${conversationID}&reservationID=dispatch-recovery`,

@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
+import { driveConversationJobs } from "./helpers/conversation-jobs"
 import { deriveWorkspaceKey } from "@chester-hill-solutions/vault/core"
 import { decryptBytes } from "../src/archive-crypto"
 import type { CheckpointManifest, ConversationState } from "../src/state"
 import { usageLogResponse } from "./helpers/usage-log"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
+import { runtimeCache } from "./helpers/runtime-cache"
 
 /**
  * Split checkpoints keep the workspace and harness state in separate R2
@@ -178,7 +180,8 @@ describe("split checkpoints", () => {
             createdAt: 100,
           },
         })
-        await (instance as unknown as { pruneCheckpoints(): Promise<void> }).pruneCheckpoints()
+        const checkpoints = (instance as unknown as { checkpoints: { prune(): Promise<void> } }).checkpoints
+        await checkpoints.prune()
         return { prefix, workspaces, states, unknown }
       })
     } finally {
@@ -215,10 +218,11 @@ describe("split checkpoints", () => {
       const newerKeys = Array.from({ length: 7 }, (_, i) => `${prefix}workspace-${200 + i}.tar.gz`)
       for (const key of [activeKey, ...newerKeys]) await env.CHECKPOINTS.put(key, "legacy")
       await state.storage.put("state", { checkpointKey: activeKey })
-      await (instance as unknown as { pruneCheckpoints(): Promise<void> }).pruneCheckpoints()
-      const latest = await (instance as unknown as {
-        latestCheckpoint(): Promise<{ workspace: { key: string } } | null>
-      }).latestCheckpoint()
+      const checkpoints = (instance as unknown as {
+        checkpoints: { prune(): Promise<void>; latest(): Promise<{ workspace: { key: string } } | null> }
+      }).checkpoints
+      await checkpoints.prune()
+      const latest = await checkpoints.latest()
       const listed = await env.CHECKPOINTS.list({ prefix })
       return { activeKey, newerKeys, latestKey: latest?.workspace.key, retained: listed.objects.map(({ key }) => key) }
     })
@@ -233,7 +237,9 @@ describe("split checkpoints", () => {
     try {
       const result = await runInDurableObject(stub, async (instance, state) => {
         instance.transport = fake.transport
-        const checkpoint = (instance as unknown as { checkpoint(): Promise<boolean> }).checkpoint.bind(instance)
+        const checkpoint = (instance as unknown as { checkpoints: { capture(): Promise<boolean> } }).checkpoints.capture.bind(
+          (instance as unknown as { checkpoints: object }).checkpoints,
+        )
         const saved: string[] = []
         for (let i = 0; i < 7; i++) {
           now.mockReturnValue(10_000 + i)
@@ -267,7 +273,9 @@ describe("split checkpoints", () => {
     try {
       const result = await runInDurableObject(stub, async (instance, state) => {
         instance.transport = fake.transport
-        const checkpoint = (instance as unknown as { checkpoint(): Promise<boolean> }).checkpoint.bind(instance)
+        const checkpoint = (instance as unknown as { checkpoints: { capture(): Promise<boolean> } }).checkpoints.capture.bind(
+          (instance as unknown as { checkpoints: object }).checkpoints,
+        )
         const saved: string[] = []
         for (let i = 0; i < 7; i++) {
           now.mockReturnValue(20_000 + i)
@@ -389,7 +397,7 @@ describe("split checkpoints", () => {
     const checkpointed = await runInDurableObject(stub, async (instance, state) => {
       instance.transport = fake.transport
       await send(instance, "hello")
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["turn:observe"])
       return {
         stored: await state.storage.get<ConversationState>("state"),
         prefix: `workspaces/${state.id.toString()}/`,
@@ -422,8 +430,7 @@ describe("split checkpoints", () => {
     await runInDurableObject(stub, async (instance) => {
       instance.transport = fake.transport
       fake.stop()
-      ;(instance as unknown as { ready: boolean }).ready = false
-      ;(instance as unknown as { opencodePort?: unknown }).opencodePort = undefined
+      runtimeCache(instance).pauseServer()
       await send(instance, "again")
     })
 
@@ -439,7 +446,7 @@ describe("split checkpoints", () => {
     const first = await runInDurableObject(stub, async (instance, state) => {
       instance.transport = fake.transport
       await send(instance, "hello")
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["turn:observe"])
       return (await state.storage.get<ConversationState>("state"))?.checkpointManifest
     })
     expect(first?.state).toBeTruthy()
@@ -448,7 +455,7 @@ describe("split checkpoints", () => {
 
     const second = await runInDurableObject(stub, async (instance, state) => {
       instance.transport = fake.transport
-      await (instance as unknown as { checkpoint(): Promise<boolean> }).checkpoint()
+      await (instance as unknown as { checkpoints: { capture(): Promise<boolean> } }).checkpoints.capture()
       return (await state.storage.get<ConversationState>("state"))?.checkpointManifest
     })
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
+import { driveConversationJobs } from "./helpers/conversation-jobs"
 import { usageLogResponse } from "./helpers/usage-log"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
 
@@ -103,13 +104,13 @@ async function state(instance: { fetch(request: Request): Promise<Response> }) {
 describe("checkpoint and the opencode port", () => {
   it("keeps serving turns after an archived checkpoint", async () => {
     const stub = env.CONVERSATION.getByName("C1:checkpoint-archived")
-    await runInDurableObject(stub, async (instance) => {
+    await runInDurableObject(stub, async (instance, runtime) => {
       const fake = fakeContainer({ archive: true })
       instance.transport = fake.transport
 
       const first = await send(instance, "hello")
       expect(first.status).toBe(200)
-      await instance.alarm()
+      await driveConversationJobs(instance, runtime.storage, ["turn:observe"])
       expect(fake.counters.checkpoints).toBe(1)
 
       // The archive must not pause OpenCode, so this needs no restart.
@@ -125,13 +126,13 @@ describe("checkpoint and the opencode port", () => {
 
   it("keeps the warm port when the checkpoint is a no-op", async () => {
     const stub = env.CONVERSATION.getByName("C1:checkpoint-skipped")
-    await runInDurableObject(stub, async (instance) => {
+    await runInDurableObject(stub, async (instance, runtime) => {
       const fake = fakeContainer({ killOnCheckpoint: false })
       instance.transport = fake.transport
 
       const first = await send(instance, "hello")
       expect(first.status).toBe(200)
-      await instance.alarm()
+      await driveConversationJobs(instance, runtime.storage, ["turn:observe"])
       expect(fake.counters.checkpoints).toBe(1)
 
       const second = await send(instance, "again")

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
+import { driveConversationJobs, startConversationJobs, waitForConversationJobs } from "./helpers/conversation-jobs"
 
 const settings = () => env.SETTINGS.getByName("global")
 
@@ -60,7 +61,7 @@ describe("admission queue", () => {
   it("queues when the container cannot start, then drains on the alarm", async () => {
     await setTestBudget(0.1)
     const stub = env.CONVERSATION.getByName("C1:queue")
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDurableObject(stub, async (instance, state) => {
       let starts = 2
       let prompts = 0
       const json = (body: unknown, status = 200) =>
@@ -106,7 +107,9 @@ describe("admission queue", () => {
         costUSD?: number
         reservedUSD?: number
       }
-      for (let attempt = 0; attempt < 4; attempt++) await instance.alarm()
+      for (let attempt = 0; attempt < 4; attempt++) {
+        await driveConversationJobs(instance, state.storage, ["admission:retry"], { queued: true })
+      }
       const afterDrain = await (await settings().fetch("https://settings/usage/today")).json() as {
         costUSD?: number
         reservedUSD?: number
@@ -125,7 +128,7 @@ describe("admission queue", () => {
   it("queues when the pre-dispatch turn-baseline read fails without taking a hold", async () => {
     await setTestBudget(0.1)
     const stub = env.CONVERSATION.getByName("C1:baseline-read-fails")
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDurableObject(stub, async (instance, state) => {
       let contextReads = 0
       let prompts = 0
       const json = (body: unknown, status = 200) =>
@@ -162,7 +165,7 @@ describe("admission queue", () => {
       const initial = await (await settings().fetch("https://settings/usage/today")).json() as {
         reservedUSD?: number
       }
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["admission:retry"], { queued: true })
       const recovered = await (await settings().fetch("https://settings/usage/today")).json() as {
         reservedUSD?: number
       }
@@ -178,7 +181,7 @@ describe("admission queue", () => {
   it("does not replay a queued prompt after an ambiguous provider response", async () => {
     await setTestBudget(0.1)
     const stub = env.CONVERSATION.getByName("C1:queue-prompt-loss")
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDurableObject(stub, async (instance, state) => {
       let starts = 1
       let prompts = 0
       let prompted = false
@@ -221,13 +224,13 @@ describe("admission queue", () => {
         costUSD?: number
         reservedUSD?: number
       }
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["admission:retry"], { queued: true })
       const afterDispatch = await (await instance.fetch(new Request("https://conversation/state"))).json() as {
         phase?: string
         queued?: unknown
         budgetReservation?: { dispatched?: boolean }
       }
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["turn:observe"])
       return { firstStatus, beforeDrain, afterDispatch, prompts }
     })
     const usage = await (await settings().fetch("https://settings/usage/today")).json() as { reservedUSD?: number }
@@ -245,9 +248,10 @@ describe("admission queue", () => {
     await setTestBudget(0.1)
     const stub = env.CONVERSATION.getByName("C1:queue-followup-inflight")
     const result = await runInDurableObject(stub, async (instance, state) => {
+      await state.storage.setAlarm(Date.now() + 60_000)
       await state.storage.put("state", {
         phase: "queued",
-        queued: { text: "original queued prompt", attempts: 0 },
+        queued: { text: "original queued prompt", attempts: 0, nextAttemptAt: Date.now() + 60_000 },
         seen: [],
         pending: {},
       })
@@ -290,7 +294,17 @@ describe("admission queue", () => {
         },
       })
 
-      const draining = instance.alarm()
+      // Consume the one-time legacy alarm translation while the queued item is
+      // still future-dated; then explicitly fire its typed admission job below.
+      await (await instance.fetch(new Request("https://conversation/health"))).text()
+      state.storage.sql.exec(
+        "UPDATE cf_agents_jobs SET time = ?, running = 0, execution_started_at = NULL WHERE id = ? AND capability = ?",
+        Date.now(),
+        "legacy:bootstrap",
+        "conversation-jobs",
+      )
+      await instance.alarm()
+      const draining = await startConversationJobs(instance, state.storage, ["admission:retry"], { queued: true })
       await entered
       const followup = await instance.fetch(
         new Request("https://conversation/message", {
@@ -300,7 +314,8 @@ describe("admission queue", () => {
       )
       const followupStatus = followup.status
       finishPrompt()
-      await draining
+      await draining.completion
+      await waitForConversationJobs(state.storage)
       const current = await (await instance.fetch(new Request("https://conversation/state"))).json() as {
         phase?: string
         queued?: { text?: string }
@@ -313,7 +328,7 @@ describe("admission queue", () => {
       // been persisted. Recovery must resume the owner before queue drain.
       const stored = await state.storage.get<Record<string, unknown>>("state")
       await state.storage.put("state", { ...stored, phase: "queued" })
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["turn:observe", "admission:retry"], { queued: true })
       const recovered = await (await instance.fetch(new Request("https://conversation/state"))).json() as {
         phase?: string
         queued?: { text?: string }
@@ -343,7 +358,7 @@ describe("admission queue", () => {
   it("keeps a queued message while container capacity is full", async () => {
     await setTestBudget(0)
     const stub = env.CONVERSATION.getByName("C1:capacity-queue")
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDurableObject(stub, async (instance, state) => {
       const prompts = { count: 0 }
       instance.transport = fakeContainer(prompts)
 
@@ -373,14 +388,16 @@ describe("admission queue", () => {
       await response.text()
 
       // More alarms than the old bounded prompt-retry budget.
-      for (let attempt = 0; attempt < 6; attempt++) await instance.alarm()
+      for (let attempt = 0; attempt < 6; attempt++) {
+        await driveConversationJobs(instance, state.storage, ["admission:retry"], { queued: true })
+      }
       const queuedAfterPressure = (await (
         await instance.fetch(new Request("https://conversation/state"))
       ).json()) as { queued?: unknown }
 
       // Capacity frees: the same queued message runs, it was not dropped.
       capacityFailures = 0
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["admission:retry"], { queued: true })
       const queuedAfterDrain = (await (
         await instance.fetch(new Request("https://conversation/state"))
       ).json()) as { queued?: unknown }

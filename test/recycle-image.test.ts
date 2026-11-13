@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
 import type { ConversationState } from "../src/state"
+import { runtimeCache } from "./helpers/runtime-cache"
+import { usageLogResponse } from "./helpers/usage-log"
 
 function installContainer(instance: unknown, calls: { destroy: number; snapshot: number }) {
   const container = {
-    async destroy() { calls.destroy++ },
+    running: true,
+    async destroy() { calls.destroy++; this.running = false },
+    async setInactivityTimeout() {},
     async snapshotContainer() { calls.snapshot++; return { id: "captured-old", size: 99 } },
   }
   const context = (instance as { ctx: object }).ctx
@@ -26,19 +30,14 @@ describe("image upgrade recycle", () => {
       const calls = { checkpoint: 0, capture: 0, destroy: 0, snapshot: 0 }
       installContainer(instance, calls)
       const internal = instance as unknown as {
-        checkpoint(): Promise<boolean>
+        checkpoints: { captureOwned(): Promise<boolean> }
         captureSnapshot(): Promise<void>
-        ready: boolean
-        opencodePort?: unknown
-        opencodeGeneration?: string
-        inactivitySet: boolean
       }
-      internal.checkpoint = async () => { calls.checkpoint++; return true }
+      const cache = runtimeCache(instance)
+      internal.checkpoints.captureOwned = async () => { calls.checkpoint++; return true }
       internal.captureSnapshot = async () => { calls.capture++ }
-      internal.ready = true
-      internal.opencodePort = {}
-      internal.opencodeGeneration = "old-generation"
-      internal.inactivitySet = true
+      cache.markVerified({ fetch: async (input) => usageLogResponse(input, "ses_keep", []) }, "old-generation", true)
+      cache.applyInactivity((instance as unknown as { ctx: { container: { setInactivityTimeout(ms: number): Promise<void> } } }).ctx.container)
       const response = await recycle(instance)
       return {
         status: response.status,
@@ -47,10 +46,10 @@ describe("image upgrade recycle", () => {
         state: await runtime.storage.get<ConversationState>("state"),
         source: await runtime.storage.get("usage-source:keep"),
         snapshot: await runtime.storage.get("snapshot"),
-        ready: internal.ready,
-        opencodePort: internal.opencodePort,
-        generation: internal.opencodeGeneration,
-        inactivitySet: internal.inactivitySet,
+        ready: cache.ready,
+        opencodePort: cache.apiPort,
+        generation: cache.generation,
+        inactivitySet: cache.inactivitySet,
       }
     })
 
@@ -58,7 +57,7 @@ describe("image upgrade recycle", () => {
     expect(result.body).toMatchObject({ ok: true })
     expect(result.calls).toEqual({ checkpoint: 1, capture: 0, destroy: 1, snapshot: 0 })
     expect(result.snapshot).toBeUndefined()
-    expect(result.state).toEqual({
+    expect(result.state).toMatchObject({
       sessionID: "ses_keep", phase: "idle", seen: [], pending: {}, checkpointKey: "r2-archive",
     })
     expect(result.source).toEqual({ sourceID: "source-1", amount: 1 })
@@ -78,7 +77,7 @@ describe("image upgrade recycle", () => {
       await runtime.storage.put("snapshot", { id: "old-image-snapshot", size: 10 })
       const calls = { checkpoint: 0, capture: 0, destroy: 0, snapshot: 0 }
       installContainer(instance, calls)
-      ;(instance as unknown as { checkpoint(): Promise<boolean> }).checkpoint = async () => { calls.checkpoint++; return true }
+      ;(instance as unknown as { checkpoints: { captureOwned(): Promise<boolean> } }).checkpoints.captureOwned = async () => { calls.checkpoint++; return true }
       const response = await recycle(instance)
       return { status: response.status, calls, snapshot: await runtime.storage.get("snapshot") }
     })
@@ -94,9 +93,10 @@ describe("image upgrade recycle", () => {
       await runtime.storage.put("snapshot", { id: "old-image-snapshot", size: 10 })
       const calls = { checkpoint: 0, capture: 0, destroy: 0, snapshot: 0 }
       installContainer(instance, calls)
-      const internal = instance as unknown as { checkpoint(): Promise<boolean>; captureSnapshot(): Promise<void> }
-      internal.checkpoint = async () => { calls.checkpoint++; return false }
+      const internal = instance as unknown as { checkpoints: { captureOwned(): Promise<boolean> }; captureSnapshot(): Promise<void> }
+      internal.checkpoints.captureOwned = async () => { calls.checkpoint++; return false }
       internal.captureSnapshot = async () => { calls.capture++ }
+      runtimeCache(instance).markVerified({ fetch: async (input) => usageLogResponse(input, "ses_keep", []) }, "old-generation", true)
       const response = await recycle(instance)
       return { status: response.status, body: await response.json(), calls, snapshot: await runtime.storage.get("snapshot") }
     })

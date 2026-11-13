@@ -1,0 +1,44 @@
+{
+  // Copy to a private staging config and fill every placeholder. This is a
+  // preparation fixture; run only after the lifecycle integration gates pass.
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "__SET_UNIQUE_STAGING_WORKER_NAME__",
+  "account_id": "__SET_STAGING_ACCOUNT_ID__",
+  "main": "./worker.ts",
+  "compatibility_date": "2026-11-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "WORKSPACE_REPO": "",
+    "OPENCODE_MODEL": "",
+    "POLL_SECONDS": "2",
+    "EVENTED_FRESH_CONVERSATIONS": "true",
+    "ALLOW_PLAINTEXT_ARCHIVES": "0"
+  },
+  "containers": [
+    {
+      "class_name": "LifecycleIdleQualificationConversation",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "evented": {
+          "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-native-c2@sha256:9f82e154e6d050e0f0d3daa72bb9b8bb387cf05c3c7aae1f74d787264455340f"
+        }
+      }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "class_name": "LifecycleIdleQualificationConversation", "name": "CONVERSATION" },
+      { "class_name": "Settings", "name": "SETTINGS" }
+    ]
+  },
+  "r2_buckets": [
+    {
+      "binding": "CHECKPOINTS",
+      "bucket_name": "__SET_UNIQUE_EMPTY_LIFECYCLE_IDLE_BUCKET__"
+    }
+  ],
+  "exports": {
+    "LifecycleIdleQualificationConversation": { "type": "durable-object", "storage": "sqlite" },
+    "Settings": { "type": "durable-object", "storage": "sqlite" }
+  }
+}

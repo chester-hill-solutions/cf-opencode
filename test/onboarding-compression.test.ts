@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest"
 import { env, runInDurableObject, SELF } from "cloudflare:test"
 import { ACCOUNT_STATE_KEY } from "../src/conversation"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
+import { runtimeCache } from "./helpers/runtime-cache"
 
 const BASE = "https://harness.test"
 const API = { authorization: "Bearer test-token" }
@@ -11,8 +12,9 @@ async function resetOnboarding(): Promise<void> {
     await runtime.storage.deleteAll()
   })
   await env.CHECKPOINTS.delete(ACCOUNT_STATE_KEY)
-  await runInDurableObject(env.CONVERSATION.getByName("onboarding"), async (_instance, runtime) => {
+  await runInDurableObject(env.CONVERSATION.getByName("onboarding"), async (instance, runtime) => {
     await runtime.storage.deleteAll()
+    runtimeCache(instance).invalidate()
   })
 }
 
@@ -97,35 +99,42 @@ describe("onboarding proxy compression headers", () => {
   })
 
   it("keeps provider status private and returns only connected state", async () => {
-    const stub = env.CONVERSATION.getByName("onboarding-provider-status-private")
-    await runInDurableObject(stub, async (instance) => attachContainer(instance))
-    const request = (key: string, method = "GET") => stub.fetch(new Request("https://conversation/provider-status", {
+    const stub = env.CONVERSATION.getByName("onboarding")
+    await runInDurableObject(stub, async (instance) => {
+      attachContainer(instance)
+      runtimeCache(instance).invalidate()
+    })
+    const request = (target: typeof stub, key: string, method = "GET") => target.fetch(new Request("https://conversation/provider-status", {
       method, headers: { "x-conversation-key": key },
     }))
 
-    const connected = await request("onboarding")
+    const connected = await request(stub, "onboarding")
     expect(connected.status).toBe(200)
     expect(await connected.json()).toEqual({ connected: true })
-    expect((await request("other-conversation")).status).toBe(403)
-    expect((await request("onboarding", "POST")).status).toBe(403)
+    expect((await request(stub, "other-conversation")).status).toBe(400)
+    const otherStub = env.CONVERSATION.getByName("other-conversation")
+    expect((await request(otherStub, "other-conversation")).status).toBe(403)
+    expect((await request(stub, "onboarding", "POST")).status).toBe(403)
     const publicRoute = await SELF.fetch(`${BASE}/api/onboarding/provider-status`, { headers: API })
     expect(publicRoute.status).toBe(404)
   })
 
   it("reports disconnected and masks SDK integration lookup errors", async () => {
-    const disconnectedStub = env.CONVERSATION.getByName("onboarding-provider-status-disconnected")
-    await runInDurableObject(disconnectedStub, async (instance) => attachContainer(instance, { connected: false }))
+    const disconnectedStub = env.CONVERSATION.getByName("onboarding")
+    await runInDurableObject(disconnectedStub, async (instance) => {
+      attachContainer(instance, { connected: false })
+      runtimeCache(instance).invalidate()
+    })
     const disconnected = await disconnectedStub.fetch(new Request("https://conversation/provider-status", {
-      headers: { "x-conversation-key": "onboarding" },
     }))
     expect(disconnected.status).toBe(200)
     expect(await disconnected.json()).toEqual({ connected: false })
 
-    const failedStub = env.CONVERSATION.getByName("onboarding-provider-status-error")
-    await runInDurableObject(failedStub, async (instance) => attachContainer(instance, { integrationFailure: true }))
-    const failed = await failedStub.fetch(new Request("https://conversation/provider-status", {
-      headers: { "x-conversation-key": "onboarding" },
-    }))
+    await runInDurableObject(disconnectedStub, async (instance) => {
+      attachContainer(instance, { integrationFailure: true })
+      runtimeCache(instance).invalidate()
+    })
+    const failed = await disconnectedStub.fetch(new Request("https://conversation/provider-status"))
     expect(failed.status).toBe(503)
     expect(await failed.json()).toMatchObject({ error: "provider status unavailable", retryable: true })
   })

@@ -53,3 +53,28 @@ Run the remaining measurements with:
 bench/container.sh
 HARNESS_URL=… API_TOKEN=… bun run bench
 ```
+
+## 2026-11-12 — Cloudflare idle close and encrypted cold restore
+
+Three no-inference cycles at `02e4ddf`, using the retained native evented image,
+a temporary Worker/DO namespace and an empty session. Each cold read followed
+confirmed container shutdown and restored the same session from encrypted split
+R2 checkpoints; fast snapshots were cleared.
+
+| metric | median | range |
+| --- | --- | --- |
+| warm context | 186.7 ms | 135.1–398.6 ms |
+| cold context after idle stop | 6,441.6 ms | 6,159.0–7,391.3 ms |
+| paired cold minus warm | 6,254.8 ms | 5,760.4–7,256.1 ms |
+| observed idle-to-stopped interval | 32.13 s | 31.45–32.21 s |
+
+These include public network latency. The idle observation includes polling,
+quiescence, checkpoint and stop work beyond the 30-second policy delay. Initial
+bootstrap/image priming is untimed. Three empty-session samples do not establish
+p95, large-workspace performance or model-turn latency. No model prompt was sent.
+The temporary runtime, Worker, container application, bucket and fresh local
+secrets were removed after cleanup proved the runtime stopped and bucket empty.
+
+Raw samples and proof limits: [measurement receipt](lifecycle-idle-2026-11-12.json).
+The later telemetry validator fix retains native generation IDs beginning with
+`-` or `_`; it does not change the measured runtime path.

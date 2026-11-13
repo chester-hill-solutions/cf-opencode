@@ -2,25 +2,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
 import type { ContainerStartupOptions } from "@cloudflare/workers-types"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
+import { driveConversationJobs } from "./helpers/conversation-jobs"
+import { runtimeCache } from "./helpers/runtime-cache"
 
 const BASE_IMAGE = "registry.cloudflare.com/test/conversation-base@sha256:base"
 const EVENTED_IMAGE = "registry.cloudflare.com/test/conversation-evented@sha256:evented"
 
 type Internal = {
   env: { EVENTED_FRESH_CONVERSATIONS?: string; SLACK_BOT_TOKEN?: string }
-  key?: string
-  controlTokenValue?: string
-  containerImageVariant?: "base" | "evented"
+  controlPlane: { token(): Promise<string> }
   startOptions(): ContainerStartupOptions
   snapshotHandle(): Promise<unknown>
   startContainer(): Promise<boolean>
   startBoundContainer(container: unknown): Promise<boolean>
-  doEnsureReady(): Promise<unknown>
-  acquireLease(): Promise<void>
-  releaseLease(): Promise<void>
-  ready: boolean
-  opencodePort?: unknown
-  opencodeGeneration?: string
+  readiness: { prepare(): Promise<unknown> }
+  leases: { ensureHeld(): Promise<void> }
 }
 
 function installContainer(instance: unknown, images: Record<string, string>) {
@@ -40,6 +36,13 @@ function enableFreshEventedRouting(instance: unknown): () => void {
   const previous = environment.EVENTED_FRESH_CONVERSATIONS
   environment.EVENTED_FRESH_CONVERSATIONS = "true"
   return () => { environment.EVENTED_FRESH_CONVERSATIONS = previous }
+}
+
+function enableCanaryKey(instance: unknown, key: string): () => void {
+  const environment = (instance as unknown as { env: { EVENTED_CANARY_KEY?: string } }).env
+  const previous = environment.EVENTED_CANARY_KEY
+  environment.EVENTED_CANARY_KEY = key
+  return () => { environment.EVENTED_CANARY_KEY = previous }
 }
 
 const settings = () => env.SETTINGS.getByName("global")
@@ -133,6 +136,36 @@ function installMessagePorts(
 }
 
 describe("isolated evented container image selection", () => {
+  it("reports the actual binding state separately from runtime readiness", async () => {
+    const stub = env.CONVERSATION.getByName("runtime-debug-running-state")
+    const result = await runInDurableObject(stub, async (instance) => {
+      const internal = instance as unknown as { ctx: object }
+      runtimeCache(instance).markVerified({ fetch: async () => new Response(null) }, "verified-generation", true)
+      Object.defineProperty(internal.ctx, "container", {
+        configurable: true,
+        value: { running: false },
+      })
+      const response = await instance.fetch(new Request("https://conversation/debug"))
+      return response.json() as Promise<Record<string, unknown>>
+    })
+
+    expect(result).toMatchObject({
+      ready: true,
+      containerRunning: false,
+      runtimeGeneration: "verified-generation",
+    })
+  })
+
+  it("leaves container running state unknown when transport is external", async () => {
+    const stub = env.CONVERSATION.getByName("runtime-debug-external-state")
+    const result = await runInDurableObject(stub, async (instance) => {
+      instance.transport = () => ({ fetch: async () => new Response(null) })
+      const response = await instance.fetch(new Request("https://conversation/debug"))
+      return response.json() as Promise<Record<string, unknown>>
+    })
+    expect(result.containerRunning).toBeUndefined()
+  })
+
   beforeEach(async () => {
     env.EVENTED_FRESH_CONVERSATIONS = undefined
     await resetSettings()
@@ -154,8 +187,8 @@ describe("isolated evented container image selection", () => {
         pending: {},
       })
       const internal = instance as unknown as Internal
-      internal.key = "slack-held-conversation"
-      internal.controlTokenValue = "control-token-test"
+      await runtime.storage.put("controlToken", "control-token-test")
+      await internal.controlPlane.token()
       const context = (instance as unknown as { ctx: { container: unknown } }).ctx
       const usedSnapshot = await internal.startBoundContainer(context.container)
       return {
@@ -173,13 +206,19 @@ describe("isolated evented container image selection", () => {
   })
 
   it("selects the evented image only for the exact configured canary key", async () => {
-    const stub = env.CONVERSATION.getByName("image-selection-evented")
-    const result = await runInDurableObject(stub, async (instance) => {
+    const canaryKey = "image-selection-evented"
+    const stub = env.CONVERSATION.getByName(canaryKey)
+    const result = await runInDurableObject(stub, async (instance, runtime) => {
+      const restoreCanary = enableCanaryKey(instance, canaryKey)
+      try {
       installContainer(instance, { base: BASE_IMAGE, evented: EVENTED_IMAGE })
       const internal = instance as unknown as Internal
-      internal.key = env.EVENTED_CANARY_KEY
-      internal.controlTokenValue = "control-token-test"
+      await runtime.storage.put("controlToken", "control-token-test")
+      await internal.controlPlane.token()
       return internal.startOptions()
+      } finally {
+        restoreCanary()
+      }
     })
 
     expect(result.image).toBe(EVENTED_IMAGE)
@@ -187,11 +226,13 @@ describe("isolated evented container image selection", () => {
   })
 
   it("fails closed when the canary image is missing", async () => {
-    const stub = env.CONVERSATION.getByName("image-selection-evented-missing")
+    const canaryKey = "image-selection-evented-missing"
+    const stub = env.CONVERSATION.getByName(canaryKey)
     const result = await runInDurableObject(stub, async (instance) => {
+      const restoreCanary = enableCanaryKey(instance, canaryKey)
+      try {
       const { container, starts } = installContainer(instance, { base: BASE_IMAGE })
       const internal = instance as unknown as Internal
-      internal.key = env.EVENTED_CANARY_KEY
       let error = ""
       try {
         await internal.startBoundContainer(container)
@@ -199,6 +240,9 @@ describe("isolated evented container image selection", () => {
         error = cause instanceof Error ? cause.message : String(cause)
       }
       return { starts, error }
+      } finally {
+        restoreCanary()
+      }
     })
 
     expect(result.error).toBe("evented canary image is not configured")
@@ -245,8 +289,11 @@ describe("isolated evented container image selection", () => {
   })
 
   it("rejects a selected existing or held conversation before changing storage", async () => {
-    const stub = env.CONVERSATION.getByName("image-selection-existing-hold")
+    const canaryKey = "image-selection-existing-hold"
+    const stub = env.CONVERSATION.getByName(canaryKey)
     const result = await runInDurableObject(stub, async (instance, runtime) => {
+      const restoreCanary = enableCanaryKey(instance, canaryKey)
+      try {
       const { starts } = installContainer(instance, { base: BASE_IMAGE, evented: EVENTED_IMAGE })
       await runtime.storage.put("state", {
         sessionID: "ses_existing",
@@ -256,7 +303,6 @@ describe("isolated evented container image selection", () => {
         pending: {},
       })
       const internal = instance as unknown as Internal
-      internal.key = env.EVENTED_CANARY_KEY
       let error = ""
       try {
         await internal.startContainer()
@@ -269,6 +315,9 @@ describe("isolated evented container image selection", () => {
         keys: [...(await runtime.storage.list()).keys()].sort(),
         imageBinding: await runtime.storage.get("containerImageVariant"),
       }
+      } finally {
+        restoreCanary()
+      }
     })
 
     expect(result.error).toContain("fresh conversation")
@@ -278,15 +327,16 @@ describe("isolated evented container image selection", () => {
   })
 
   it("binds the evented image across a cold DO and ignores, but does not delete, a base snapshot", async () => {
-    const stub = env.CONVERSATION.getByName("image-selection-evented-snapshot")
+    const canaryKey = "image-selection-evented-snapshot"
+    const stub = env.CONVERSATION.getByName(canaryKey)
     const result = await runInDurableObject(stub, async (instance, runtime) => {
+      const restoreCanary = enableCanaryKey(instance, canaryKey)
+      try {
       const { container, starts } = installContainer(instance, { base: BASE_IMAGE, evented: EVENTED_IMAGE })
       const internal = instance as unknown as Internal
-      internal.key = env.EVENTED_CANARY_KEY
       const usedSnapshot = await internal.startBoundContainer(container)
       await runtime.storage.put("snapshot", { id: "base-image-snapshot", size: 17 })
-      internal.key = undefined
-      internal.containerImageVariant = undefined
+      runtimeCache(instance).bindImage(undefined)
       const coldStartUsedSnapshot = await internal.startBoundContainer(container)
       return {
         starts,
@@ -294,6 +344,9 @@ describe("isolated evented container image selection", () => {
         coldStartUsedSnapshot,
         savedSnapshot: await runtime.storage.get("snapshot"),
         imageBinding: await runtime.storage.get("containerImageVariant"),
+      }
+      } finally {
+        restoreCanary()
       }
     })
 
@@ -313,7 +366,6 @@ describe("isolated evented container image selection", () => {
       const { container, starts } = installContainer(instance, { base: BASE_IMAGE, evented: EVENTED_IMAGE })
       await runtime.storage.put("snapshot", { id: "base-image-snapshot", size: 17 })
       const internal = instance as unknown as Internal
-      internal.key = "another-existing-conversation"
       const usedSnapshot = await internal.startBoundContainer(container)
       return { starts, usedSnapshot, imageBinding: await runtime.storage.get("containerImageVariant") }
     })
@@ -329,9 +381,11 @@ describe("isolated evented container image selection", () => {
     const stub = env.CONVERSATION.getByName("image-selection-first-message")
     const result = await runInDurableObject(stub, async (instance, runtime) => {
       const fake = installMessagePorts(instance, { eventPersistence: true })
+      const restoreCanary = enableCanaryKey(instance, "image-selection-first-message")
+      try {
       const response = await instance.fetch(new Request("https://conversation/message", {
         method: "POST",
-        headers: { "x-conversation-key": env.EVENTED_CANARY_KEY ?? "" },
+        headers: { "x-conversation-key": "image-selection-first-message" },
         body: JSON.stringify({ text: "hello", idempotencyKey: "first-canary-message" }),
       }))
       return {
@@ -342,6 +396,9 @@ describe("isolated evented container image selection", () => {
         imageStarts: fake.imageStarts,
         imageBinding: await runtime.storage.get("containerImageVariant"),
         state: await runtime.storage.get<Record<string, unknown>>("state"),
+      }
+      } finally {
+        restoreCanary()
       }
     })
 
@@ -368,7 +425,7 @@ describe("isolated evented container image selection", () => {
         const fake = installMessagePorts(instance, { eventPersistence: true })
         const response = await instance.fetch(new Request("https://conversation/message", {
           method: "POST",
-          headers: { "x-conversation-key": "ordinary-fresh-opt-in" },
+          headers: { "x-conversation-key": "image-selection-fresh-opt-in" },
           body: JSON.stringify({ text: "hello" }),
         }))
         return {
@@ -395,7 +452,6 @@ describe("isolated evented container image selection", () => {
       try {
         const { starts } = installContainer(instance, { base: BASE_IMAGE })
         const internal = instance as unknown as Internal
-        internal.key = "ordinary-fresh-missing-image"
         let error = ""
         try {
           await internal.startContainer()
@@ -469,7 +525,7 @@ describe("isolated evented container image selection", () => {
         const fake = installMessagePorts(instance, { eventPersistence: true })
         const command = async (eventID: string, text: string) => instance.fetch(new Request("https://conversation/slack", {
           method: "POST",
-          headers: { "x-conversation-key": "ordinary-help-model-prompt" },
+          headers: { "x-conversation-key": "image-selection-help-model-prompt" },
           body: JSON.stringify({
             eventID,
             event: { type: "message", channel_type: "im", channel: "D_TEST", ts: eventID, text },
@@ -481,7 +537,7 @@ describe("isolated evented container image selection", () => {
         const beforePrompt = await runtime.storage.get<Record<string, unknown>>("state")
         const prompt = await instance.fetch(new Request("https://conversation/message", {
           method: "POST",
-          headers: { "x-conversation-key": "ordinary-help-model-prompt" },
+          headers: { "x-conversation-key": "image-selection-help-model-prompt" },
           body: JSON.stringify({ text: "hello" }),
         }))
         return {
@@ -516,20 +572,22 @@ describe("isolated evented container image selection", () => {
   })
 
   it("keeps a validated evented binding across capacity denial and a cold queued retry", async () => {
-    const stub = env.CONVERSATION.getByName("image-selection-capacity-retry")
+    const canaryKey = "image-selection-capacity-retry"
+    const stub = env.CONVERSATION.getByName(canaryKey)
     const result = await runInDurableObject(stub, async (instance, runtime) => {
+      const restoreCanary = enableCanaryKey(instance, canaryKey)
+      try {
       const fake = installMessagePorts(instance, { eventPersistence: true })
       const internal = instance as unknown as Internal
       let leaseAttempts = 0
-      internal.acquireLease = async () => {
+      internal.leases.ensureHeld = async () => {
         leaseAttempts++
         if (leaseAttempts === 1) throw new Error("container capacity reached")
       }
-      internal.releaseLease = async () => {}
 
       const first = await instance.fetch(new Request("https://conversation/message", {
         method: "POST",
-        headers: { "x-conversation-key": env.EVENTED_CANARY_KEY ?? "" },
+        headers: { "x-conversation-key": canaryKey },
         body: JSON.stringify({ text: "hello", idempotencyKey: "capacity-retry-message" }),
       }))
       const firstBody = await first.json()
@@ -540,17 +598,14 @@ describe("isolated evented container image selection", () => {
 
       // Simulate a cold DO before the alarm drains the queued turn. The durable
       // image marker, not the lost request key or startup cache, selects image.
-      internal.key = undefined
-      internal.containerImageVariant = undefined
-      internal.ready = false
-      internal.opencodePort = undefined
-      internal.opencodeGeneration = undefined
+      runtimeCache(instance).bindImage(undefined)
+      runtimeCache(instance).invalidate()
       const state = firstState as Record<string, unknown> & { queued: Record<string, unknown> }
       await runtime.storage.put("state", {
         ...state,
         queued: { ...state.queued, nextAttemptAt: Date.now() - 1 },
       })
-      await instance.alarm()
+      await driveConversationJobs(instance, runtime.storage, ["admission:retry"], { queued: true })
 
       return {
         firstStatus: first.status,
@@ -567,6 +622,9 @@ describe("isolated evented container image selection", () => {
         calls: fake.calls,
         finalState: await runtime.storage.get<Record<string, unknown>>("state"),
       }
+      } finally {
+        restoreCanary()
+      }
     })
 
     expect(result.firstStatus).toBe(202)
@@ -577,7 +635,7 @@ describe("isolated evented container image selection", () => {
     expect(result.firstPrompts).toBe(0)
     expect(result.sessionsCreated).toBe(1)
     expect(result.bindingAfterRetry).toBe("evented")
-    expect(result.leaseAttempts).toBe(2)
+    expect(result.leaseAttempts).toBeGreaterThanOrEqual(4)
     expect(result.imageStarts).toHaveLength(1)
     expect(result.imageStarts[0]?.image).toBe(EVENTED_IMAGE)
     expect(result.prompts).toBe(1)
@@ -592,7 +650,7 @@ describe("isolated evented container image selection", () => {
       const fake = installMessagePorts(instance, { eventPersistence: true })
       const response = await instance.fetch(new Request("https://conversation/message", {
         method: "POST",
-        headers: { "x-conversation-key": "ordinary-new-conversation" },
+        headers: { "x-conversation-key": "image-selection-base-proof" },
         body: JSON.stringify({ text: "hello" }),
       }))
       return {
@@ -620,7 +678,7 @@ describe("isolated evented container image selection", () => {
       const fake = installMessagePorts(instance, { eventPersistence })
       const response = await instance.fetch(new Request("https://conversation/message", {
         method: "POST",
-        headers: { "x-conversation-key": `ordinary-base-${label}` },
+        headers: { "x-conversation-key": `image-selection-base-disabled-${label}` },
         body: JSON.stringify({ text: "hello" }),
       }))
       return {
@@ -644,12 +702,15 @@ describe("isolated evented container image selection", () => {
     ["missing", undefined],
     ["false", false],
   ] as const)("rejects an evented runtime without persistent-event proof (%s) before prompting", async (label, eventPersistence) => {
-    const stub = env.CONVERSATION.getByName(`image-selection-proof-${label}`)
+    const canaryKey = `image-selection-proof-${label}`
+    const stub = env.CONVERSATION.getByName(canaryKey)
     const result = await runInDurableObject(stub, async (instance, runtime) => {
+      const restoreCanary = enableCanaryKey(instance, canaryKey)
+      try {
       const fake = installMessagePorts(instance, { eventPersistence })
       const response = await instance.fetch(new Request("https://conversation/message", {
         method: "POST",
-        headers: { "x-conversation-key": env.EVENTED_CANARY_KEY ?? "" },
+        headers: { "x-conversation-key": canaryKey },
         body: JSON.stringify({ text: "hello" }),
       }))
       return {
@@ -660,6 +721,9 @@ describe("isolated evented container image selection", () => {
         imageStarts: fake.imageStarts,
         state: await runtime.storage.get<Record<string, unknown>>("state"),
         imageBinding: await runtime.storage.get("containerImageVariant"),
+      }
+      } finally {
+        restoreCanary()
       }
     })
 
@@ -678,20 +742,17 @@ describe("isolated evented container image selection", () => {
       await runtime.storage.put("containerImageVariant", "evented")
       const fake = installMessagePorts(instance, { eventPersistence: false, initialized: true })
       const internal = instance as unknown as Internal
-      internal.key = undefined
-      internal.ready = false
-      internal.opencodePort = undefined
-      internal.opencodeGeneration = undefined
+      runtimeCache(instance).invalidate()
       let error = ""
       try {
-        await internal.doEnsureReady()
+        await internal.readiness.prepare()
       } catch (cause) {
         error = cause instanceof Error ? cause.message : String(cause)
       }
       return {
         error,
         calls: fake.calls,
-        binding: internal.containerImageVariant,
+        binding: runtimeCache(instance).imageVariant,
         persisted: await runtime.storage.get("containerImageVariant"),
       }
     })

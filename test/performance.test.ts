@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
 import { usageLogResponse } from "./helpers/usage-log"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
+import { driveConversationJobs } from "./helpers/conversation-jobs"
 
 /**
  * Hot-path regression: the readiness handshake (status → configure → start →
@@ -92,7 +93,7 @@ function fakeContainer(counters: Counters) {
 describe("container readiness", () => {
   it("handshakes once, not once per container call", async () => {
     const stub = env.CONVERSATION.getByName("C1:perf")
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDurableObject(stub, async (instance, state) => {
       const counters: Counters = { status: 0, configure: 0, start: 0, prompt: 0, health: 0 }
       instance.transport = fakeContainer(counters)
 
@@ -101,7 +102,7 @@ describe("container readiness", () => {
         new Request("https://conversation/message", { method: "POST", body }),
       )
       // Let the first turn settle so the second message is admitted, not queued.
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["turn:observe"])
       const second = await instance.fetch(
         new Request("https://conversation/message", { method: "POST", body }),
       )

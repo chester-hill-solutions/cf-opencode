@@ -102,8 +102,7 @@ function conversationInternals(instance: Conversation) {
   return instance as unknown as {
     ctx: { id: { toString(): string } }
     transport?: (port: number) => { fetch(input: Request | string | URL): Promise<Response> }
-    refreshUsageFromLog(sessionID: string): Promise<void>
-    recordContextUsage(messages: unknown[]): Promise<void>
+    usage: { recordContext(messages: unknown[]): Promise<void>; refresh(sessionID: string): Promise<void> }
   }
 }
 
@@ -358,7 +357,7 @@ describe("accounting cutover", () => {
           source: "title", cost: 0.25, tokens: { input: 5, output: 1 },
         }),
       ]
-      await internals.refreshUsageFromLog("ses_cutover")
+      await internals.usage.refresh("ses_cutover")
       const nextState = await state.storage.get<{ usageCursor?: { seq: number } }>("state")
       const current = await runInDurableObject(settings(), async (_settings, storage) =>
         storage.storage.get<{ costUSD: number; input: number; output: number; sourced?: boolean }>(
@@ -443,7 +442,7 @@ describe("accounting cutover", () => {
         seen: [],
         pending: {},
       })
-      await internals.recordContextUsage([{ id: "assistant-cutover", type: "assistant", cost: 0.4 }])
+      await internals.usage.recordContext([{ id: "assistant-cutover", type: "assistant", cost: 0.4 }])
       return {
         conversationID,
         local: await state.storage.get<{ usageCursor?: { sessionID: string; seq: number } }>("state"),

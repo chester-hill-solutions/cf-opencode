@@ -32,6 +32,8 @@ export interface SlackTarget {
 
 /** One admission held while the container could not accept it. */
 export interface QueuedMessage {
+  /** Stable owner fence for its Lifecycle admission/retry intent. */
+  id?: string
   text: string
   slack?: SlackTarget
   attempts: number
@@ -104,6 +106,10 @@ export interface ConversationState {
   settingsVersion?: number
   /** One pending admission when the container could not start. */
   queued?: QueuedMessage
+  /** Stable fence for a pre-dispatch admission recovery wake. */
+  admissionID?: string
+  /** When the current admission claimed the phase, for stale recovery. */
+  admissionStartedAt?: number
   /** Owned Settings hold for the current turn, if one has been acquired. */
   budgetReservation?: BudgetReservation
   /** Durable local pointer to the last acknowledged operator reconciliation receipt. */
@@ -122,6 +128,12 @@ export interface ConversationState {
   checkpointPending?: boolean
   /** Retry count for a pending checkpoint. */
   checkpointAttempts?: number
+  /** Earliest safe retry time for a failed checkpoint. */
+  checkpointRetryAt?: number
+  /** Last bounded lifecycle callback failure, retained for operator visibility. */
+  lifecycleJobError?: { kind: string; message: string; at: number }
+  /** Alarm memory-limit seal: resume requires guarded recovery retry or reset. */
+  lifecycleJobsSealed?: boolean
   /** Size of the last successful checkpoint, for cost tracking. */
   checkpointSize?: number
   /** The terminal error of the last turn, kept for status output. */
@@ -328,6 +340,8 @@ export class ConversationStore {
         next: {
           ...state,
           phase: "admitting",
+          admissionID: undefined,
+          admissionStartedAt: undefined,
           budgetReservation: { ...reservation, dispatched: true },
           runStartedAt: Date.now(),
           turnBaseline,

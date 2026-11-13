@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
 import { usageLogResponse } from "./helpers/usage-log"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
+import { driveConversationJobs } from "./helpers/conversation-jobs"
 
 function fakeContainer(promptFailure = false, contextMessages: unknown[] = []) {
   const counters = { prompts: 0 }
@@ -47,6 +48,17 @@ function fakeContainer(promptFailure = false, contextMessages: unknown[] = []) {
 }
 
 const settings = () => env.SETTINGS.getByName("global")
+
+async function runLegacyBootstrap(instance: { fetch(request: Request): Promise<Response>; alarm(): Promise<void> }, storage: DurableObjectStorage) {
+  await (await instance.fetch(new Request("https://conversation/health"))).text()
+  storage.sql.exec(
+    "UPDATE cf_agents_jobs SET time = ?, running = 0, execution_started_at = NULL WHERE id = ? AND capability = ?",
+    Date.now(),
+    "legacy:bootstrap",
+    "conversation-jobs",
+  )
+  await instance.alarm()
+}
 
 async function post(path: string, body: unknown): Promise<Response> {
   return settings().fetch(`https://settings${path}`, {
@@ -175,7 +187,7 @@ describe("HTTP budget admission", () => {
       }
       // A poll alarm can fire while prompt() is still waiting. It must rearm
       // recovery instead of consuming the only restart path.
-      await instance.alarm()
+      await driveConversationJobs(instance, runtime.storage, ["turn:observe"])
       const rearmedAlarm = await runtime.storage.getAlarm()
       finishPrompt()
       const response = await responsePromise
@@ -214,13 +226,14 @@ describe("HTTP budget admission", () => {
 
     expect(result.status).toBe(503)
     expect(result.prompts).toBe(0)
-    expect(result.state.budgetReservation).toMatchObject({ dispatched: false })
+    expect(result.state.budgetReservation?.dispatched ?? false).toBe(false)
   })
 
   it("resumes an old dispatched turn without replacing its baseline or start time", async () => {
     const stub = env.CONVERSATION.getByName("C1:http-budget-old-dispatch")
     const startedAt = Date.now() - 1_000
     await runInDurableObject(stub, async (_instance, state) => {
+      await state.storage.setAlarm(Date.now() - 1)
       await state.storage.put("state", {
         phase: "idle",
         runStartedAt: startedAt,
@@ -255,8 +268,8 @@ describe("HTTP budget admission", () => {
       return { status: response.status, state, prompts: fake.counters.prompts }
     })
 
-    const afterOldAssistantPoll = await runInDurableObject(stub, async (instance) => {
-      await instance.alarm()
+    const afterOldAssistantPoll = await runInDurableObject(stub, async (instance, runtime) => {
+      await driveConversationJobs(instance, runtime.storage, ["turn:observe"])
       return await (await instance.fetch(new Request("https://conversation/state"))).json() as {
         phase?: string
         runStartedAt?: number
@@ -278,6 +291,7 @@ describe("HTTP budget admission", () => {
     const stub = env.CONVERSATION.getByName("C1:http-budget-crash-after-marker")
     const startedAt = Date.now() - 1_000
     await runInDurableObject(stub, async (_instance, state) => {
+      await state.storage.setAlarm(Date.now() + 60_000)
       await state.storage.put("state", {
         phase: "admitting",
         runStartedAt: startedAt,
@@ -289,7 +303,7 @@ describe("HTTP budget admission", () => {
       })
     })
 
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDurableObject(stub, async (instance, runtime) => {
       const fake = fakeContainer(false, [{
         id: "old-assistant",
         type: "assistant",
@@ -298,7 +312,8 @@ describe("HTTP budget admission", () => {
         content: [{ type: "text", text: "previous answer" }],
       }])
       instance.transport = fake.transport
-      await instance.alarm()
+      await runLegacyBootstrap(instance, runtime.storage)
+      await driveConversationJobs(instance, runtime.storage, ["turn:observe"])
       const state = await (await instance.fetch(new Request("https://conversation/state"))).json() as {
         phase?: string
         runStartedAt?: number
@@ -324,6 +339,7 @@ describe("HTTP budget admission", () => {
       costUSD: 0.1,
     })
     await runInDurableObject(stub, async (_instance, state) => {
+      await state.storage.setAlarm(Date.now() + 60_000)
       await state.storage.put("state", {
         phase: "running",
         runStartedAt: Date.now() - 16 * 60_000,
@@ -344,8 +360,9 @@ describe("HTTP budget admission", () => {
         content: [{ type: "text", text: "previous answer" }],
       }])
       instance.transport = fake.transport
-      await instance.alarm()
-      await instance.alarm()
+      await runLegacyBootstrap(instance, state.storage)
+      await driveConversationJobs(instance, state.storage, ["turn:observe"])
+      await driveConversationJobs(instance, state.storage, ["turn:observe"])
       const current = await (await instance.fetch(new Request("https://conversation/state"))).json() as {
         phase?: string
         runStartedAt?: number

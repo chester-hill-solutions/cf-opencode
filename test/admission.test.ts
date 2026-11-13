@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
 import { usageLogResponse } from "./helpers/usage-log"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
+import { driveConversationJobs } from "./helpers/conversation-jobs"
 
 /**
  * Two messages arriving together must admit exactly one turn and queue the
@@ -90,7 +91,7 @@ async function state(instance: { fetch(request: Request): Promise<Response> }) {
 describe("simultaneous admissions", () => {
   it("admits one message, queues the other, and drains after the turn", async () => {
     const stub = env.CONVERSATION.getByName("C1:simultaneous")
-    await runInDurableObject(stub, async (instance) => {
+    await runInDurableObject(stub, async (instance, runtime) => {
       const fake = fakeContainer()
       instance.transport = fake.transport
 
@@ -101,11 +102,11 @@ describe("simultaneous admissions", () => {
 
       // The first turn completes and settles.
       fake.answer()
-      await instance.alarm()
+      await driveConversationJobs(instance, runtime.storage, ["turn:observe"])
       expect((await state(instance)).phase).toBe("idle")
 
       // The queued message starts on the next alarm.
-      await instance.alarm()
+      await driveConversationJobs(instance, runtime.storage, ["admission:retry"], { queued: true })
       expect(fake.counters.prompts).toBe(2)
       expect((await state(instance)).queued).toBeUndefined()
     })

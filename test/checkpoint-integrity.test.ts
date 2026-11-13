@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
+import { driveConversationJobs } from "./helpers/conversation-jobs"
 import { usageLogResponse } from "./helpers/usage-log"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
 
@@ -115,7 +116,7 @@ describe("checkpoint integrity", () => {
       const sent = await send(instance, "hello")
       expect(sent.status).toBe(200)
 
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["turn:observe"])
 
       const saved = await state.storage.get<{
         checkpointFingerprint?: string
@@ -156,7 +157,7 @@ describe("checkpoint integrity", () => {
       const fake = fakeContainer()
       instance.transport = fake.transport
       expect((await send(instance, "hello")).status).toBe(200)
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["turn:observe"])
       return { since: fake.since }
     })
 
