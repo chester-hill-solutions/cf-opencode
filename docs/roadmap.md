@@ -3,9 +3,15 @@
 **Product name:** **Aboiteau** — an Acadian tidal gate that lets the useful tide in and keeps the
 destructive one out, which is roughly the job of a sandbox boundary.
 
-**Product statement:** a multi-tenant, self-onboarding sandbox platform for coding agents. A team
-installs it into their own Cloudflare account (or ours), connects a repo and a model, and gets an
-agent in Slack and over HTTP that runs in an isolated, configurable sandbox.
+**Product statement:** an operator-owned, durable coding-agent execution service on Cloudflare.
+A team installs it in its own account, connects a repository and provider, and drives continuing
+work through a public API or connectors. Slack is the first connector. OpenCode remains the
+execution runtime; the service owns admission, persistence, accounting and recovery.
+
+**Advantage to prove:** another application can integrate reliably, and its operator can deploy,
+upgrade and recover the service with little intervention. Ownership and lifecycle handling are
+implemented strengths; lower operating effort, lower cost and better coding outcomes remain
+measurement questions. Tenant and credential isolation remain release gates, not current claims.
 
 **Assumptions**
 
@@ -15,100 +21,49 @@ agent in Slack and over HTTP that runs in an isolated, configurable sandbox.
   validation path. Historical local container runs do not replace deployed-runtime checks.
 - The commercial bet is the self-hosted / own-account segment, not a feature race with Devin or Cursor.
   If that bet changes, R2–R3 change; R0–R1 do not.
+- One team per Cloudflare account is the first pilot topology. Preserve the tenant → agent identity
+  model and G1 isolation requirements; managed shared hosting, billing and commercial signup are
+  later work. Installing Slack is never required to deploy or use the public execution API.
+- Pre-customer hard cuts are permitted (product-owner decision, 2026-11-12).
+  Prefer one supported path over legacy copy jobs, dual-run deployments or compatibility
+  adapters. Update internal clients and wiring together; reject unsupported old state
+  explicitly. Name operator data to retain or intentionally reset before an actual cutover.
+  Current-format recovery, isolation and truthful accounting remain required.
 
-**Decision gates.** Each release ends with a gate. A failed gate stops the next release, not the whole
-roadmap.
+**Decision gates.** G0/G1/G1-C/G2 control dependent rollout milestones. A failed
+gate blocks the corresponding expansion, not independent design or disposable
+fixture work. G3 is an entry decision before broad sandbox investment, using
+controlled pilot evidence even when G2 remains open.
 
-**Local repair update — 2026-11-11.** R0-10, R0-13 and R0-14 now pass their local
-regressions and the full local gate. The original audit 30/31 reproductions are fixed,
-but R0-11 remains partial. F1 now includes source accounting, foreground-only runtime
-policy, execution-completion fences and previewed legacy cutover. Scoped F2 now adds
-passive recovery inspection, safe pre-dispatch cancellation, alarm-only recovery
-retry and permanent reservation retirement (371 tests in the latest gate).
-Actual accounting cutover, deployed-container verification and unprovable
-legacy/orphan/manual reconciliation cases remain open. Legacy opening balances remain
-explicitly unreconciled with historical bills. Audit 32's trusted-repository
-documentation/probe evidence is recorded; credential isolation and G1 remain open. G0
-remains open pending deployed/container and real Slack/HTTP/model task validation. See the
-[audit status and evidence](production-audit.md#local-repair-verification--2026-11-11)
-and [local regressions and limits](testing.md#local-repair-verification--2026-11-11).
+## Current gate ledger
 
-**Slack connection update — 2026-11-11.** With operator approval, the existing
-OpenCode app in Team Nate uses the production Worker's verified HTTP event and
-interaction URLs, with Socket Mode off. Mention, DM and engaged-thread event
-subscriptions are saved. The credential-preserving restart fix is deployed and
-a real HTTP model reply was observed, but accounting settlement did not identify
-the corresponding execution/terminal events because stock CLI 2.2.5 does not
-persist Bus events (`persist:false`). Its sequence 11 cursor is only a watermark,
-not unrecognized event rows. The published server API supports event persistence,
-and a custom Bun entrypoint was implemented and first verified on isolated canary
-`event-retention-canary-20261111-02`. Its fresh HTTP task returned `READY` with
-terminal usage evidence and exact ledger acknowledgement. With separate user
-approval, fresh-conversation routing was enabled and the approved `#arfin-test`
-thread passed `!help`, `!new`, `!model`, a text reply, question Continue and
-permission approval. The task requested `SLACK_READY`; the final response
-matched. The two older `$0.10` holds remain for operator/manual reconciliation;
-do not auto-zero them. The operator approved a temporary cap of 3, including its
-incremental runtime cost, until S8 reconciliation. Settings version 7 was verified
-with two held runtimes and one available slot. Restore the cap to 2 after S8 safely
-frees the held runtimes. G0 text-reply/button evidence is passed; the wider product
-goal remains open for S8 and S10 image handling. See the
-[connection record](runbook.md#slack-connection--2026-11-11) and
-[current usability evidence](plans/slack-usability.md#current-evidence).
+Updated: 2026-11-12. Status reflects recorded evidence and the active checkout;
+this planning revision did not rerun deployments, provider tasks or live recovery.
+Historical checkpoints are preserved in the [evidence history](plans/roadmap-evidence-2026-11-11.md).
+Update this table with an evidence link when a gate changes; keep operational
+receipts and test counts in their owning plan/runbook rather than appending status narratives here.
 
-**Slack usability follow-up.** The deployed bot's `!help`, `!usage` and model
-catalogue commands have been verified in the operator's DM. The paid model key is
-connected and persisted across a real settings restart. A fresh HTTP conversation
-answered `READY` with reported cost `$0.0017703`, but its usage replay failed to
-reconstruct execution and terminal events because the stock CLI Bus uses
-`persist:false`; sequence 11 is a watermark. Its hold remains, as does the
-separate `$0.10` hold from the Slack DM that failed with `provider.no-route`.
-Neither supports a zero-charge claim. A later isolated evented-image canary
-returned `READY` and its usage was acknowledged; that does not reconstruct the
-older turns. Fresh-conversation routing was enabled with separate approval. The
-operator-approved `#arfin-test` thread passed `!help`, `!new`, `!model`, a text
-reply, question Continue and permission approval. The two older holds remain for
-S8 manual reconciliation. An approved temporary third slot provides capacity for
-new work while the two older runtimes remain held. Slack image attachments remain
-planned under
-[S10](plans/slack-usability.md#s10--image-attachments-planned): authenticated image
-delivery, model capability checks and an explicit response with compatible-model
-suggestions when the selected model cannot read images. Selection stays unchanged
-until the user switches models and resubmits. See the
-[usability evidence](plans/slack-usability.md#current-evidence).
-
-**Initial assessment — 2026-11-11 (historical).** The initial 269-test snapshot reproduced
-checkpoint retention, budget reservation and malformed-input failures, and demonstrated
-that repository-executed code could read synthetic provider state under the shared
-identity. No fixes had been made at that assessment point. Later local repair evidence
-supersedes its open status for locally verified findings, not its credential or deployment
-limitations.
-
-**Next iteration:** [R0 reliability execution plan](plans/r0-reliability-iteration.md)
-keeps W1–W12 as reviewable slices, with W4a–W4c/W6a making broad edits manageable
-for Luna. Luna handles bounded implementation, tests and documentation; the parent
-locks decisions and integrates, with Terra/high for focused critical review. Targeted
-[source research](plans/r0-simplification-research.md) removed a broader reservation
-protocol from this pass. Local implementation and verification are complete for the stated
-repair scope. The [F1 follow-up](plans/r0-reliability-iteration.md#f1-accounting-follow-up--2026-11-11)
-adds verified local accounting repairs. The [policy/cutover follow-up](plans/r0-reliability-iteration.md#f1-policy-and-legacy-cutover--2026-11-11)
-implements the remaining local F1 contract. Scoped F2 recovery is also locally
-verified; R0-11 remains partial for unprovable legacy/manual cases and live
-cutover/container verification.
-Live validation has not started.
-
-**Latest scoped implementation:** [F2 held-turn recovery](plans/r0-held-turn-reconciliation.md)
-is implemented and reviewed locally, with Luna ownership for retirement, passive
-inspection, safe pre-dispatch cancellation and existing recovery retries. It adds
-no expiry or ambiguous prompt resend. Unprovable legacy/orphan cases remain
-explicit blockers; no live recovery action has run.
+| Deliverable / gate | Current evidence | Remaining uncertainty / next action | Owner |
+|---|---|---|---|
+| R0-1 deployment path | Coupled Worker/image deployment and evented canary are recorded in the [Slack evidence](plans/slack-usability.md#current-evidence) | Recheck reproducible Workers Builds path and staging upgrade/backout; prior “deployment blocked” status does not negate recorded deployments | operator + platform |
+| R0-2 / G0 tasks | HTTP and Slack text, question and permission round trips passed in the recorded evented rollout | Representative coding outcomes, injected-failure recovery and total cost per accepted task remain unverified | platform + operator |
+| R0-10/11/13/14 repairs | [Local F1/F2 repairs](plans/r0-reliability-iteration.md) and subsequent evented canary evidence exist | Retain per-case limits; no universal legacy-accounting or recovery claim | platform |
+| S8 reconciliation | [Completed approved retirements and original-DM migration](plans/operator-reconciliation.md); same session/history and a fresh reply verified; cap restored to 2 | No active holds in the recorded final check. One historical amount remains explicitly unknown; retain its permanent warning rather than treating it as zero | reconciliation owner + operator |
+| S10 Slack images | [Deployed and live verified](plans/slack-usability.md#s10--image-attachments): exact PNG interpretation and text-only-model refusal | First slice remains one PNG/JPEG up to 5 MiB with immediate admission; durable image queues and multiple attachments remain deferred | connector owner |
+| R0-15 workspace / recovery | [B2 native amd64 CI and C2 Cloudflare/R2 proof](plans/stow-workspace-integration.md): native startup, identity, bytes and content-type restore passed | Qualify additional S3 operations, unusual keys, multipart and active writers, then name the production cutover and retained/reset operator data | storage/runtime owner |
+| R0-16 public replay | [Implemented and locally verified](plans/execution-service-delivery.md#r0-16-implementation-record): forwarding, public replay/reset tests and legacy-state inspection | Production rollout and stronger R1-4 recovery/status guarantees remain separate | API owner |
+| R1 boundary / G1 | Per-conversation containers and optional namespacing exist; [boundary design](design/r1-agent-boundary.md) records credential/self-approval residual | Prove early egress feasibility, then scoped credentials, strict identity, quotas and cross-tenant failure probes | security + platform |
+| R1-4 caller contract / G1-C | HTTP messages, permissions and SSE exist | Stable turn identity, neutral questions/cancellation/status, public replay and non-Slack client conformance remain planned | API + connector owners |
+| R2 own-account pilot / G2 | Planned | Independent install, integration, repeat use and upgrade/rollback evidence required; Slack installation is optional | pilot owner + external teams |
+| R3 demand gate / G3 | No configuration-demand pilot recorded | Collect blocked workloads before committing to catalogue, sizing or template-editor projects | product owner |
 
 | Gate | Question | If no |
 |---|---|---|
-| G0 | Do real tasks complete and survive recovery, with verified budget admission and acceptable cost per turn? | Fix reliability before tenancy |
-| G1 | Can two tenants run concurrently without seeing each other? | No onboarding |
-| G2 | Do five external teams self-onboard without help? | Fix onboarding before sandbox |
-| G3 | Do tenants actually change image, size or network? | Sandbox is over-built; ship R4 |
+| G0 | Do representative coding tasks complete and survive defined failures, with correct admission/accounting and measured cost per accepted task? | Continue trusted-operator repairs; no broader rollout |
+| G1 | Do credential, egress and strict tenant boundaries hold, including resolver outages and repository-controlled probes? | No external or untrusted-workload rollout |
+| G1-C | Can a non-Slack client use stable turns, questions, permissions, cancellation, reconnect and recovery solely through the public API? | Fix the caller contract before external integration pilots |
+| G2 | Can five external teams install in their own accounts, integrate, repeat work, and upgrade/restore without builder intervention? | Fix installation and operation before expanding scope |
+| G3 | Before broad R3 investment, do pilot workloads demonstrate a need for specific image, size, workspace or network changes? | Retain supported presets and continue improving the execution service |
 
 ---
 
@@ -116,21 +71,24 @@ explicit blockers; no live recovery action has run.
 
 | Release | Theme | Outcome | Estimate | Gate |
 |---|---|---|---|---|
-| **R0** | Harness complete | Confirmed reliability defects closed; real Slack/HTTP tasks and recovery measured | 1–2 weeks | G0 |
-| **R1** | Tenancy foundations | Per-conversation containers, tenants, isolation, secrets | 3 weeks | G1 |
-| **R2** | Self-onboarding | A team signs up, installs, and runs a task unaided | 3–4 weeks | G2 |
-| **R3** | Configurable sandbox | Image, size, workspace, network and lifecycle chosen per sandbox | 4–5 weeks | G3 |
-| **R4** | Product | PR loop, Slack Code, billing, compliance, managed hosting | ongoing | — |
+| **R0** | Dependable existing stack | Bounded reconciliation/storage repairs; coding-task and recovery evidence | Re-estimate remaining live work | G0 |
+| **R1** | Safe execution service | Early boundary proof; scoped identity/credentials; stable caller contract and reference CLI | Re-estimate after boundary proof and contract inventory | G1 + G1-C |
+| **R2** | Own-account installation and operation | External teams install, integrate, repeat work and upgrade/restore unaided | Re-estimate after reference-client conformance | G2 |
+| **R3** | Demand-led sandbox options | Implement configuration changes justified by pilot workloads | Commit slices only after demand evidence | G3 before investment |
+| **R4** | Optional product expansion | Git review UI, connector ecosystem, billing, compliance, managed hosting | Unsized; separate demand decisions | — |
 
-Indicative calendar (holiday-aware): R0 Nov 9–20 · R1 Nov 23–Dec 11 · R2 Dec 14–Jan 15 · R3 Jan 18–Feb 19.
-These are planning assumptions, not verified delivery dates; re-estimate after R0-10/R0-11
-and the deployed-container checks.
+The earlier calendar and release estimates are superseded. Set dates after measuring the
+remaining R0 work, resolving the credential/egress feasibility proof and scoping the caller
+contract. Gate order constrains rollout, not all development: contract design, disposable
+fixtures and reference-client work may proceed while live checks await their prerequisites.
 
 **Sequencing note.** The current configuration already selects `durable_object`, and the
 code implements per-conversation containers, snapshots, inactivity handling and global leases.
 Deployment/cutover verification remains in R1-2/R1-3; configuration alone does not close G1.
-R3 adds configurability. Audit finding 24 (extract `ContainerRuntime` / `EventStream`) stays
-in R1-4, after the reliability regressions protect the existing behavior.
+R1-4 now owns the caller contract and non-Slack proof as bounded slices, followed by audit 24's
+extraction of existing `ContainerRuntime` / `EventStream` responsibilities under regressions.
+It does not add a job engine or new runtime. R3 adds only demonstrated configurability.
+See the [execution-service delivery plan](plans/execution-service-delivery.md).
 
 ## Runtime direction — retain the current stack
 
@@ -158,11 +116,11 @@ Borrow useful AgentOS concepts through the existing stack and release sequence:
 
 | Improvement | Existing work | Reviewable outcome |
 |---|---|---|
-| Inspectable work | R1-3/R1-4 lifecycle/events; R2-4 admin surface | Stable turn/job references, runtime generation, running/finished/interrupted/unknown status, bounded replayable output and explicit cancellation results. Retain OpenCode's job/process ownership. |
+| Inspectable work | R1-3/R1-4 caller contract and reference client; R2-4 consumes it | Stable turn references, runtime generation, running/finished/interrupted/unknown status, bounded replayable output and explicit cancellation results. Retain OpenCode's job/process ownership. |
 | Clear recovery status | R0 recovery evidence; R1-3 lifecycle; R3-6 configurable policy | Show the last verified checkpoint and what was restored; distinguish recovered files/history from interrupted processes and uncertain side effects. |
 | Scoped capabilities | R1-7 credential injection and egress | Enforce access outside repository execution; keep provider/git credentials outside that boundary and verify using repository-controlled probes. |
 | Explicit resource limits | R1-8 quotas; R2-4 visibility; R3-9 per-sandbox controls | Bounded storage, output and execution lifetimes, with a named limit, observed usage and actionable warning/failure. Keep model admission estimates distinct from enforced caps. |
-| Reproducible configuration | R3-1/R3-8 SandboxSpec and rollout | Record the applied configuration per turn and show saved versus running versions. |
+| Reproducible configuration | R1-4 applied identity; R3-1/R3-8 configurable policy if demanded | Record credential-free applied settings/image/runtime identity per turn now; add validated SandboxSpec changes and saved-versus-running controls only when required. |
 
 These are planned acceptance details, not claims of implemented job APIs or closed
 release gates. Apply each through a bounded slice of its owning ticket; do not delay
@@ -186,7 +144,7 @@ dependency or delivery date to R0–R3.
 
 ---
 
-## R0 — Harness complete (current work)
+## R0 — Dependable existing stack (current work)
 
 **Goal:** fix the reproduced reliability defects, then prove task completion, recovery and
 cost with a real container. Keep the first rollout scoped to a trusted operator and trusted
@@ -194,10 +152,10 @@ repositories until R1-7 removes long-lived credentials from repository execution
 
 | ID | Ticket | Size | Owner | Status |
 |---|---|---|---|---|
-| R0-1 | Connect Workers Builds (root `.`, `bun install`, `npx wrangler deploy`) | S | user | recorded **blocked**; deployment status not rechecked on Nov 11 |
-| R0-2 | Real Slack/HTTP tasks with observable outcomes; verify settle, files, restore and model usage | S | agent | blocked on R0-1 and remaining R0-11 work; same-workspace/S3 task claims additionally require R0-15; R0-10/R0-13 local prerequisites verified |
-| R0-3 | `bench/measure.ts` + `bench/container.sh`: cold start, checkpoint size/time, restore, turn latency | S | agent | blocked on R0-1/R0-2 for live task measurements |
-| R0-4 | Slack cutover: Event Subscriptions + Interactivity URLs, Socket Mode off, stop launchd bot | S | both | **partial**; app switched, engaged-thread replies enabled, old bot unloaded/disabled; help/usage/catalogue and text reply verified; question Continue and permission approval passed; two older holds remain for S8; temporary third slot approved and verified available for new work; image attachments unimplemented; broader product goal remains open |
+| R0-1 | Verify reproducible Worker/image build, staging upgrade and backout; retain Workers Builds setup where needed | S | user + agent | **partial**; deployed canary recorded; reproducible build/staging rehearsal remains open |
+| R0-2 | Representative coding tasks through Slack/HTTP; verify accepted changes, checks, restore, model usage and interventions | M | agent | **partial**; text/question/permission canaries passed; coding-task and failure-recovery matrix open; storage-dependent evidence requires R0-15 |
+| R0-3 | Extend `bench/measure.ts` + `bench/container.sh`: cold/warm latency, checkpoint/restore, recovery time, interventions and total cost per accepted task | M | agent | simple-turn instrumentation exists; representative outcomes and operating-cost baseline open |
+| R0-4 | Slack cutover: Event Subscriptions + Interactivity URLs, Socket Mode off, stop launchd bot | S | both | **done for the scoped trusted-operator cutover**; commands, replies, question/permission controls and images verified; S8 retired both approved holds, preserved the original DM and restored cap 2. One accepted historical unknown remains visible. This does not close G0 or the broader product gates |
 | R0-5 | Audit 22: explicit conversation state machine (`idle → admitting → running → settling → idle`, guarded transitions) | M | agent | **done** |
 | R0-6 | Audit cluster 1: performance pass (hot paths, SSE fan-out, R2 sizes) | S | agent | **done** (findings 25–28) |
 | R0-7 | Finish audit 23: turn latency, queue depth, checkpoint bytes, failure classes | M | agent | **done** (OTel export deferred) |
@@ -209,6 +167,7 @@ repositories until R1-7 removes long-lived credentials from repository execution
 | R0-13 | Audit 33: controlled 400 responses for malformed JSON/body shapes across HTTP JSON routes | S | agent | **done locally**; deployed verification remains open |
 | R0-14 | Retain the assessment reproductions as regression tests; cover retention, queue recovery, concurrent reservations and malformed input | M | agent | **done locally**; broader G0 criteria remain open |
 | R0-15 | Native Stow Workspace startup/readiness/identity and disk ↔ S3 plus encrypted R2-only cold recovery; legacy retention only for named operator data | M | agent | **B2/C2 bounded proofs passed**; native amd64 CI and isolated Cloudflare recovery verified. Production cutover, further S3 operations, unusual keys, multipart and active writers remain open in the [canonical plan](plans/stow-workspace-integration.md) |
+| R0-16 | Forward the public SSE reconnect cursor; regress replay, expired-cursor reset and recovery from current status | S | agent | **implemented and locally verified**; route/README/public tests pass the integrated gate. State inspection remains separate from replay; production rollout and the stronger R1-4 recovery contract remain open |
 
 **Exit criteria**
 
@@ -217,6 +176,11 @@ repositories until R1-7 removes long-lived credentials from repository execution
   relevant checks pass, and changes survive a container restart); report successes/total,
   model/version, cold/warm conditions, latency and provider-reported cost.
 - Cold start, checkpoint and restore numbers exist in `bench/RESULTS.md`.
+- Freeze representative tasks, observable acceptance, fault cases, runtime/model versions and
+  numeric evaluation thresholds before live execution; report successes/total, retry/intervention
+  counts, recovery time and known versus unknown costs. A `READY` reply is a connectivity check.
+- Public SSE reconnect after event N returns later events only; expired history yields an explicit
+  reset and a documented current-state recovery path. No reconnect automatically resends a prompt.
 - R0-15 proves direct files and S3 use the same registered Workspace, with reported
   readiness configuration and no lost supported data after R2-only cold recovery.
   Preserve OpenCode state and Git data; full-disk snapshots cannot substitute for this check.
@@ -230,18 +194,19 @@ repositories until R1-7 removes long-lived credentials from repository execution
 - Audit 32 remains an explicit trusted-operator/trusted-repository limitation until R1-7;
   no untrusted-repository or tenant-isolation claim before G1. Audit 24 stays in R1-4.
 
-**Verification limits:** the boundary design records a historical local image build/run on
-Nov 7. The Nov 11 assessment could not rerun it because Docker was unavailable, and did not
-verify deployed containers, live Slack/OAuth, model effectiveness or cost. R0-1 remains the
-recorded deployment dependency; local retention, budget and input regressions can proceed
-without it. The settings browser checks used synthetic API responses.
+**Verification limits:** the assessment's Docker limitation and synthetic settings-browser
+checks remain scoped to that assessment. Later image/canary deployments and text/button
+outcomes are recorded in the [current gate ledger](#current-gate-ledger) and linked evidence;
+they do not establish representative coding effectiveness, full recovery or operating cost.
+Do not infer a fresh deployment verification from this planning update.
 
 ---
 
-## R1 — Tenancy foundations
+## R1 — Safe execution service
 
-**Goal:** one container per conversation, tenant-scoped configuration, no shared global state, and a
-network boundary that makes untrusted agent code safe to host.
+**Goal:** verified per-conversation lifecycle, scoped configuration/identity/credentials, and a
+public execution contract that another application can use. Prove the documented threat-model
+boundary before external or untrusted-workload rollout; preserve explicit residual risks.
 
 **Why now:** containers are namespaced per conversation in the current code, but settings,
 HTTP authorization and default account onboarding remain global. Optional channel/agent
@@ -250,16 +215,16 @@ another team's configuration or credentials.
 
 | ID | Ticket | Size | Depends |
 |---|---|---|---|
-| R1-1 | Stable checkpoint keys + legacy copy job — **partial:** split archives/manifest and local retention/restore repairs are verified; stable-key migration/copy job open | S | R0-10 |
+| R1-1 | Stable checkpoint keys — **partial:** split archives/manifest and local retention/restore repairs are verified; implement the target layout directly. Legacy copy job only for named data to retain | S | R0-10 |
 | R1-2 | Verify deployed `durable_object` policy and replacement-app cutover — configuration and code already use the policy | L | R1-1 |
 | R1-3 | Verify per-conversation lifecycle — start/snapshots/inactivity/global leases implemented; deployed isolation and inspect/monitor work unverified. Inspection should identify the current runtime generation, active turn and last verified recovery point. | M | R1-2 |
-| R1-4 | Extract existing `ContainerRuntime` and `EventStream` from `conversation.ts` (audit 24); retain stable execution references and explicit interrupted/unknown outcomes. Keep the current backend. | M | R1-2 |
-| R1-5 | Tenant model + tenant-scoped specs — **partial:** D1 schema, channel resolver, conversation namespaces and per-agent account-seed keys landed; per-agent Settings/API keys/strict mode open | L | R1-2 |
+| R1-4 | Public caller contract, neutral interactions, reference CLI and protected runtime/event extraction; slices R1-4a–R1-4d in the [delivery plan](plans/execution-service-delivery.md#r1-4--public-caller-contract-and-connector-proof) | M slices; re-estimate total | R1-3 for runtime proof; design/fixtures may start earlier; external use requires G1 |
+| R1-5 | Tenant model + tenant-scoped configuration — **partial:** D1 schema, channel resolver, conversation namespaces and per-agent account-seed keys landed; per-agent Settings/API keys/strict mode open. Missing/invalid/unavailable resolution cannot select legacy identity in strict mode | L | R1-2 |
 | R1-6 | Per-tenant API keys (hashed, revocable) and auth middleware; retire the shared `API_TOKEN` for tenants | M | R1-5 |
-| R1-7 | Audit 32: default-deny egress + external model/git credential injection; repository commands cannot read long-lived secrets from files, environment or process state | L | R1-3 |
+| R1-7 | Audit 32: default-deny egress + external model/git credential injection; early R1-7a feasibility proof, then enforcement and repository-controlled credential/escape probes | L; bound proof first | R1-7a uses disposable current runtime; full enforcement requires R1-3; before G1 |
 | R1-8 | Concurrency caps and quotas per tenant (containers, minutes, storage), with named limit/usage in rejection and status responses | M | R1-5 |
 | R1-9 | Isolation tests: two tenants, cross-tenant probes (checkpoint, SSE, settings, container) | M | R1-5 |
-| R1-10 | Dual-run v1/v2, cutover plan, rollback | S | R1-2 |
+| R1-10 | Single cutover to the supported version, coupled-client checks and backout to a matching recovery point; no mandatory dual-run | S | R1-2 |
 | R1-11 | Rename the deployment to Aboiteau during the v2 cutover: Worker name, package, repo, URL, Slack app URLs, secrets | M | R1-10 |
 
 **Exit criteria (G1)**
@@ -270,45 +235,76 @@ another team's configuration or credentials.
 - Egress: a sandbox cannot reach a host outside its allowlist; no provider token is readable inside it.
 - Execute repository-controlled test/typecheck code that tries to read synthetic credentials;
   verify the boundary using OS/network enforcement, not just permission-rule strings.
+- Strict resolution handles absent, unknown, invalid and unavailable identities explicitly.
+  Resolver outages never start legacy work or select global settings/account credentials.
+  No legacy fallback is required; any retained migration behavior is explicit and cannot be an error fallback.
+- Tenant scope holds through HTTP, SSE, permissions, questions, cancellation, recovery and
+  checkpoints; revoked credentials cannot steer new or existing work.
+
+**Exit criteria (G1-C)**
+
+- A persistent turn reference identifies accepted/queued work, idempotent retries and terminal
+  outcomes across DO restart. Preserve the existing single-active/single-queued policy.
+- Public status identifies execution state, cancellation progress, accounting state, runtime
+  generation and last verified recovery point without exposing raw internal DO state or secrets.
+- A non-Slack reference CLI submits/follows up, answers a question, approves/rejects a permission,
+  requests cancellation, reconnects output and inspects recovery using only public HTTP/SSE.
+- Shared conformance cases cover retries, queueing, expired replay, runtime restart, ambiguous
+  dispatch, cross-tenant requests and cancellation. No duplicated lifecycle/accounting engine.
+- Applied configuration identity is recorded per turn; a full SandboxSpec editor is not required.
 
 **Risks**
 
-- The scheduling policy is immutable: v2 is a replacement application. Dual-run and rollback are not
-  optional.
+- The scheduling policy is immutable: v2 is a replacement application, so cut over in one step and
+  back out to the previous image with a matching saved recovery point. Dual-run is not required.
 - `durable_object` policy has no `max_instances`; R1-8 is the only thing preventing one tenant from
   consuming the account limit.
 - Beta surface: pin the compatibility date and watch the Containers changelog.
 
 ---
 
-## R2 — Self-onboarding
+## R2 — Own-account installation and operation
 
-**Goal:** a new team goes from landing page to first agent turn without an operator.
+**Goal:** a new team installs in its own Cloudflare account, integrates an application, repeats
+useful work and operates upgrades/recovery without builder help. Slack installation is optional.
 
 | ID | Ticket | Size | Depends |
 |---|---|---|---|
-| R2-1 | Slack OAuth install flow: per-workspace token storage, uninstall, reinstall | L | R1-5 |
-| R2-2 | Tenant signup + session (Cloudflare Access or GitHub OAuth), invite links | L | R1-6 |
-| R2-3 | Onboarding wizard: connect repo → pick model → review permissions → first task | L | R2-1, R2-2 |
-| R2-4 | Admin console: members, usage, limits, audit log, sandbox list; runtime-backed turn/job status, bounded output/replay and cancellation outcomes; scoped Stow live/saved artifact views after their qualification gates | L | R1-8, R1-4; artifact views: R0-15 and supported Stow reader profile |
+| R2-1 | Optional Slack OAuth install flow: per-workspace token storage, uninstall, reinstall; consume the shared execution contract | L; demand-sequenced | R1-5, R1-6; not a core onboarding prerequisite |
+| R2-2 | Own-account operator access and scoped key bootstrap; member sessions/invites through selected Access or GitHub auth. Commercial signup stays deferred | M slices | R1-6 |
+| R2-3 | Repeatable install/setup: prerequisite diagnostics → provision/configure → repo/provider → permissions → verified coding task through the public API; optional connector step | M slices | G1 + G1-C, R2-2; no dependency on R2-1 |
+| R2-4 | Minimal operator view consuming R1 status/replay/cancel contracts: active work, recovery point, held/unknown usage, named limits and credential revocation. Broader members/audit/artifact UI is separately demand-scoped | M slices | R1-8, R1-4; artifact views additionally need R0-15 and qualified Stow readers |
 | R2-5 | Tenant lifecycle: invite, remove member, export data, delete tenant (and checkpoints) | M | R2-2 |
-| R2-6 | Usage metering: container-seconds, R2 bytes, model tokens per tenant | M | R1-8 |
+| R2-6 | Operating measurements: container-seconds, R2 bytes, model usage, intervention time and cost per accepted task; extend R0 baseline and distinguish measured costs from estimates/unknowns | M | R1-8, R0-3 |
 | R2-7 | Security review and pen-test prep (egress, secrets, tenant boundaries) | M | R1-7 |
-| R2-8 | Docs, status page, support runbook | S | R2-3 |
+| R2-8 | Install/integration guide, diagnostics, supported-version matrix and upgrade/rollback/export/restore runbook; record independent pilot attempts and support interventions | M | R2-3; builds on R0-1 rehearsal |
 
 **Exit criteria (G2)**
 
-- Five external teams self-onboard with no operator involvement.
-- Time to first turn < 10 minutes, measured from signup.
-- A tenant admin can see usage and revoke access without support.
+- Five external teams install in their own accounts and complete a predeclared coding task without
+  builder intervention; report every attempt and help request. Separately time prerequisite setup
+  and ready-prerequisites → verified task; freeze a numeric target before pilot recruitment.
+- Each team repeats useful work on a later day and completes the prescribed upgrade plus
+  rollback/restore rehearsal without builder intervention; preserve history and accounting evidence.
+- At least one independent developer integrates a non-Slack application using public contracts
+  and published examples, without server-source imports or a bespoke backend patch. Record elapsed
+  and hands-on time against a target frozen before the attempt.
+- An operator sees actual/reserved/unknown usage and named limits, inspects recovery and revokes
+  access without support. Cancellation/replay behavior matches G1-C.
 - Security review signed off; no critical findings open.
 
 ---
 
-## R3 — Configurable sandbox
+## R3 — Demand-led sandbox options
 
-**Goal:** the sandbox becomes a first-class, declarative object a tenant can configure, not a
-deployment detail.
+**Goal:** remove configuration constraints demonstrated by pilot workloads, while keeping
+installation and operation simple. The tickets below are options, not a committed package.
+
+**Entry gate (G3, before investment):** record the blocked workload, affected pilot teams,
+existing-preset workaround, smallest required change and expected measurable benefit. Test a
+small number of operator-provisioned presets before building a catalogue or template editor.
+If demand is absent, keep the supported defaults and improve the core service. R1's applied
+configuration identity and existing lifecycle/limit correctness do not wait for this gate.
 
 | ID | Ticket | Size | Depends |
 |---|---|---|---|
@@ -322,9 +318,10 @@ deployment detail.
 | R3-8 | Spec-change rollout: restart the sandbox, checkpoint before destroy, resume the session | M | R3-6 |
 | R3-9 | Per-sandbox guardrails: budget plus storage/output/execution limits, named warnings and enforced stop/rejection where supported; distinguish admission estimates from hard caps | M | R3-3, R2-6 |
 
-**Exit criteria (G3)**
+**Acceptance for each selected R3 slice**
 
-- A tenant creates a sandbox with a chosen image, size, workspace and egress policy, with no redeploy.
+- The selected option enables its predeclared blocked workload or measurably reduces operating
+  effort; record the pilot's result and support cost. Only that option requires user configuration.
 - Changing a spec restarts only that sandbox and resumes the session from checkpoint.
 - Idle sandboxes stop; retention deletes checkpoints on schedule.
 - Cost per sandbox is visible to the tenant.
@@ -351,7 +348,7 @@ Not scheduled in detail; each item is its own project.
 - **Product:** Aboiteau. Used in docs, UI copy, the roadmap and anything a customer reads.
 - **Code identifiers:** stay `cf-opencode` until the v2 cutover (R1-11). Renaming the Worker changes
   the deployed URL, which invalidates the Slack app request URLs, API clients and the stored
-  `API_TOKEN` location. Doing it during the dual-run avoids two migrations.
+  `API_TOKEN` location. Update those bindings together in the single cutover; no dual-run is required.
 - **Rule:** no new `cf-opencode` string in user-facing copy. New code may keep the old identifier until
   R1-11.
 
@@ -359,13 +356,13 @@ Not scheduled in detail; each item is its own project.
 
 | Workstream | R0 | R1 | R2 | R3 | R4 |
 |---|---|---|---|---|---|
-| Platform (DO, container) | audit 22, perf | policy migration, runtime split | — | spec, lifecycle | fork, previews |
-| Identity & tenancy | — | tenants, keys, quotas | signup, invites, admin | per-tenant specs | SSO/SCIM |
-| Onboarding & UX | — | settings → specs | wizard, console | template editor | marketplace |
-| Sandbox | — | egress, secrets | — | catalogue, sizing | previews |
-| Security | — | egress boundary | pen-test | per-spec policy | SOC 2 |
-| Ops | metrics, bench | isolation tests | metering | cost guardrails | status/SLA |
-| Integrations | Slack cutover | — | Slack OAuth | — | Slack Code |
+| Platform (DO, container) | storage/recovery correctness | caller contract, lifecycle proof, protected extraction | repeatable install/upgrade | demanded spec/lifecycle options | fork, previews |
+| Identity & tenancy | trusted rollout limits | strict tenants, scoped keys, quotas | own-account bootstrap, revoke/export | demanded per-tenant specs | SSO/SCIM, commercial signup |
+| Onboarding & UX | recovery evidence | public status, reference CLI | API-first install guide, minimal operator view | demanded template controls | marketplace |
+| Sandbox | Stow wiring and R2-only restore | early egress/credential proof and enforcement | supported presets | demand-qualified catalogue/sizing | previews |
+| Security | repository-code probe | egress boundary, tenant failure matrix | independent review | per-spec policy | SOC 2 |
+| Ops | accepted-task/cost baseline | isolation/recovery conformance | pilot intervention, upgrade/restore and total cost | measured benefit per option | status/SLA |
+| Integrations | bounded Slack completion, public replay fix | neutral interactions, non-Slack reference client | independent application integration; optional Slack OAuth | demand-selected connectors | Slack Code |
 
 ---
 
@@ -376,15 +373,24 @@ R0-10 retention ──┐
 R0-11 budgets ────┼─► R0-14 regression evidence ──► G0
 R0-13 input ──────┘
 R0-15 same-directory Stow + R2-only recovery ──► G0 / workspace-dependent R0-2 evidence
-R0-1 deployed image + R0-10/R0-11/R0-13 ──► R0-2 real tasks ──► R0-3 measurements
-                                                              └─► R0-4 Slack cutover / G0
-R1-1 stable keys ──► R1-2 policy migration ──► R1-3 per-conversation containers
-                                          ├─► R1-4 runtime split
-                                          └─► R1-5 tenants ──► R1-6 keys ──► R2-2 signup
-R1-3 ──► R1-7 egress ──► R2-7 security ──► G2
-R1-5 ──► R3-1 spec ──► R3-2..R3-9 ──► G3
+R0-16 public replay correction ──► G0 / R1-4 conformance
+R0-1 staging rehearsal + R0-10/R0-11/R0-13 ──► R0-2 coding tasks ──► R0-3 measurements / G0
+R1-1 stable keys ──► R1-2 policy cutover ──► R1-3 per-conversation containers
+                                          └─► R1-5 strict tenants ──► R1-6 keys ──► R2-2 bootstrap
+Disposable current runtime ──► R1-7a feasibility ──► R1-7 enforcement + R1-9 probes ──► G1
+R1-3 + R0-16 ──► R1-4a contract ──► R1-4b interactions ──► R1-4c client ──► G1-C
+G1 + G1-C + R2-2 ──► R2-3 install + R2-8 upgrade/runbook ──► G2 own-account pilots
+R1-7 ──► R2-7 security review ──► G2
+R2 pilot workload evidence (including failed G2 attempts) ──► G3 demand decision ──► selected R3 slices
 R2-6 metering ──► R3-9 budgets ──► R4 billing
 ```
+
+The R1-4b → R1-4c edge is a completion dependency; the reference client may be
+developed against contract fixtures alongside R1-4b. Audit 24 extraction (R1-4d)
+follows protected seams and conformance tests, without blocking boundary proofs.
+G3 may use controlled pilot observations before all five teams pass G2; a
+configuration-blocked pilot must not require G2 completion to justify its remedy.
+External pilots still require G1/G1-C, and broader expansion still requires G2.
 
 ---
 
@@ -392,46 +398,57 @@ R2-6 metering ──► R3-9 budgets ──► R4 billing
 
 | Release | Instrument | Target |
 |---|---|---|
-| R0 | turn latency p50/p95, cold start, checkpoint size/time, cost per turn | p95 < 60 s for a simple turn |
-| R1 | concurrent tenants, isolation failures, container recycle rate | 0 cross-tenant reads |
-| R2 | signup → first turn, activation rate, support tickets per tenant | < 10 min, > 50% activate |
-| R3 | spec adoption, idle stop rate, cost per sandbox, restore success | > 30% change a default |
-| R4 | weekly active tenants, retention, revenue | — |
+| R0 | accepted task successes/total, cold/warm p50/p95, checkpoint/restore, recovery time, interventions and known/unknown task costs | Freeze representative task/fault thresholds before execution; retain p95 < 60 s only for the defined simple-turn latency check |
+| R1 | isolation failures, duplicate dispatch, replay/interaction conformance, recovery point and cancellation/accounting state | 0 observed cross-tenant accesses or duplicate dispatches in the declared matrix; all mandatory conformance cases pass |
+| R2 | prerequisite/setup/install time, integration hands-on time, later-day repeat use, upgrade/restore success, intervention count and total cost per accepted task | Five independent own-account teams pass G2 without builder intervention; freeze time/cost targets before attempts, retain failures in denominator |
+| R3 | blocked-workload completion, operating effort saved, incremental cost and recovery behavior | Evidence before commitment; each selected slice achieves its predeclared benefit without weakening G1/G1-C |
+| R4 | repeated useful work, retention and commercial demand; revenue when relevant | No adoption or willingness-to-pay claim from build/test counts |
+
+The [measurement protocol](plans/execution-service-delivery.md#measurement-and-pilot-protocol)
+defines case selection and evidence. No accepted numeric target is implied where
+the baseline is missing; fixing targets before runs is a required planning deliverable.
 
 ---
 
 ## Deliberately not building
 
-- Our own agent loop or model. OpenCode (and later Claude Code / Codex) stay pluggable runtimes.
+- Our own agent loop or model. OpenCode remains the current runtime; connector independence does
+  not imply implemented support for Claude Code, Codex or arbitrary execution backends.
 - Our own VM or scheduler. Cloudflare Containers is the substrate.
 - An alternative execution backend or full WASI/POSIX compatibility layer without
   the measured need in the [runtime revisit gate](#when-to-reconsider-execution-backends).
 - A desktop IDE, a browser takeover, or a preview product before R4.
 - Per-tenant arbitrary Dockerfiles. The catalogue plus a runtime install step is the contract.
 - A marketplace before there are tenants.
+- A general job/process manager, connector framework or large SDK before the public contract and
+  reference client expose a demonstrated need.
+- Broad image catalogues, arbitrary sizing, template editors or extra connectors without pilot
+  workload evidence. Keep already-authorized S8/S10 work within its existing acceptance scope.
 
 ---
 
 ## Immediate next actions
 
-Dispatch details and the execution order are in the
-[next-iteration plan](plans/r0-reliability-iteration.md#14-execution-gate).
+The completed [R0 repair plan](plans/r0-reliability-iteration.md) remains historical
+implementation evidence. New sequencing and bounded briefs live in the
+[execution-service delivery plan](plans/execution-service-delivery.md).
 
-1. **User/agent:** recheck Workers Builds (R0-1), verify the coupled Worker/policy-enabled
-   image in a real container, and rehearse cutover/restore in staging. No deployment or
-   production cutover was part of this local gate.
-2. **Both:** assess retained legacy/orphan/manual-evidence cases before production
-   rollout. The [scoped recovery API](plans/r0-held-turn-reconciliation.md) is verified
-   locally; unknown charges and ownership remain preserved. External evidence import
-   requires its own bounded design if actual cases need it.
-3. **Agent:** run authorized Slack/HTTP tasks and recovery/cost measurements (R0-2/R0-3),
-   recording provider/model, task outcomes and limits; simulated results do not substitute.
-4. **Both:** keep R0-11 partial until the remaining manual cases and live
-   cutover/container evidence are verified. Scoped F1 and F2 now pass local checks.
-   Keep audit 32/R1-7 and G0/G1 open.
-5. Review the expanded G0 evidence and estimates before tenancy rollout or R1-4 extraction.
-6. **Agent:** execute [R0-15's native workspace integration slices](plans/stow-workspace-integration.md)
-   using disposable storage fixtures before any workspace-dependent live task or
-   artifact-browser adoption. Preserve existing generic-store data and all current
-   accounting/credential rollout limits. Track Stow-side artifact qualification in
-   its canonical plan; runtime research remains deferred.
+1. **API owner, Luna/medium:** R0-16's repair and local checks are complete. Retain its
+   public-route regressions and existing-state inspection limits through a separately scoped
+   rollout; keep R1's stronger caller/status guarantees open.
+2. **Platform/storage owner, Luna/high:** A/B1/C1 are verified. Integrate the supported native
+   Workspace startup directly, then rehearse selected-image and R2-only recovery. Do not build
+   legacy migration or dual writers by default; handle only named operator data to retain or
+   intentionally reset at the separately scoped cutover.
+3. **API/security owners:** inventory and freeze R1-4a's caller contract and R1-7a's smallest
+   credential/egress proof. Contract fixtures may proceed alongside remaining live R0 work.
+4. **Platform + operator:** freeze task/fault cases and numeric targets, then run only authorized
+   representative coding/recovery/cost checks. Connectivity canaries do not close G0.
+5. **API/connector owners:** deliver neutral questions/cancellation/status and the reference CLI
+   through existing handlers; pass G1-C and strict-identity failure cases before external pilots.
+6. **Pilot owner:** prepare independent own-account install/integration/upgrade attempts after G1
+   and G1-C. Record failures, interventions and uncertain costs; use results to decide G3 scope.
+
+This planning revision authorizes no new deployments, provider spend, messages, live ledger
+adjustments, migrations or resource destruction. Existing session authorizations and the scoped
+plans' concrete rollout/approval boundaries continue to apply.
