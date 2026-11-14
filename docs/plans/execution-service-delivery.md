@@ -277,6 +277,11 @@ identifies one accepted request within it. Neither the current OpenCode session
 nor an SSE sequence alone identifies that request. Retain OpenCode's native
 execution identity and map it to the caller-visible reference.
 
+The completed [contract inventory and frozen proposal](r1-4a-caller-contract.md)
+records the current surface, the ten gaps against this slice, the proposed v1
+routes and shapes, and six decisions to lock before implementation. Sign-off on
+its §6 precedes coding; the acceptance matrix in its §7 is the review target.
+
 Before implementation, inventory existing request/response types, HTTP routes,
 Slack handlers and stored-state migrations. Freeze the smallest contract covering:
 
