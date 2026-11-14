@@ -8,7 +8,7 @@ acknowledged but discarded.
 
 Until native storage represents those properties, reject their presence on
 PutObject, CopyObject and CreateMultipartUpload with S3 `501 NotImplemented`,
-before storage mutation. Supported writes/reads and multipart parts retain their
+before storage mutation. Supported writes/reads and multipart parts without these headers retain their
 existing paths. This adds no storage format and migrates no operator data.
 It does not add full S3 metadata support.
 
@@ -19,7 +19,9 @@ The Docker build uses a digest-pinned Go 1.25.6 builder, verifies the archive,
 proves the SDK regression fails for the expected reason before applying the
 patch, then runs the complete S3 API package tests after applying it. The SDK
 regression checks typed refusals, unchanged existing bytes/metadata/validator,
-absence of a new object, and absence of an initiated multipart upload.
+absence of a new object, and absence of an initiated multipart upload. Malformed
+multipart selectors are covered explicitly: every PUT carrying these unsupported
+properties is refused, so a partial selector cannot fall through to PutObject.
 
 This patch is carried in cf-opencode so its candidate can be built without
 altering the neighbouring Stow checkout's unrelated changes. It is not an

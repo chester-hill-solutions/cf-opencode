@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -13,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 	smithyhttp "github.com/aws/smithy-go/transport/http"
+	"github.com/chester-hill-solutions/stow-s3/internal/s3api"
 	"github.com/chester-hill-solutions/stow-s3/internal/storage"
 )
 
@@ -99,5 +102,36 @@ func TestSDKUnsupportedObjectMetadataRefusedBeforeMutation(t *testing.T) {
 				t.Fatalf("refused initiation created an upload: %v %v", uploads, err)
 			}
 		})
+	}
+}
+
+// Malformed multipart selectors currently fall through to PutObject. They must
+// not turn an unsupported metadata write into silent success.
+func TestUnsupportedMetadataCannotBypassRefusalWithMultipartSelectors(t *testing.T) {
+	for _, query := range []string{"?uploadId=unknown", "?partNumber=1", "?uploadId=unknown&partNumber=1"} {
+		for _, header := range []string{"Cache-Control", "Content-Disposition", "Content-Encoding"} {
+			t.Run(query+"/"+header, func(t *testing.T) {
+				store := storage.NewMemoryStore()
+				t.Cleanup(func() { _ = store.Close() })
+				if err := store.CreateBucket(t.Context(), "bucket"); err != nil {
+					t.Fatal(err)
+				}
+				server, err := s3api.New(s3api.Config{Store: store, Auth: s3api.DevBypass, Host: "127.0.0.1"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := httptest.NewRequest(http.MethodPut, "http://127.0.0.1/bucket/key"+query, strings.NewReader("must not publish"))
+				request.Header.Set(header, "identity")
+				response := httptest.NewRecorder()
+				server.Handler().ServeHTTP(response, request)
+				if response.Code != http.StatusNotImplemented || !strings.Contains(response.Body.String(), "<Code>NotImplemented</Code>") {
+					t.Fatalf("want typed 501 before mutation, got %d %s", response.Code, response.Body.String())
+				}
+				listed, err := store.ListObjectsV2(t.Context(), "bucket", storage.ListOptions{})
+				if err != nil || len(listed.Objects) != 0 {
+					t.Fatalf("refused selector write changed object inventory: %v %v", listed, err)
+				}
+			})
+		}
 	}
 }

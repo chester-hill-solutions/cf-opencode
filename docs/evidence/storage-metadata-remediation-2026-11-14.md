@@ -33,3 +33,16 @@ consumer gate. No neighbouring Stow working-tree files were modified.
 The [cutover runbook](../runbooks/storage-cutover.md) names retained data and
 intentional resets (none). It is prepared input, not production approval. Native
 CI and corrected live qualification are pending; R0-15 remains open.
+
+
+## Selector hardening follow-up
+
+Final review found that `?uploadId` or `?partNumber` alone can fall through the
+released multipart dispatcher to ordinary PutObject. The initial guard excluded
+those selectors, allowing unsupported metadata to bypass refusal. The final guard
+covers every PUT plus multipart initiation. Nine direct HTTP regressions cover all
+three headers with partial and complete selector pairs and verify empty object
+inventory after typed refusal. The complete S3 API package passed again (10.9 s).
+The final linux/amd64 candidate SHA256 is
+`39615975e58008a60a94b0c696e9ee46aa8dba77e1899e5297dcb4f5010e3174`.
+The earlier `78e69bb9…` candidate is superseded and is not the final live target.

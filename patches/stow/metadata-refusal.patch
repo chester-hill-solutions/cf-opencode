@@ -8,7 +8,7 @@
 +	// These object properties are not represented by the v0.4.0 store model.
 +	// Refuse them before selecting any mutation path instead of acknowledging
 +	// a write whose requested metadata cannot be recovered.
-+	setsObjectMetadata := r.Method == http.MethodPut && !q.Has("uploadId") && !q.Has("partNumber") ||
++	setsObjectMetadata := r.Method == http.MethodPut ||
 +		r.Method == http.MethodPost && q.Has("uploads")
 +	if setsObjectMetadata {
 +		for _, header := range []string{"Cache-Control", "Content-Disposition", "Content-Encoding"} {
