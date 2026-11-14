@@ -56,6 +56,24 @@ curl -X POST https://<worker>/api/conversations/demo/permissions/<requestID> \
 curl https://<worker>/api/conversations/demo -H "authorization: Bearer $API_TOKEN"
 ```
 
+Message bodies accept `delivery: "queue" | "steer" | "interrupt"` (default
+`queue`). Busy conversations return HTTP 202 with `queue.id`, `position` and
+`depth`; a full queue returns 429 without dropping entries. `QUEUE_LIMIT` sets
+capacity from 1–100 (default 10). Entries survive restart and wait for settlement
+before acquiring their own budget hold.
+
+`steer` requires a running, dispatched turn and adds guidance without a new hold.
+`interrupt` requires an active turn and queues the supplied text after it;
+`replaceQueue: true` explicitly replaces pending follow-ups. Interrupt results
+separate `stopRequested`, `observedStop` (currently unknown/null), and `settled`.
+A transport error can mean an unknown outcome: inspect status and reuse the same
+idempotency key; never resend automatically with a new key. One stop intent per
+active turn prevents repeated interrupt calls after restart.
+
+State includes `turnObservation`: the 15-minute threshold observes and alerts;
+it does not enforce an execution deadline. The daily budget gates admission and
+can be exceeded by an already admitted turn.
+
 Frames:
 
 ```
@@ -100,7 +118,8 @@ Slack controls are handled directly, before any model prompt or budget admission
 | `!sessions` / `!session` | List recent sessions in this conversation's workspace |
 | `!sessions 2` / `!sessions ses_…` | Continue a listed or verified older session |
 | `!new` | Start a fresh session on the next message; keep workspace and history |
-| `!stop` | Interrupt running work and clear queued follow-ups; reconcile usage normally |
+| `!steer <text>` | Add guidance to the running turn without a new hold |
+| `!stop` / `!stop <text>` | Request interruption and clear pending follow-ups, or replace them with the supplied text; wait for usage settlement |
 | `!leave` | Stop following the current channel thread until mentioned again |
 | `!answer` / `!answer <value>` | Show or answer the waiting question; multiple fields accept `key=value` pairs |
 | `!cancel` | Skip the waiting question |

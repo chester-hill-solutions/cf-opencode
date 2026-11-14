@@ -295,14 +295,14 @@ describe("operator reconciliation control plane", () => {
     await runInDurableObject(env.CONVERSATION.getByName(key), async (_instance, storage) => {
       await storage.storage.put("state", {
         ...(await storage.storage.get<ConversationState>("state")),
-        queued: { text: "later", attempts: 0 },
+        queue: [{ id: "q-later", enqueuedAt: 1, source: "http", text: "later", attempts: 0 }],
       })
     })
     const blocked = await call(path(key, "?kind=observed_actual"))
     expect(blocked.status).toBe(409)
     const state = await runInDurableObject(env.CONVERSATION.getByName(key), async (_instance, storage) => storage.storage.get<ConversationState>("state"))
     expect(state?.budgetReservation).toMatchObject({ reservationID: seeded.reservationID, dispatched: true })
-    expect(state?.queued?.text).toBe("later")
+    expect(state?.queue?.[0]?.text).toBe("later")
   })
 
   it("rejects a stale reviewed local snapshot without retiring the central hold", async () => {

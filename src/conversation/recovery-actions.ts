@@ -1,6 +1,6 @@
 import { ConversationStore, type ConversationState } from "../state"
 import type { ConversationUsage } from "./usage"
-import { classifyRecovery, recoverySnapshotID, type RecoveryAuthority, type RecoverySchedulerEvidence } from "../recovery"
+import { classifyRecovery, recoveryQueueSummary, recoverySnapshotID, type RecoveryAuthority, type RecoverySchedulerEvidence } from "../recovery"
 import { traceId } from "../telemetry"
 import { emitConversationTelemetry } from "./telemetry"
 
@@ -106,12 +106,7 @@ export class ConversationRecoveryActions {
         sessionID: state.sessionID ?? null,
         phase: state.phase ?? "idle",
         reservation: state.budgetReservation ?? null,
-        queued: state.queued ? {
-          present: true,
-          attempts: state.queued.attempts,
-          nextAttemptAt: state.queued.nextAttemptAt ?? null,
-          lastError: state.queued.lastError ?? null,
-        } : null,
+        queue: recoveryQueueSummary(state),
         usageCursor: state.usageCursor ?? null,
         usageTerminal: state.usageTerminal ?? null,
         usageExecution: state.usageExecution ?? null,

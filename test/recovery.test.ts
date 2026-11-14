@@ -235,7 +235,7 @@ describe("recovery inspection and actions", () => {
         phase: "settling",
         sessionID: "session-recovery",
         budgetReservation: { reservationID: "dispatched", date: "2026-11-11", dispatched: true },
-        queued: { text: "next prompt", attempts: 0 },
+        queue: [{ id: "q-next", enqueuedAt: 1, source: "http", text: "next prompt", attempts: 0 }],
         usageExecution: { sessionID: "session-recovery", startedSeq: 5, terminalSeq: 2, latestStepSeq: 4 },
         seen: [], pending: {},
       })
@@ -338,16 +338,22 @@ describe("recovery inspection and actions", () => {
     const result = await runInDurableObject(stub("recovery-stale-queued"), async (instance, state) => {
       await state.storage.put("state", {
         phase: "idle", budgetReservation: { reservationID: "proposal", dispatched: false },
-        queued: { text: "queued", attempts: 0 }, seen: [], pending: {},
+        queue: [{ id: "q-stale", enqueuedAt: 1, source: "http", text: "queued", attempts: 0 }], seen: [], pending: {},
       })
-      const status = await (await recovery(instance)).json() as { actions: string[]; blockers: string[]; snapshotID: string }
+      const status = await (await recovery(instance)).json() as {
+        actions: string[]; blockers: string[]; snapshotID: string;
+        local: { queue: { depth: number; head: { id: string } | null } }
+      }
       const stale = await recovery(instance, "cancel_before_dispatch", "f".repeat(64))
       const current = await state.storage.get("state")
       return { status, stale: { status: stale.status, body: await stale.json() }, current }
     })
     expect(result.status.actions).toEqual([])
     expect(result.status.blockers).toContain("queued_work_present")
+    expect(result.status.local.queue).toMatchObject({ depth: 1, head: { id: "q-stale" } })
+    expect(JSON.stringify(result.status)).not.toContain('"queued"')
+    expect(JSON.stringify(result.status)).not.toContain('"text":"queued"')
     expect(result.stale.status).toBe(409)
-    expect(result.current).toMatchObject({ budgetReservation: { reservationID: "proposal", dispatched: false }, queued: { text: "queued" } })
+    expect(result.current).toMatchObject({ budgetReservation: { reservationID: "proposal", dispatched: false }, queue: [{ id: "q-stale", text: "queued" }] })
   })
 })

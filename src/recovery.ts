@@ -53,6 +53,35 @@ export interface RecoveryClassification {
   actions: Array<"cancel_before_dispatch" | "retry">
 }
 
+export interface RecoveryQueueSummary {
+  depth: number
+  head: null | {
+    id: string
+    source: string
+    enqueuedAt: number
+    attempts: number
+    nextAttemptAt: number | null
+    lastError: string | null
+  }
+}
+
+/** Read-only queue metadata; prompt contents are never part of recovery evidence. */
+export function recoveryQueueSummary(state: ConversationState): RecoveryQueueSummary {
+  const queue = state.queue ?? []
+  const head = queue[0]
+  return {
+    depth: queue.length,
+    head: head ? {
+      id: head.id,
+      source: head.source,
+      enqueuedAt: head.enqueuedAt,
+      attempts: head.attempts,
+      nextAttemptAt: head.nextAttemptAt ?? null,
+      lastError: head.lastError ?? null,
+    } : null,
+  }
+}
+
 function validReservation(value: unknown): value is BudgetReservation {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false
   const reservation = value as Record<string, unknown>
@@ -147,7 +176,7 @@ export function classifyRecovery(input: {
 
   if (!reservation) {
     if (authority?.holds.length) blockers.push("central_hold_without_local_owner")
-    if ((state.phase ?? "idle") !== "idle" || state.queued) blockers.push("work_without_local_reservation")
+    if ((state.phase ?? "idle") !== "idle" || (state.queue?.length ?? 0) > 0) blockers.push("work_without_local_reservation")
     if (scheduler) {
       blockers.push(...schedulerEvidenceBlockers(scheduler))
       if (scheduler.sealed) {
@@ -204,7 +233,7 @@ export function classifyRecovery(input: {
     return { kind: "dispatched", blockers, actions: ["retry"] }
   }
 
-  if (state.queued) blockers.push("queued_work_present")
+  if ((state.queue?.length ?? 0) > 0) blockers.push("queued_work_present")
   if (cachedExecutionMalformed) blockers.push("cached_execution_malformed")
   if (cachedExecutionSessionMismatch) blockers.push("cached_execution_session_mismatch")
   if (cachedExecutionActive) blockers.push("cached_execution_unfinished")
@@ -229,12 +258,7 @@ export async function recoverySnapshotID(input: {
       phase: state.phase ?? "idle",
       sessionID: state.sessionID ?? null,
       reservation: state.budgetReservation ?? null,
-      queued: state.queued ? {
-        present: true,
-        attempts: state.queued.attempts,
-        nextAttemptAt: state.queued.nextAttemptAt ?? null,
-        lastError: state.queued.lastError ?? null,
-      } : null,
+      queue: recoveryQueueSummary(state),
       usageCursor: state.usageCursor ?? null,
       usageTerminal: state.usageTerminal ?? null,
       usageExecution: state.usageExecution ?? null,

@@ -27,7 +27,8 @@ function fake(overrides: Partial<SlackCommandServices> = {}) {
     switchModel: async (ref) => { calls.push(["switchModel", ref]) },
     selectSession: async (id) => { calls.push(["selectSession", id]) },
     newSession: async () => { calls.push(["newSession"]) },
-    stop: async () => "⏹️ Interrupted.",
+    steer: async (text) => { calls.push(["steer", text]); return "🧭 Guidance added." },
+    stop: async (...args) => { calls.push(["stop", ...args]); return "⏹️ Interrupted." },
     leave: async () => "👋 Stopped following this conversation.",
     listForms: async () => [form],
     answerForm: async (sessionID, formID, answer) => { calls.push(["answerForm", sessionID, formID, answer]) },
@@ -54,6 +55,10 @@ describe("handleSlackCommand", () => {
     expect(replies[0]).toContain("!model")
     expect(replies[0]).toContain("follow-up replies")
     expect(replies[0]).toContain("!leave")
+    expect(replies[0]).toContain("queue while a turn is active")
+    expect(replies[0]).toContain("!steer <text>")
+    expect(replies[0]).toContain("clear queued follow-ups")
+    expect(replies[0]).toContain("!stop <text>")
     expect(usageCalls).toBe(0)
   })
 
@@ -156,11 +161,14 @@ describe("handleSlackCommand", () => {
 
   test("status reports phase, pending questions, queue, and errors", async () => {
     const { service, replies } = fake({ getState: async () => ({
-      sessionID: "ses_current", phase: "queued", queued: { text: "private input" },
+      sessionID: "ses_current", phase: "queued", queue: [{ id: "q<1>`", text: "private *input* <x>" }],
       lastTurnError: "turn failed", settlementError: "checkpoint failed",
     }) })
     await handleSlackCommand("!status", service)
     expect(replies[0]).toContain("Phase: queued")
+    expect(replies[0]).toContain("1 message queued")
+    expect(replies[0]).toContain("private ＊input＊ &lt;x&gt;")
+    expect(replies[0]).toContain("q&lt;1&gt;ˋ")
     expect(replies[0]).toContain("Pending question")
     expect(replies[0]).toContain("Last turn error")
     expect(replies[0]).toContain("Settlement error")
@@ -169,22 +177,57 @@ describe("handleSlackCommand", () => {
 
   test("status before a session still reports phase, model, queue, and errors", async () => {
     const { service, replies } = fake({ getState: async () => ({
-      phase: "admitting", modelOverride: "openrouter/anthropic/claude-x", queued: true,
+      phase: "admitting", modelOverride: "openrouter/anthropic/claude-x", queue: [{ text: "pending" }],
       lastTurnError: "startup failed", settlementError: "usage settlement pending",
     }) })
     await handleSlackCommand("!status", service)
     expect(replies[0]).toContain("No session mapped here yet.")
     expect(replies[0]).toContain("Phase: admitting")
     expect(replies[0]).toContain("Model: `openrouter/anthropic/claude-x`")
-    expect(replies[0]).toContain("A message is queued")
+    expect(replies[0]).toContain("1 message queued")
     expect(replies[0]).toContain("Last turn error")
     expect(replies[0]).toContain("Settlement error")
+  })
+
+  test("steer requires text and delegates the trimmed guidance", async () => {
+    const { service, replies, calls } = fake()
+    await handleSlackCommand("!steer", service)
+    expect(replies[0]).toContain("!steer <text>")
+    expect(calls).toHaveLength(0)
+    await handleSlackCommand("!steer   keep the answer concise  ", service)
+    expect(calls).toContainEqual(["steer", "keep the answer concise"])
+    expect(replies[1]).toContain("Guidance added")
+  })
+
+  test("stop clears queued follow-ups by default and delegates explicit follow-up text", async () => {
+    const { service, calls } = fake()
+    await handleSlackCommand("!stop", service)
+    await handleSlackCommand("!stop   continue with the summary  ", service)
+    expect(calls).toContainEqual(["stop"])
+    expect(calls).toContainEqual(["stop", "continue with the summary"])
+  })
+
+  test("status explains an overdue observation without claiming automatic stop", async () => {
+    const { service, replies } = fake({ getState: async () => ({
+      sessionID: "ses_current",
+      phase: "running",
+      turnObservation: {
+        policy: "observe_and_alert", thresholdMs: 900_000, executionDeadlineEnforced: false,
+        runStartedAt: 100, elapsedMs: 900_000, overdue: true,
+        timeoutObserved: false, timeoutObservedAt: null, settlement: "active",
+      },
+    }) })
+    await handleSlackCommand("!status", service)
+    expect(replies[0]).toContain("15-minute observation threshold")
+    expect(replies[0]).toContain("not automatically stopped")
+    expect(replies[0]).not.toContain("runtime stopped")
   })
 
   test("new, stop, leave, usage, and callback errors are consumed", async () => {
     const { service, replies, calls } = fake()
     for (const command of ["!new", "!stop", "!leave", "!usage"]) expect(await handleSlackCommand(command, service)).toBe(true)
     expect(calls).toContainEqual(["newSession"])
+    expect(calls).toContainEqual(["stop"])
     expect(replies).toContain("Usage information")
     const quota = fake({ usageText: async () => { throw new Error("daily quota exceeded") } })
     await handleSlackCommand("!usage", quota.service)

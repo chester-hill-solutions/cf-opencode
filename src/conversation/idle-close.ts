@@ -190,7 +190,7 @@ export class ConversationIdleClose {
   }
 
   private eligibleState(state: ConversationState): boolean {
-    return (state.phase ?? "idle") === "idle" && !state.queued && !state.budgetReservation &&
+    return (state.phase ?? "idle") === "idle" && (state.queue?.length ?? 0) === 0 && !state.budgetReservation &&
       !state.checkpointPending && Object.keys(state.pending ?? {}).length === 0 && Boolean(state.sessionID)
   }
 

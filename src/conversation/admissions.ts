@@ -1,10 +1,10 @@
-import { ConversationStore, type BudgetReservation, type ConversationPhase, type ConversationState, type SlackTarget } from "../state"
+import { ConversationStore, type BudgetReservation, type ConversationPhase, type QueuedMessage, type SlackTarget } from "../state"
 import type { ConversationBudgetReservations } from "./budget-reservations"
 import type { ConversationJobKind, ConversationJobPayload } from "./jobs"
 import type { HarnessSettings } from "../settings"
 import type { ConversationEvent } from "../events"
 import { nextBudgetReset } from "../budget"
-import { CAPACITY_RETRY_MS, isCapacityRejection } from "../queue"
+import { CAPACITY_RETRY_MS, isCapacityRejection, queueCapacity } from "../queue"
 import { emitConversationTelemetry, type ConversationTelemetrySink } from "./telemetry"
 
 const POLL_MS = 2000
@@ -20,6 +20,7 @@ function errorMessage(error: unknown): string {
 
 export interface ConversationAdmissionsOptions {
   conversationID?: string
+  queueLimit?: number
   telemetry?: ConversationTelemetrySink
   storage: DurableObjectStorage
   store: ConversationStore
@@ -79,7 +80,7 @@ export class ConversationAdmissions {
         await this.options.storage.transaction(async () => {
           const state = await this.options.store.get()
           if (this.options.recovery.active() || await this.options.recovery.pendingUpgrade() ||
-            state.queued || isBusyPhase(state.phase)) return
+            (state.queue?.length ?? 0) > 0 || isBusyPhase(state.phase)) return
           const admissionID = crypto.randomUUID()
           const admissionStartedAt = Date.now()
           await this.options.store.patch({ phase: "admitting", admissionID, admissionStartedAt })
@@ -98,48 +99,78 @@ export class ConversationAdmissions {
     })
   }
 
-  async enqueue(text: string, slack?: SlackTarget): Promise<boolean> {
-    if (this.options.recovery.active() || await this.options.recovery.pendingUpgrade()) return false
+  async enqueue(text: string, slack?: SlackTarget, options: { replace?: boolean } = {}): Promise<
+    | { kind: "enqueued"; id: string; position: number; depth: number; limit: number }
+    | { kind: "queue_full" | "admission_in_progress"; depth: number; limit: number }
+    | { kind: "unavailable"; message: string }
+  > {
+    try {
+      if (this.options.recovery.active()) return { kind: "unavailable", message: "conversation recovery is active" }
+      if (await this.options.recovery.pendingUpgrade()) return { kind: "unavailable", message: "runtime upgrade is pending" }
+    } catch (error) {
+      return { kind: "unavailable", message: errorMessage(error) }
+    }
     const nextAttemptAt = Date.now() + 5000
-    const entry = {
+    const queueLimit = queueCapacity(this.options.queueLimit)
+    const entry: QueuedMessage = {
       id: crypto.randomUUID(),
+      enqueuedAt: Date.now(),
+      source: slack ? "slack" : "http",
       text,
       ...(slack ? { slack } : {}),
       attempts: 0,
       nextAttemptAt,
     }
-    let claimed = false
+    let outcome: Awaited<ReturnType<ConversationStore["enqueue"]>> | undefined
     try {
-      claimed = await this.options.storage.transaction(async () => {
-        const wasClaimed = await this.options.store.enqueue(entry)
-        if (wasClaimed) await this.options.jobs.schedule("admission:retry", nextAttemptAt, {
+      outcome = await this.withLock(() => this.options.storage.transaction(async () => {
+        if (options.replace && this.admitting) {
+          const state = await this.options.store.get()
+          return { kind: "admission_in_progress", depth: state.queue?.length ?? 0, limit: queueLimit }
+        }
+        const result = await this.options.store.enqueue(entry, queueLimit, options.replace)
+        if (result.kind === "enqueued" && result.position === 1) await this.options.jobs.schedule("admission:retry", nextAttemptAt, {
           queueID: entry.id,
-          reason: "queued-admission",
+          reason: options.replace ? "queued-admission-replaced" : "queued-admission",
         })
-        return wasClaimed
-      })
+        return result
+      }))
     } catch (error) {
       console.warn("queue admission was not persisted", { error: errorMessage(error) })
+      return { kind: "unavailable", message: errorMessage(error) }
     }
-    if (!claimed) return false
+    if (!outcome || outcome.kind !== "enqueued") return outcome ?? { kind: "unavailable", message: "queue admission was not persisted" }
     void this.options.delivery.count("queue.enqueued")
     this.emitLifecycle({ event: "queue.enqueued", result: "scheduled", reasonCode: "queued" })
     if (slack) {
       await this.options.delivery.postChunked(slack.channel, "⏳ Container busy — queued; I'll retry shortly.", slack.replyTs).catch(() => {})
     }
-    return true
+    return outcome
   }
 
   async scheduleQueuedRetry(
-    queued: NonNullable<ConversationState["queued"]>,
+    queued: QueuedMessage,
     retryAt: number,
-    updates: Partial<NonNullable<ConversationState["queued"]>> = {},
+    updates: Partial<QueuedMessage> = {},
     reason: string,
   ): Promise<void> {
     await this.options.storage.transaction(async () => {
-      await this.options.store.patch({ queued: { ...queued, ...updates, nextAttemptAt: retryAt } })
+      const updated = await this.options.store.updateQueueHead(queued.id, { ...updates, nextAttemptAt: retryAt })
+      const state = await this.options.store.get()
+      if (!updated || state.queue?.[0]?.id !== queued.id) return
       await this.options.store.advance("queued")
       await this.options.jobs.schedule("admission:retry", retryAt, { queueID: queued.id, reason })
+    })
+  }
+
+  private async scheduleCurrentQueueHead(reason: string): Promise<void> {
+    await this.options.storage.transaction(async () => {
+      const head = (await this.options.store.get()).queue?.[0]
+      if (!head) return
+      await this.options.jobs.schedule("admission:retry", Math.max(head.nextAttemptAt ?? 0, Date.now()), {
+        queueID: head.id,
+        reason,
+      })
     })
   }
 
@@ -150,14 +181,15 @@ export class ConversationAdmissions {
     const queued = await this.withLock(async () => {
       const state = await this.options.store.get()
       // The warm stream stays connected while idle; it must not block the queue.
-      if (!state.queued || this.admitting || this.options.recovery.pumping() ||
+      const queued = state.queue?.[0]
+      if (!queued || this.admitting || this.options.recovery.pumping() ||
         this.options.recovery.active() || state.budgetReservation?.dispatched) return undefined
-      if (Date.now() < (state.queued.nextAttemptAt ?? 0)) return undefined
+      if (Date.now() < (queued.nextAttemptAt ?? 0)) return undefined
       const phase = state.phase ?? "idle"
       if (phase === "running" || phase === "settling" || phase === "admitting") return undefined
       await this.options.store.advance("admitting")
       this.admitting = true
-      return state.queued
+      return queued
     })
     if (!queued) return false
     this.emitLifecycle({ event: "admission.started", result: "started", reasonCode: "queued_admission" })
@@ -181,8 +213,17 @@ export class ConversationAdmissions {
       }
       const attempts = queued.attempts + 1
       if (attempts >= 5) {
-        await this.options.store.patch({ queued: undefined, lastTurnError: errorMessage(error) })
-        await this.options.store.advance("idle")
+        const removed = await this.withLock(() => this.options.storage.transaction(async () => {
+          const didRemove = await this.options.store.removeQueueHead(queued.id)
+          if (didRemove) {
+            const current = await this.options.store.get()
+            await this.options.store.patch({
+              phase: current.queue?.length ? "queued" : ((current.phase ?? "idle") === "admitting" ? "idle" : current.phase),
+              lastTurnError: errorMessage(error),
+            })
+          }
+          return didRemove
+        }))
         void this.options.delivery.count("queue.failed")
         this.emitLifecycle({ event: "queue.failed", attempt: attempts, result: "failed", reasonCode: "retry_limit" })
         await this.options.delivery.event(
@@ -196,6 +237,7 @@ export class ConversationAdmissions {
             queued.slack.replyTs,
           ).catch(() => {})
         }
+        if (removed) await this.scheduleCurrentQueueHead("queued-after-retry-limit")
         return false
       }
       const retryAt = Date.now() + Math.min(5000 * attempts, 30_000)
@@ -242,12 +284,17 @@ export class ConversationAdmissions {
       }
       return false
     }
-    if (!(await this.options.budgetReservations.markDispatched(reservation.reservation, baseline, true))) {
+    if (!(await this.options.budgetReservations.markDispatched(reservation.reservation, baseline, queued.id))) {
       this.admitting = false
       const retryAt = Date.now() + 30_000
       await this.scheduleQueuedRetry(queued, retryAt, { lastError: "could not persist dispatch state" }, "queue-dispatch-marker-retry")
       return false
     }
+    // The dispatch marker already persisted turn observation. A best-effort
+    // wake for the next queue head must never prevent this head's one prompt.
+    await this.scheduleCurrentQueueHead("queued-after-head-dispatch").catch((error) => {
+      console.warn("next queued admission wake was not persisted", { error: errorMessage(error) })
+    })
     try {
       // Once marked, request failure is ambiguous and this queue item must not
       // be replayed or released as if dispatch definitely never happened.

@@ -116,11 +116,11 @@ describe("Conversation recovery fault regressions", () => {
     expect(result.before.find((row) => row.id === "admission:retry")?.payload).toMatchObject({
       queueID: "queue-stale-1",
     })
-    expect(result.afterRecovery).toMatchObject({ phase: "queued", queued: { id: "queue-stale-1" } })
+    expect(result.afterRecovery).toMatchObject({ phase: "queued", queue: [{ id: "queue-stale-1" }] })
     expect(result.afterRecovery?.admissionID).toBeUndefined()
     expect(result.queueJob?.payload).toMatchObject({ queueID: "queue-stale-1" })
     expect(result.prompts).toBe(1)
-    expect(result.afterQueue?.queued).toBeUndefined()
+    expect(result.afterQueue?.queue).toEqual([])
   })
 
   it("unseals and safely rearms dispatched recovery without losing its hold or usage evidence", async () => {

@@ -363,12 +363,13 @@ export class ConversationTurnExecution {
       await this.options.delivery.event({ type: "error", message: "workspace checkpoint failed; retrying in the background" })
     }
     const afterSettle = await this.options.store.get()
+    const queued = afterSettle.queue?.[0]
     await this.options.storage.transaction(async () => {
       await this.options.store.advance("idle")
-      if (afterSettle.queued) await this.options.jobs.schedule(
+      if (queued) await this.options.jobs.schedule(
         "admission:retry",
-        Math.max(Date.now() + 1000, afterSettle.queued.nextAttemptAt ?? 0),
-        { queueID: afterSettle.queued.id, reason: "turn-settled-queue-wake" },
+        Math.max(Date.now() + 1000, queued.nextAttemptAt ?? 0),
+        { queueID: queued.id, reason: "turn-settled-queue-wake" },
       )
     })
     void this.options.delivery.count(failure ? "turn.failed" : "turn.settled")

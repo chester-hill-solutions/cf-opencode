@@ -645,10 +645,11 @@ describe("isolated evented container image selection", () => {
       // image marker, not the lost request key or startup cache, selects image.
       runtimeCache(instance).bindImage(undefined)
       runtimeCache(instance).invalidate()
-      const state = firstState as Record<string, unknown> & { queued: Record<string, unknown> }
+      const state = firstState as Record<string, unknown> & { queue: Record<string, unknown>[] }
+      const [head, ...tail] = state.queue
       await runtime.storage.put("state", {
         ...state,
-        queued: { ...state.queued, nextAttemptAt: Date.now() - 1 },
+        queue: head ? [{ ...head, nextAttemptAt: Date.now() - 1 }, ...tail] : [],
       })
       await driveConversationJobs(instance, runtime.storage, ["admission:retry"], { queued: true })
 
@@ -685,7 +686,7 @@ describe("isolated evented container image selection", () => {
     expect(result.imageStarts[0]?.image).toBe(EVENTED_IMAGE)
     expect(result.prompts).toBe(1)
     expect(result.calls.filter((call) => call === "4001 POST /opencode/api/session/ses_canary/prompt")).toHaveLength(1)
-    expect(result.finalState?.queued).toBeUndefined()
+    expect(result.finalState?.queue).toEqual([])
     expect(result.finalState?.budgetReservation).toMatchObject({ dispatched: true })
   })
 

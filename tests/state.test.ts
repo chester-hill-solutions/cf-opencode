@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
-import { canTransition, ConversationStore, type KeyValueStorage } from "../src/state"
+import { canTransition, ConversationStore, type KeyValueStorage, type QueuedMessage } from "../src/state"
+import { DEFAULT_QUEUE_CAPACITY, MAX_QUEUE_CAPACITY, queueCapacity } from "../src/queue"
 
 function fakeStorage(): KeyValueStorage & { map: Map<string, unknown> } {
   const map = new Map<string, unknown>()
@@ -17,7 +18,7 @@ function fakeStorage(): KeyValueStorage & { map: Map<string, unknown> } {
 describe("ConversationStore", () => {
   test("starts empty", async () => {
     const store = new ConversationStore(fakeStorage())
-    expect(await store.get()).toEqual({ seen: [], pending: {} })
+    expect(await store.get()).toEqual({ queue: [], seen: [], pending: {}, permissionNotifications: {} })
   })
 
   test("claims event ids and releases failed ones", async () => {
@@ -222,6 +223,71 @@ describe("ConversationStore", () => {
     })
   })
 
+  test("appends FIFO up to capacity without losing entries", async () => {
+    const store = new ConversationStore(fakeStorage())
+    const entry = (id: string): QueuedMessage => ({ id, enqueuedAt: Number(id.slice(1)), source: "http", text: id, attempts: 0 })
+    expect(await store.enqueue(entry("q1"), 2)).toMatchObject({ kind: "enqueued", position: 1, depth: 1 })
+    expect(await store.enqueue(entry("q2"), 2)).toMatchObject({ kind: "enqueued", position: 2, depth: 2 })
+    expect(await store.enqueue(entry("q3"), 2)).toMatchObject({ kind: "queue_full", depth: 2, limit: 2 })
+    expect((await store.get()).queue?.map(({ id }) => id)).toEqual(["q1", "q2"])
+    expect((await store.get()).budgetReservation).toBeUndefined()
+  })
+
+  test("supports explicit replacement but refuses replacement during admission", async () => {
+    const store = new ConversationStore(fakeStorage())
+    const entry: QueuedMessage = { id: "q1", enqueuedAt: 1, source: "http", text: "first", attempts: 0 }
+    await store.enqueue(entry)
+    await store.enqueue({ ...entry, id: "q2", text: "second" })
+    expect(await store.enqueue({ ...entry, id: "q3" }, 10, true)).toMatchObject({ kind: "enqueued", depth: 1 })
+    await store.patch({ phase: "admitting" })
+    expect(await store.enqueue({ ...entry, id: "q4" }, 10, true)).toMatchObject({ kind: "admission_in_progress" })
+    expect((await store.get()).queue?.map(({ id }) => id)).toEqual(["q3"])
+  })
+
+  test("normalizes legacy singleton deterministically and persists it on mutation", async () => {
+    const storage = fakeStorage()
+    storage.map.set("state", { queued: { text: "old", attempts: 2, slack: { channel: "C1" } }, seen: [], pending: {} })
+    const store = new ConversationStore(storage)
+    expect((await store.get()).queue).toEqual([{ id: "legacy-queued", enqueuedAt: 0, source: "slack", text: "old", attempts: 2, slack: { channel: "C1" } }])
+    expect((await store.get()).queued).toBeUndefined()
+    await store.patch({ lastReply: "mutation" })
+    expect(storage.map.get("state")).toMatchObject({ queue: [{ id: "legacy-queued", enqueuedAt: 0, source: "slack" }], lastReply: "mutation" })
+    expect(storage.map.get("state")).not.toHaveProperty("queued")
+  })
+
+  test("dispatch marker consumes only a matching queue head and preserves the tail", async () => {
+    const store = new ConversationStore(fakeStorage())
+    const entry = (id: string): QueuedMessage => ({ id, enqueuedAt: 1, source: "http", text: id, attempts: 0 })
+    await store.enqueue(entry("head"))
+    await store.enqueue(entry("tail"))
+    const reservation = await store.ensureBudgetReservation("r1")
+    await store.setBudgetReservationDate(reservation.reservationID, "2026-11-14")
+    expect(await store.markBudgetReservationDispatched("r1", "2026-11-14", undefined, "wrong")).toBe(false)
+    expect(await store.markBudgetReservationDispatched("r1", "2026-11-14", undefined, "head")).toBe(true)
+    const state = await store.get()
+    expect(state.queue?.map(({ id }) => id)).toEqual(["tail"])
+    expect(state.budgetReservation).toMatchObject({ reservationID: "r1", dispatched: true })
+  })
+
+  test("head removal is ID-fenced and leaves every later FIFO item in order", async () => {
+    const store = new ConversationStore(fakeStorage())
+    const entry = (id: string): QueuedMessage => ({ id, enqueuedAt: Number(id.slice(1)), source: "http", text: id, attempts: 0 })
+    await store.enqueue(entry("q1"))
+    await store.enqueue(entry("q2"))
+    await store.enqueue(entry("q3"))
+    expect(await store.removeQueueHead("q2")).toBe(false)
+    expect(await store.removeQueueHead("q1")).toBe(true)
+    expect((await store.get()).queue?.map(({ id }) => id)).toEqual(["q2", "q3"])
+  })
+
+  test("queue capacity uses a documented bounded fallback", () => {
+    expect(queueCapacity(undefined)).toBe(DEFAULT_QUEUE_CAPACITY)
+    expect(queueCapacity("7")).toBe(7)
+    expect(queueCapacity(0)).toBe(DEFAULT_QUEUE_CAPACITY)
+    expect(queueCapacity(MAX_QUEUE_CAPACITY + 1)).toBe(DEFAULT_QUEUE_CAPACITY)
+    expect(queueCapacity(2.5)).toBe(DEFAULT_QUEUE_CAPACITY)
+  })
+
   test("increments a counter atomically", async () => {
     const store = new ConversationStore(fakeStorage())
     const values = await Promise.all([
@@ -233,17 +299,17 @@ describe("ConversationStore", () => {
     expect((await store.get()).containerStarts).toBe(3)
   })
 
-  test("queues at most one message when callers enqueue together", async () => {
+  test("preserves concurrent FIFO appends", async () => {
     const store = new ConversationStore(fakeStorage())
     const results = await Promise.all([
-      store.enqueue({ text: "one", attempts: 0 }),
-      store.enqueue({ text: "two", attempts: 0 }),
-      store.enqueue({ text: "three", attempts: 0 }),
+      store.enqueue({ id: "one", enqueuedAt: 1, source: "http", text: "one", attempts: 0 }),
+      store.enqueue({ id: "two", enqueuedAt: 2, source: "http", text: "two", attempts: 0 }),
+      store.enqueue({ id: "three", enqueuedAt: 3, source: "http", text: "three", attempts: 0 }),
     ])
-    expect(results.filter(Boolean)).toHaveLength(1)
+    expect(results.every((result) => result.kind === "enqueued")).toBe(true)
     const state = await store.get()
     expect(state.phase).toBe("queued")
-    expect(["one", "two", "three"]).toContain(state.queued?.text ?? "none")
+    expect(state.queue?.map(({ text }) => text)).toEqual(["one", "two", "three"])
   })
 
   test("fills missing fields from a record written by an older build", async () => {

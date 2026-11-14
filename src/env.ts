@@ -1,4 +1,6 @@
 export interface Env {
+  /** Durable pending-message capacity, integer 1..100; default 10. */
+  QUEUE_LIMIT?: string
   /** Slack adapter is optional; without these the Slack routes return 503. */
   SLACK_SIGNING_SECRET?: string
   SLACK_BOT_TOKEN?: string

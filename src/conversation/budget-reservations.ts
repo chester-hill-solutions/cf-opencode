@@ -139,7 +139,7 @@ export class ConversationBudgetReservations {
   async markDispatched(
     reservation: BudgetReservation,
     turnBaseline: string | undefined,
-    fromQueue = false,
+    queueID?: string,
   ): Promise<boolean> {
     if (!reservation.date) return false
     try {
@@ -149,7 +149,7 @@ export class ConversationBudgetReservations {
           reservation.reservationID,
           reservation.date!,
           turnBaseline,
-          fromQueue,
+          queueID,
         )
         if (!marked) return false
         const state = await this.options.store.get()
@@ -158,7 +158,7 @@ export class ConversationBudgetReservations {
           reservationID: reservation.reservationID,
           reservationDate: reservation.date!,
           sessionID: state.sessionID,
-          reason: fromQueue ? "queued-prompt-dispatched" : "prompt-dispatched",
+          reason: queueID ? "queued-prompt-dispatched" : "prompt-dispatched",
         })
         return true
       })

@@ -267,7 +267,7 @@ alongside W1–W3 but closes no product gate. W5 waits for G1 + G1-C.
 | **W1** | **R0-11** | Deployed checks for R0-10/R0-11/R0-13 and the legacy/manual ledger | M | R0-15 | Audit 29/30/31/33 regressions pass in a deployed container; unprovable legacy cases named with their permanent marker |
 | **W1** | **R0-15** | Storage production cutover and full recovery inventory — corrected fixed matrix qualified | L | — | [Corrected live receipt](evidence/storage-metadata-live-2026-11-14.json): 14 preserved, 3 safely refused, zero failures. Native CI passes. Complete live account-seed rehearsal and remaining cutover inventory, then review the [retained-data runbook](runbooks/storage-cutover.md) and production rollout; no operator data reset proposed |
 | **W1** | **R0-16** | Public replay production rollout | S | — | `Last-Event-ID` forwarding and reset path live; snapshot-vs-delta semantics documented; no prompt resend on reconnect |
-| **W1** | **R0-20** | Message delivery modes: durable FIFO queue, steer, interrupt-with-follow-up | L | R0-17, R0-18 | Default queue accepts multiple messages FIFO across restart; full queue refuses without loss; steer joins the active turn with no new hold; interrupt settles before the follow-up; ambiguous interrupt does not duplicate; Slack/HTTP parity; tests |
+| **W1** | **R0-20** | **DONE locally; native/deployed verification owed** — Message delivery modes: durable FIFO queue, steer, interrupt-with-follow-up | L | R0-17, R0-18 | Default queue accepts multiple messages FIFO across restart; full queue refuses without loss; steer joins the active turn with no new hold; interrupt settles before the follow-up; ambiguous interrupt does not duplicate; Slack/HTTP parity; tests |
 | **W2** | **R1-7a** | Disposable credential/egress feasibility proof | M | R0-19 | Synthetic provider/git credentials injected outside the sandbox; default-deny egress proven for provider HTTP/SSE, clone/fetch, packages; unsupported paths rejected; OpenCode self-approval residual recorded |
 | **W2** | **R1-1/R1-2** | Stable checkpoint keys and deployed `durable_object` policy cutover | S+M | R0-10 | One supported checkpoint layout; legacy copy only with a named retained-data requirement; deployed policy and replacement cutover verified |
 | **W2** | **R1-3** | Deployed per-conversation lifecycle and isolation inspection | M | R1-1, R1-2 | Runtime generation, active turn and last verified recovery point inspectable; per-conversation start/snapshot/inactivity/lease behavior verified in deployment |
@@ -474,6 +474,65 @@ fallback. No WASM/AgentOS rewrite, no stow POSIX shim, no snapshot-first recover
    production cutover and all product/security gates remain open.
 6. **R1-4a**: circulate the seven decisions (including the delivery model) for
    API/product sign-off. No code until they are locked.
+
+### 5.4 Active orchestrated batch — 2026-11-14
+
+**Mission.** Deliver a substantial correctness and workflow slice using the
+existing engine: durable multi-message delivery, truthful timeout/budget status,
+and a ready encrypted account-seed rehearsal. This section executes the queue
+above; it is not a second planning authority.
+
+**Local outcome.** Implementation and cross-owner review are complete. FIFO,
+explicit delivery, durable stop fencing, timeout status and the low-budget probe
+pass the local gates. The account-seed fixture passes offline types/bundling and
+safety contracts; live rehearsal and production cutover remain open.
+[Batch evidence](evidence/orchestrated-delivery-batch-2026-11-14.md). Native and
+deployed checks remain tied to the exact uploaded revision.
+
+**Key results.** (1) FIFO accepts bounded follow-ups without new holds or lost
+items and survives recreation; (2) queue/steer/interrupt agree over HTTP and
+Slack with no ambiguous prompt resend; (3) timeout and budget exposure are named
+truthfully and regression-tested; (4) account-seed fixture/evidence distinguish
+synthetic/local, deployed and production guarantees.
+
+**Locked boundaries.** One authoritative queue array, default capacity 10,
+configurable 1–100; migrate the legacy slot without dual writers. Consume the
+matching head atomically with dispatch intent, keep tails and retained holds on
+ambiguity. Explicit replacement cannot discard an in-flight admitting head.
+Keep existing observe-and-alert timeout behavior while the policy question is
+pending; no automatic cancellation or spending-cap claim. Use the qualified
+image and synthetic account data only for seed rehearsal; global legacy scope
+is explicit, not tenant isolation. No real Slack messages, provider prompts,
+production rollout or operator-data reset in this batch.
+
+**Team pattern.** Two bounded parallel implementation streams plus a rehearsal
+stream, then parent integration and one independent review. The parent owns
+contracts, root HTTP/Slack integration, shared-file sequencing, canonical plan,
+external-action review and final acceptance. Three persistent subagents use the
+supported `gpt-6-luna` override at medium reasoning with fresh bounded briefs.
+The parent model is fixed by this chat; no additional larger-model invocation
+is planned. Escalate a specific unresolved design only after narrowing/context
+fails, rather than reassigning whole features.
+
+| ID | Deliverable / owned scope | Owner / dispatch | Depends | Done when |
+|---|---|---|---|---|
+| R0-20a | Queue schema/helpers, legacy normalization, pure regressions (`state.ts`, `queue.ts`, state tests) | queue_core / Luna medium | — | FIFO/full/replace/head fencing/legacy tests pass |
+| R0-20b | Admission/drain/retry adaptation and budget dispatch wrapper, related Worker tests | same queue_core / Luna medium | R0-20a | Only matching head consumed; tails, retry deadlines and ambiguity retained |
+| R0-20c | HTTP/default queue, explicit steer/interrupt, scheduler/recovery guards and Slack adapter | parent | R0-20a/b | Both transports use the same engine and explicit delivery; no second hold on steer |
+| R0-20d | Slack command rendering/delegation and unit tests (`slack-commands.ts`) | exposure_contracts / Luna medium | contract lock | Queue depth/head and !steer/!stop follow-up match parent services |
+| R0-22a | Pure observation projection/tests, parent status wiring | exposure_contracts / Luna medium; parent wiring | current policy | Threshold is not a stop claim; stale records cannot label another turn |
+| R0-3a | Low-budget admitted-turn exposure regression | same exposure_contracts / Luna medium | — | $0.10 hold admits; sourced $5 actual records; next admission rejects |
+| R0-15a | Fixed source/recipient encrypted-R2 seed fixture and safety contracts | seed_rehearsal / Luna medium | current artifact | No arbitrary exec/proxy, synthetic marker fidelity and distinct identity; limits explicit |
+| R0-21v | Review prior permission repair and include it in integration verification | exposure read-only, parent acceptance | existing b71f1f9 | No concrete regression; local/native/deployed status separate |
+| BATCH-V | Independent invariant review, integrated gate, receipts and backout | parent coordinates; reuse idle Luna context read-only | implemented batch | Consequential findings resolved, all required checks reported honestly |
+
+**Verification/backout.** Focused regressions accompany each bounded edit; parent
+runs the existing typing/config/Bun/runtime/Worker gate once integrated, then
+repeats only affected checks after changes. CI and isolated live rehearsal require
+concrete source/config/budget receipts and authorized upload destinations; no
+release script is permission to deploy production. Never roll old singleton-only
+code back onto a queue with multiple entries: preserve/export or drain it first.
+Keep schema/retry migration limits and remaining R0-15/G1/G1-C/G2 gates open.
 
 ## 6. Gate definitions and exit criteria
 

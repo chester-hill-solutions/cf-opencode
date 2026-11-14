@@ -33,7 +33,11 @@ export interface SlackTarget {
 /** One admission held while the container could not accept it. */
 export interface QueuedMessage {
   /** Stable owner fence for its Lifecycle admission/retry intent. */
-  id?: string
+  id: string
+  /** Stable FIFO ordering timestamp. */
+  enqueuedAt: number
+  /** Original admission transport. */
+  source: Transport
   text: string
   slack?: SlackTarget
   attempts: number
@@ -42,6 +46,19 @@ export interface QueuedMessage {
   /** Why the last attempt failed, for operators. */
   lastError?: string
 }
+
+/** Legacy singleton queue shape accepted only while normalizing stored records. */
+export interface LegacyQueuedMessage extends Partial<Pick<QueuedMessage, "id" | "enqueuedAt" | "source">> {
+  text: string
+  slack?: SlackTarget
+  attempts: number
+  nextAttemptAt?: number
+  lastError?: string
+}
+
+export type QueueEnqueueResult =
+  | { kind: "enqueued"; id: string; position: number; depth: number; limit: number }
+  | { kind: "queue_full" | "admission_in_progress"; depth: number; limit: number }
 
 /** Durable reference to the one Settings-owned hold for this conversation. */
 export interface BudgetReservation {
@@ -111,8 +128,10 @@ export interface ConversationState {
   reportedError?: string
   /** Settings version the running container was configured with. */
   settingsVersion?: number
-  /** One pending admission when the container could not start. */
-  queued?: QueuedMessage
+  /** Authoritative FIFO of pending admissions. */
+  queue?: QueuedMessage[]
+  /** @deprecated Legacy persisted singleton; normalized away on read. */
+  queued?: LegacyQueuedMessage
   /** Stable fence for a pre-dispatch admission recovery wake. */
   admissionID?: string
   /** When the current admission claimed the phase, for stale recovery. */
@@ -207,10 +226,22 @@ export class ConversationStore {
    */
   private async read(): Promise<ConversationState> {
     const state = await this.storage.get<ConversationState>("state")
+    const legacy = state?.queued
+    const queue = Array.isArray(state?.queue) ? state.queue : legacy ? [{
+      ...legacy,
+      id: legacy.id ?? "legacy-queued",
+      enqueuedAt: legacy.enqueuedAt ?? 0,
+      source: legacy.source ?? (legacy.slack ? "slack" : "http"),
+    }] : []
+    const { queued: _legacyQueued, ...normalized } = state ?? {}
     return {
-      ...(state ?? {}),
+      ...normalized,
+      queue,
       seen: Array.isArray(state?.seen) ? state.seen : [],
       pending: state?.pending && typeof state.pending === "object" ? state.pending : {},
+      permissionNotifications: state?.permissionNotifications && typeof state.permissionNotifications === "object"
+        ? state.permissionNotifications
+        : {},
     }
   }
 
@@ -337,7 +368,7 @@ export class ConversationStore {
     reservationID: string,
     date: string,
     turnBaseline: string | undefined,
-    fromQueue = false,
+    queueID?: string,
   ): Promise<boolean> {
     return this.transact((state) => {
       const reservation = state.budgetReservation
@@ -345,6 +376,7 @@ export class ConversationStore {
         return { result: false }
       }
       if (reservation.dispatched) return { result: false }
+      if (queueID !== undefined && state.queue?.[0]?.id !== queueID) return { result: false }
       return {
         next: {
           ...state,
@@ -354,7 +386,7 @@ export class ConversationStore {
           budgetReservation: { ...reservation, dispatched: true },
           runStartedAt: Date.now(),
           turnBaseline,
-          ...(fromQueue ? { queued: undefined } : {}),
+          ...(queueID !== undefined ? { queue: (state.queue ?? []).slice(1) } : {}),
         },
         result: true,
       }
@@ -381,7 +413,7 @@ export class ConversationStore {
   }): Promise<boolean> {
     return this.transact((state) => {
       const reservation = state.budgetReservation
-      if (state.sessionID !== input.sessionID || state.queued ||
+      if (state.sessionID !== input.sessionID || (state.queue?.length ?? 0) > 0 ||
         !reservation || reservation.dispatched !== true ||
         reservation.reservationID !== input.reservationID || reservation.date !== input.date) {
         return { result: false }
@@ -416,7 +448,7 @@ export class ConversationStore {
       const reservation = state.budgetReservation
       if (!reservation || reservation.dispatched !== false || captured.dispatched !== false ||
         reservation.reservationID !== captured.reservationID || reservation.date !== captured.date ||
-        state.queued || ((state.phase ?? "idle") !== "idle" && state.phase !== "admitting")) {
+        (state.queue?.length ?? 0) > 0 || ((state.phase ?? "idle") !== "idle" && state.phase !== "admitting")) {
         return { result: false }
       }
       return {
@@ -438,18 +470,42 @@ export class ConversationStore {
     })
   }
 
-  /**
-   * Claim the single queue slot. Concurrent callers race on this one
-   * check-and-set, so exactly one message can be queued and none is dropped by
-   * a stale read.
-   */
-  async enqueue(entry: QueuedMessage): Promise<boolean> {
-    return this.transact((state) => {
-      if (state.queued) return { result: false }
+  /** Append one FIFO entry atomically, or replace the waiting queue explicitly. */
+  async enqueue(entry: QueuedMessage, limit = 10, replace = false): Promise<QueueEnqueueResult> {
+    return this.transact<QueueEnqueueResult>((state) => {
+      const currentQueue = state.queue ?? []
+      const depth = currentQueue.length
+      if (replace && state.phase === "admitting") return { result: { kind: "admission_in_progress", depth, limit } }
+      if (replace) {
+        const from = state.phase ?? "idle"
+        const phase = from === "idle" ? "queued" : state.phase
+        return { next: { ...state, queue: [entry], phase }, result: { kind: "enqueued", id: entry.id, position: 1, depth: 1, limit } }
+      }
+      if (depth >= limit) return { result: { kind: "queue_full", depth, limit } }
       const from = state.phase ?? "idle"
-      const phase = from === "queued" || canTransition(from, "queued") ? "queued" : state.phase
-      return { next: { ...state, queued: entry, phase }, result: true }
+      const phase = from === "idle" ? "queued" : state.phase
+      const queue = [...currentQueue, entry]
+      return { next: { ...state, queue, phase }, result: { kind: "enqueued", id: entry.id, position: queue.length, depth: queue.length, limit } }
     })
+  }
+
+  async updateQueueHead(id: string, updates: Partial<QueuedMessage>): Promise<boolean> {
+    return this.transact((state) => {
+      const currentQueue = state.queue ?? []
+      if (currentQueue[0]?.id !== id) return { result: false }
+      const queue = [{ ...currentQueue[0], ...updates, id }, ...currentQueue.slice(1)]
+      return { next: { ...state, queue }, result: true }
+    })
+  }
+
+  async removeQueueHead(id: string): Promise<boolean> {
+    return this.transact((state) => (state.queue ?? [])[0]?.id !== id
+      ? { result: false }
+      : { next: { ...state, queue: (state.queue ?? []).slice(1), ...((state.queue?.length ?? 0) === 1 && state.phase === "queued" ? { phase: "idle" as const } : {}) }, result: true })
+  }
+
+  async clearQueue(): Promise<void> {
+    await this.transact((state) => ({ next: { ...state, queue: [] }, result: undefined }))
   }
 
   async setSession(sessionID: string, transport: Transport, slack?: SlackTarget): Promise<void> {

@@ -5,6 +5,7 @@ import { chunkText, formatSlackContext, mrkdwnEscape } from "../adapters/slack"
 import type { BudgetReservation, SlackTarget } from "../state"
 import type { ConversationStore } from "../state"
 import type { SlackEventRequest } from "./requests"
+import type { TurnObservation } from "../turn-observation"
 import type { ConversationAdmissions } from "./admissions"
 import type { ConversationBudgetReservations } from "./budget-reservations"
 import type { ConversationControlPlane, SlackFormRequest } from "./control-plane"
@@ -36,6 +37,8 @@ export interface ConversationSlackAdapterOptions {
   controlPlane: Pick<ConversationControlPlane, "pendingForms" | "replyToForm">
   upgrades: Pick<ConversationRuntimeUpgrades, "hasPending">
   turnExecution: Pick<ConversationTurnExecution, "isPumping" | "startStream">
+  controls: { steer(text: string): Promise<string>; stop(followUp?: string, target?: SlackTarget): Promise<string> }
+  observation(): Promise<TurnObservation>
   scheduler: Pick<ConversationScheduler, "schedule">
   recovery: Pick<ConversationRecoveryActions, "active">
   withClient<T>(fn: (client: OpenCodeClient) => Promise<T>, recoverOnRejection?: boolean): Promise<T>
@@ -54,7 +57,7 @@ export class ConversationSlackAdapter {
 
   async handleControl(text: string, input: SlackEventRequest, target: SlackTarget): Promise<void> {
     await handleSlackCommand(text, {
-      getState: () => this.options.store.get(),
+      getState: async () => ({ ...await this.options.store.get(), turnObservation: await this.options.observation() }),
       getDefaultModel: async () => (await this.options.settings()).model,
       getModels: async () => (await this.options.withClient((client) => client.model.list({ location: { directory: "/workspace" } }), false)).data,
       getSession: (sessionID) => this.options.withClient((client) => client.session.get({ sessionID }), false),
@@ -62,7 +65,8 @@ export class ConversationSlackAdapter {
       switchModel: (ref) => this.changeModel(ref),
       selectSession: (sessionID) => this.changeSession(sessionID, target),
       newSession: () => this.changeSession(undefined, target),
-      stop: () => this.stopWork(),
+      steer: (guidance) => this.options.controls.steer(guidance),
+      stop: (followUp) => this.options.controls.stop(followUp, target),
       leave: async () => {
         if (input.event.channel_type === "im") return "This is a DM; use `!new` for a fresh session or `!stop` to interrupt work."
         await this.options.store.patch({ slackEngaged: false })
@@ -157,12 +161,10 @@ export class ConversationSlackAdapter {
         return Response.json({ ok: true })
       }
       const queued = await this.options.admissions.enqueue(prompt, target)
-      accepted = queued
-      if (!queued) {
-        await this.postChunked(target.channel, `⚠️ Container busy and a message is already queued: ${this.errorMessage(error)}`, target.replyTs).catch(() => {})
-      }
+      accepted = queued.kind === "enqueued"
+      if (!accepted) await this.postChunked(target.channel, this.queueFailureMessage(queued, error), target.replyTs).catch(() => {})
       if (!accepted && input.eventID) await this.options.store.releaseEvent(input.eventID).catch(() => {})
-      return Response.json({ ok: true, queued })
+      return Response.json({ ok: true, queued: accepted, queueResult: this.safeQueueResult(queued) })
     }
 
     if (!(await this.options.admissions.claim())) {
@@ -172,10 +174,10 @@ export class ConversationSlackAdapter {
         return Response.json({ ok: true, queued: false })
       }
       const queued = await this.options.admissions.enqueue(prompt, target)
-      accepted = queued
-      if (!queued) await this.postChunked(target.channel, "⚠️ Container busy and a message is already queued.", target.replyTs).catch(() => {})
+      accepted = queued.kind === "enqueued"
+      if (!accepted) await this.postChunked(target.channel, this.queueFailureMessage(queued), target.replyTs).catch(() => {})
       if (!accepted && input.eventID) await this.options.store.releaseEvent(input.eventID).catch(() => {})
-      return Response.json({ ok: true, queued })
+      return Response.json({ ok: true, queued: accepted, queueResult: this.safeQueueResult(queued) })
     }
 
     if (hasImage) {
@@ -228,14 +230,17 @@ export class ConversationSlackAdapter {
         if (input.eventID) await this.options.store.releaseEvent(input.eventID).catch(() => {})
         return Response.json({ ok: true, queued: false })
       }
+      // Startup failed before any budget hold or provider dispatch. Clear the
+      // persisted admission claim before enqueueing so FIFO drain can proceed.
+      await this.options.store.patch({ phase: "idle", admissionID: undefined, admissionStartedAt: undefined })
       const queued = await this.options.admissions.enqueue(prompt, target)
-      accepted = queued
-      if (!queued) {
+      accepted = queued.kind === "enqueued"
+      if (!accepted) {
         await this.options.store.advance("idle")
-        await this.postChunked(target.channel, `⚠️ Container busy and a message is already queued: ${this.errorMessage(error)}`, target.replyTs).catch(() => {})
+        await this.postChunked(target.channel, this.queueFailureMessage(queued, error), target.replyTs).catch(() => {})
       }
       if (!accepted && input.eventID) await this.options.store.releaseEvent(input.eventID).catch(() => {})
-      return Response.json({ ok: true, queued })
+      return Response.json({ ok: true, queued: accepted, queueResult: this.safeQueueResult(queued) })
     }
 
     const reservation = await this.options.budget.acquire()
@@ -274,6 +279,7 @@ export class ConversationSlackAdapter {
       await this.options.withClient((client) => client.session.prompt({
         sessionID,
         text: prompt,
+        delivery: "queue",
         ...(imageAttachment ? { files: [imageAttachment] } : {}),
       }))
     } catch (error) {
@@ -358,7 +364,7 @@ export class ConversationSlackAdapter {
   private async requireIdle(): Promise<import("../state").ConversationState> {
     const state = await this.options.store.get()
     if (await this.options.upgrades.hasPending()) throw new Error("A runtime upgrade is pending. Resume it before changing the model or session.")
-    if (this.options.admissions.active || this.options.turnExecution.isPumping || this.options.recovery.active || isBusyPhase(state.phase) || state.queued || state.budgetReservation) {
+    if (this.options.admissions.active || this.options.turnExecution.isPumping || this.options.recovery.active || isBusyPhase(state.phase) || Boolean(state.queue?.length) || state.budgetReservation) {
       throw new Error("This conversation has unfinished work. Use `!stop`, then wait for settlement; `!status` shows any retained usage hold.")
     }
     return state
@@ -403,26 +409,17 @@ export class ConversationSlackAdapter {
     })
   }
 
-  private async stopWork(): Promise<string> {
-    return this.options.admissions.withLock(async () => {
-      const state = await this.options.store.get()
-      if (this.options.admissions.active || state.phase === "admitting") return "A message is being admitted. Retry `!stop` once startup finishes."
-      if (state.queued && !state.budgetReservation && state.phase === "queued") {
-        await this.options.store.patch({ queued: undefined, phase: "idle" })
-        return "Stopped the queued message before dispatch."
-      }
-      if (!state.sessionID) return "No session mapped here yet."
-      if (!isBusyPhase(state.phase) && !state.budgetReservation) return "This session is already idle."
-      await this.options.withClient((client) => client.session.interrupt({ sessionID: state.sessionID!, resume: false }), false)
-      await this.options.store.patch({ queued: undefined })
-      await this.options.scheduler.schedule("turn:observe", Date.now() + 1000, {
-        reservationID: state.budgetReservation?.reservationID,
-        reservationDate: state.budgetReservation?.date,
-        sessionID: state.sessionID,
-        reason: "slack-stop-settlement",
-      })
-      return "Stop requested; queued follow-ups cleared. Usage settlement will finish before the next turn."
-    })
+  private safeQueueResult(result: Awaited<ReturnType<ConversationAdmissions["enqueue"]>>): Record<string, unknown> {
+    if (result.kind === "enqueued") return { kind: result.kind, position: result.position, depth: result.depth, limit: result.limit }
+    if (result.kind === "unavailable") return { kind: result.kind }
+    return { kind: result.kind, depth: result.depth, limit: result.limit }
+  }
+
+  private queueFailureMessage(result: Awaited<ReturnType<ConversationAdmissions["enqueue"]>>, priorError?: unknown): string {
+    if (result.kind === "queue_full") return `⚠️ The follow-up queue is full (${result.depth}/${result.limit}). Nothing was queued; try again when a slot opens.`
+    if (result.kind === "admission_in_progress") return "⚠️ Another message is still starting. Nothing was queued; please retry shortly."
+    if (result.kind === "unavailable") return "⚠️ The follow-up queue is unavailable. Nothing was queued; please retry shortly."
+    return `⚠️ I couldn't prepare the message (${this.errorMessage(priorError)}). Nothing was queued; please retry.`
   }
 
   private async buildPrompt(channel: string, ts: string, threadTs: string | undefined, text: string): Promise<string> {

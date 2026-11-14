@@ -446,8 +446,15 @@ async function handleApi(
     if (typeof body.text !== "string" || !body.text.trim()) {
       return Response.json({ error: "empty message" }, { status: 400 })
     }
+    if ((body.delivery !== undefined && !["queue", "steer", "interrupt"].includes(body.delivery as string)) ||
+      (body.replaceQueue !== undefined && typeof body.replaceQueue !== "boolean") ||
+      (body.delivery === "steer" && body.replaceQueue !== undefined)) {
+      return Response.json({ error: "invalid delivery options" }, { status: 400 })
+    }
     recordConversation()
     const message: MessageRequest = {
+      ...(body.delivery !== undefined ? { delivery: body.delivery as MessageRequest["delivery"] } : {}),
+      ...(body.replaceQueue !== undefined ? { replaceQueue: body.replaceQueue as boolean } : {}),
       text: body.text,
       transport: "http",
       ...(body.user ? { user: body.user as string } : {}),

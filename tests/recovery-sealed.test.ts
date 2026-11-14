@@ -50,7 +50,7 @@ describe("sealed idle recovery classification", () => {
 
   it.each([
     ["local phase", { state: idleState({ phase: "queued" }) }],
-    ["queue", { state: idleState({ queued: { text: "later", attempts: 0 } }) }],
+    ["queue", { state: idleState({ queue: [{ id: "q1", enqueuedAt: 0, source: "http", text: "later", attempts: 0 }] }) }],
     ["live operation", { live: { admitting: true, pumping: false } }],
     ["pending upgrade", { scheduler: scheduler({ pendingUpgrade: true }) }],
     ["active scheduler job", { scheduler: scheduler({ activeJobs: 1 }) }],

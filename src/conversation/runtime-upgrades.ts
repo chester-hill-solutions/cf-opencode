@@ -8,6 +8,7 @@ import type { ConversationImages } from "./images"
 import type { ConversationCheckpoints } from "./checkpoints"
 import type { ConversationLease } from "./lease"
 import { ACCOUNTING_POLICY_ID, assertAccountingPolicy } from "../accounting-policy"
+import { recoveryQueueSummary } from "../recovery"
 import { type ArchivePolicyEnv } from "../archive-policy"
 import { proveRuntimeQuiescence } from "../runtime-quiescence"
 import {
@@ -95,7 +96,7 @@ export class ConversationRuntimeUpgrades {
             const state = await this.options.store.get()
             const ledger = await this.options.usage.ledger().catch(() => undefined)
             if (!ledger || ledger.conversationID !== this.options.id || ledger.holds.length || ledger.blockers.length ||
-              state.sessionID !== pending.sessionID || state.queued || state.budgetReservation || state.checkpointPending ||
+              state.sessionID !== pending.sessionID || (state.queue?.length ?? 0) > 0 || state.budgetReservation || state.checkpointPending ||
               (state.phase ?? "idle") !== "idle") {
               return Response.json({ pending: true, canApply: false, error: "runtime upgrade resume is blocked by changed work or usage state" }, { status: 409 })
             }
@@ -118,7 +119,7 @@ export class ConversationRuntimeUpgrades {
     const live = this.options.live()
     if (!sessionID) blockers.push("original_session_required")
     if ((state.phase ?? "idle") !== "idle") blockers.push("conversation_not_idle")
-    if (state.queued) blockers.push("queued_work")
+    if ((state.queue?.length ?? 0) > 0) blockers.push("queued_work")
     if (state.budgetReservation) blockers.push("local_usage_hold")
     if (state.checkpointPending) blockers.push("checkpoint_pending")
     if (live.admitting || live.pumping || !this.options.recoveryActions.active) blockers.push("live_local_operation")
@@ -212,7 +213,7 @@ export class ConversationRuntimeUpgrades {
     return {
       sessionID: state.sessionID ?? null,
       phase: state.phase ?? "idle",
-      queued: state.queued ?? null,
+      queue: recoveryQueueSummary(state),
       budgetReservation: state.budgetReservation ?? null,
       checkpointPending: state.checkpointPending ?? null,
       checkpointManifest: state.checkpointManifest ?? null,
@@ -299,7 +300,7 @@ export class ConversationRuntimeUpgrades {
             const ledger = await this.options.usage.ledger().catch(() => undefined)
             const currentLive = this.options.live()
             if (!ledger || ledger.conversationID !== this.options.id || ledger.holds.length || ledger.blockers.length ||
-              current.sessionID !== pending.sessionID || current.queued || current.budgetReservation || current.checkpointPending ||
+              current.sessionID !== pending.sessionID || (current.queue?.length ?? 0) > 0 || current.budgetReservation || current.checkpointPending ||
               (current.phase ?? "idle") !== "idle" || currentLive.admitting || currentLive.pumping) {
               return Response.json({ error: "runtime upgrade resume is blocked by changed work or usage state" }, { status: 409 })
             }

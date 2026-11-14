@@ -160,7 +160,7 @@ describe("Slack failure delivery", () => {
       )
       const state = await (await instance.fetch(new Request("https://conversation/state"))).json() as {
         phase?: string
-        queued?: unknown
+        queue?: unknown[]
         budgetReservation?: { dispatched?: boolean }
       }
       return { status: response.status, state, prompts: counters.prompts, posts }
@@ -171,7 +171,7 @@ describe("Slack failure delivery", () => {
     expect(result.status).toBe(200)
     expect(result.prompts).toBe(1)
     expect(result.state.phase).toBe("running")
-    expect(result.state.queued).toBeUndefined()
+    expect(result.state.queue).toEqual([])
     expect(result.state.budgetReservation).toMatchObject({ dispatched: true })
     expect(result.posts.some((text) => text.includes("outcome is unknown"))).toBe(true)
     expect(usage.reservedUSD).toBe(0.1)

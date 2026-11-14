@@ -103,12 +103,12 @@ describe("Conversation Lifecycle job cutover", () => {
       instance.transport = observationTransport(prompts)
       await startLegacyBootstrap(instance, runtime.storage)
       await instance.alarm()
-      const after = await runtime.storage.get<ConversationState>("state")
+      const after = await (await instance.fetch(stateRequest())).json() as ConversationState
       const job = runtime.storage.sql.exec<{ time: number }>(
         "SELECT time FROM cf_agents_jobs WHERE id = ?",
         "admission:retry",
       ).toArray()[0]
-      return { attempts: after?.queued?.attempts, nextAttemptAt: after?.queued?.nextAttemptAt, dueAt, jobTime: job?.time, prompts: prompts.count }
+      return { attempts: after.queue?.[0]?.attempts, nextAttemptAt: after.queue?.[0]?.nextAttemptAt, dueAt, jobTime: job?.time, prompts: prompts.count }
     })
     expect(result.prompts).toBe(0)
     expect(result.attempts).toBe(0)

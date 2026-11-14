@@ -96,7 +96,7 @@ export class ConversationReconciliation {
     const conversationID = this.options.conversationID
     const state = await this.options.store.get()
     const live = this.options.live()
-    if (live.admitting || live.pumping || !this.options.recoveryActions.active || state.queued) {
+    if (live.admitting || live.pumping || !this.options.recoveryActions.active || (state.queue?.length ?? 0) > 0) {
       return { ok: false, status: 409, error: "conversation has live or queued work" }
     }
     const reservation = state.budgetReservation
@@ -193,7 +193,7 @@ export class ConversationReconciliation {
     const reviewState = await this.options.store.get()
     const reviewLedger = await this.options.usage.ledger(reservation.reservationID).catch(() => undefined)
     const reviewCentral = await this.operatorReconciliationSnapshot(conversationID, sessionID, reservation.reservationID).catch(() => undefined)
-    if (!reviewLedger || !reviewCentral || reviewState.sessionID !== sessionID || reviewState.queued ||
+    if (!reviewLedger || !reviewCentral || reviewState.sessionID !== sessionID || (reviewState.queue?.length ?? 0) > 0 ||
       reviewState.budgetReservation?.reservationID !== reservation.reservationID ||
       reviewState.budgetReservation?.date !== reservation.date || reviewState.budgetReservation?.dispatched !== true ||
       reviewCentral.snapshotID !== central.snapshotID || reviewLedger.snapshotID !== authorityLedger.snapshotID) {

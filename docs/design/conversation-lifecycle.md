@@ -79,9 +79,8 @@ HTTP clients retry a submission with the same JSON `idempotencyKey` (1–128
 letters, digits, colon, underscore or hyphen), scoped to the conversation. Never
 reuse a key for different content. A duplicate HTTP 200 acknowledges the retained
 claim, not provider completion; queued HTTP 202 is not a permanent receipt.
-The store keeps 200 recent claims, and prompted/ambiguous dispatches attempt a
-24-hour tombstone. Definite pre-dispatch refusals release the claim; queued
-submissions rely on the bounded claim window. These are bounded dedupe rules,
+The store keeps 200 recent claims, and accepted queued/prompted/ambiguous submissions attempt a
+24-hour tombstone. Definite pre-dispatch refusals release the claim. These are bounded dedupe rules,
 not a permanent operation ledger.
 
 SSE clients reconnect with numeric `Last-Event-ID`; the store retains 200 public

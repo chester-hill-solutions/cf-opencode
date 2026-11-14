@@ -3,6 +3,8 @@ import type { SlackTarget, Transport } from "../state"
 
 export interface MessageRequest {
   text: string
+  delivery?: "queue" | "steer" | "interrupt"
+  replaceQueue?: boolean
   user?: string
   transport?: Transport
   slack?: SlackTarget

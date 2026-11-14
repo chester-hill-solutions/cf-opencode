@@ -132,7 +132,7 @@ describe("idempotency", () => {
       const { status, body } = await send(instance, "hello")
       const state = (await (
         await instance.fetch(new Request("https://conversation/state"))
-      ).json()) as { queued?: unknown }
+      ).json()) as { queue?: unknown[] }
 
       for (let attempt = 0; attempt < 3; attempt++) await instance.alarm()
       return { status, body, state, prompts: fake.counters.prompts }
@@ -140,7 +140,7 @@ describe("idempotency", () => {
 
     expect(result.status).toBe(200)
     expect(result.body.queued).toBeUndefined()
-    expect(result.state.queued).toBeUndefined()
+    expect(result.state.queue).toEqual([])
     expect(result.prompts).toBe(1)
   })
 })

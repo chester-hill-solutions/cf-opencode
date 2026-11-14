@@ -29,6 +29,9 @@ import { ConversationTurnExecution } from "./conversation/turn-execution"
 import { ConversationReadiness } from "./conversation/readiness"
 import { ConversationReconciliation } from "./conversation/reconciliation"
 import { ConversationAccountingCutover } from "./conversation/accounting-cutover"
+import { ConversationDeliveryControls } from "./conversation/delivery-controls"
+import { queueCapacity } from "./queue"
+import { projectTurnObservation, type PersistedTurnTimeout } from "./turn-observation"
 import { ConversationAdmissions } from "./conversation/admissions"
 import { ConversationRuntimeUpgrades } from "./conversation/runtime-upgrades"
 import { isFreshLegacyAlarmMigration } from "./conversation/job-state"
@@ -96,6 +99,7 @@ export class Conversation extends DurableObject<Env> {
   private readonly admissions: ConversationAdmissions
   private readonly runtimeUpgrades: ConversationRuntimeUpgrades
   private readonly sessions: ConversationSessions
+  private readonly deliveryControls: ConversationDeliveryControls
   private readonly slackAdapter: ConversationSlackAdapter
   private readonly providerOnboarding: ConversationProviderOnboarding
   private consecutiveFailures = 0
@@ -344,6 +348,7 @@ export class Conversation extends DurableObject<Env> {
     })
     this.admissions = new ConversationAdmissions({
       conversationID: ctx.id.toString(),
+      queueLimit: queueCapacity(env.QUEUE_LIMIT),
       storage: ctx.storage,
       store: this.store,
       budgetReservations: this.budgetReservations,
@@ -358,7 +363,7 @@ export class Conversation extends DurableObject<Env> {
       },
       jobs: { schedule: (kind, at, payload) => this.scheduler.schedule(kind, at, payload) },
       prompt: async (sessionID, text) => {
-        await this.withClient((client) => client.session.prompt({ sessionID, text }))
+        await this.withClient((client) => client.session.prompt({ sessionID, text, delivery: "queue" }))
       },
       settings: async () => ({ streaming: (await this.settings()).streaming }),
       delivery: {
@@ -401,7 +406,42 @@ export class Conversation extends DurableObject<Env> {
       },
     })
 
+    this.deliveryControls = new ConversationDeliveryControls({
+      storage: ctx.storage,
+      store: this.store,
+      withLock: (task) => this.admissions.withLock(task),
+      unavailable: async () => this.recoveryActions.active || await this.runtimeUpgrades.hasPending(),
+      admitting: () => this.admissions.active,
+      queueLimit: queueCapacity(env.QUEUE_LIMIT),
+      steer: async (sessionID, text) => { await this.withClient((client) => client.session.prompt({ sessionID, text, delivery: "steer" }), false) },
+      interrupt: async (sessionID) => { await this.withClient((client) => client.session.interrupt({ sessionID, resume: false }), false) },
+      schedule: async () => {
+        const state = await this.store.get()
+        if (state.sessionID && (state.phase === "running" || state.phase === "settling")) await this.scheduler.schedule("turn:observe", Date.now() + POLL_MS, {
+          reservationID: state.budgetReservation?.reservationID, reservationDate: state.budgetReservation?.date,
+          sessionID: state.sessionID, reason: "manual-interrupt",
+        })
+        const head = state.queue?.[0]
+        if (head) await this.scheduler.schedule("admission:retry", Date.now() + POLL_MS, { queueID: head.id, reason: "manual-follow-up" })
+      },
+      event: (event) => this.deliver(event, { slack: false }),
+    })
     this.slackAdapter = new ConversationSlackAdapter({
+      observation: () => this.turnObservation(),
+      controls: {
+        steer: async (text) => {
+          const result = await this.deliveryControls.steer(text)
+          if (result.error === "no_active_turn") return "No running turn to steer. Send a normal message to start or queue work."
+          return result.ok ? "Steering sent to the active turn; no new budget hold was created." : `Steering ${result.outcome === "ambiguous" ? "outcome is unknown; do not resend automatically" : "was refused"}: ${result.error}`
+        },
+        stop: async (followUp, target) => {
+          const result = await this.deliveryControls.stop(followUp, { replaceQueue: true, slack: target })
+          if (!result.ok) return `Stop ${result.outcome === "ambiguous" ? "outcome is unknown; the hold and follow-up are retained" : "was refused"}: ${result.error}`
+          return result.stopRequested
+            ? `Stop requested; runtime stop is unconfirmed. Usage settlement must finish before ${followUp ? "the queued follow-up" : "another turn"}.`
+            : followUp ? "Follow-up queued; no active turn needed interruption." : "Queued follow-ups cleared; no active turn needed interruption."
+        },
+      },
       store: this.store,
       sessions: this.sessions,
       admissions: this.admissions,
@@ -563,7 +603,7 @@ export class Conversation extends DurableObject<Env> {
       }
       return this.recoveryActions.act(parsed.action, parsed.expectedSnapshotID)
     }
-    if (url.pathname === "/state") return Response.json(await this.store.get())
+    if (url.pathname === "/state") return Response.json({ ...await this.store.get(), turnObservation: await this.turnObservation(), stop: await this.stopObservation() })
     if (url.pathname === "/health") return Response.json({ ok: true })
     if (url.pathname === "/provider-credentials") return this.providerOnboarding.providerCredentials(request)
     if (url.pathname === "/provider-status") {
@@ -580,6 +620,8 @@ export class Conversation extends DurableObject<Env> {
     if (url.pathname === "/recycle" && request.method === "POST") return this.onRecycle()
     if (url.pathname === "/debug" && request.method === "GET") {
       return Response.json({
+        turnObservation: await this.turnObservation(),
+        stop: await this.stopObservation(),
         streamState: this.turnExecution.currentStreamState,
         streaming: this.turnExecution.isStreaming,
         ready: this.runtime.ready,
@@ -633,6 +675,12 @@ export class Conversation extends DurableObject<Env> {
     // before calling string methods on it.
     const text = typeof input.text === "string" ? input.text.trim() : ""
     if (!text) return Response.json({ ok: false, error: "empty message" }, { status: 400 })
+    const delivery = input.delivery ?? "queue"
+    if (!["queue", "steer", "interrupt"].includes(delivery) ||
+      (input.replaceQueue !== undefined && typeof input.replaceQueue !== "boolean") ||
+      (delivery === "steer" && input.replaceQueue !== undefined)) {
+      return Response.json({ ok: false, error: "invalid delivery options" }, { status: 400 })
+    }
     if (await this.runtimeUpgrades.hasPending()) return Response.json({ ok: false, error: "runtime upgrade is pending; no message was queued" }, { status: 409 })
 
     const idempotencyKey = typeof input.idempotencyKey === "string" ? input.idempotencyKey : undefined
@@ -657,14 +705,25 @@ export class Conversation extends DurableObject<Env> {
 
     const prompt = input.user ? `${input.user}: ${text}` : text
 
-    if (!(await this.admissions.claim())) {
-      const queued = await this.admissions.enqueue(prompt, undefined)
-      if (!queued) {
-        await releaseClaim()
-        return Response.json({ ok: false, error: "busy" }, { status: 503 })
-      }
-      return Response.json({ ok: true, queued: true }, { status: 202 })
+    if (delivery !== "queue") {
+      const result = delivery === "steer"
+        ? await this.deliveryControls.steer(prompt)
+        : await this.deliveryControls.stop(prompt, { requireActive: true, replaceQueue: input.replaceQueue })
+      if (!result.ok && result.outcome !== "ambiguous") await releaseClaim()
+      else if (idempotencyKey) await this.store.markTombstone(`msg:${idempotencyKey}`).catch(() => {})
+      return Response.json(result, { status: result.status })
     }
+    const queueResponse = async (): Promise<Response> => {
+      const result = await this.admissions.enqueue(prompt, undefined, { replace: input.replaceQueue })
+      if (result.kind !== "enqueued") {
+        await releaseClaim()
+        return Response.json({ ok: false, error: result.kind, ...result }, { status: result.kind === "queue_full" ? 429 : result.kind === "admission_in_progress" ? 409 : 503 })
+      }
+      if (idempotencyKey) await this.store.markTombstone(`msg:${idempotencyKey}`).catch(() => {})
+      return Response.json({ ok: true, queued: true, delivery: "queue", queue: result }, { status: 202 })
+    }
+
+    if (input.replaceQueue || !(await this.admissions.claim())) return queueResponse()
     let sessionID = ""
     let baseline: string | undefined
     try {
@@ -674,13 +733,8 @@ export class Conversation extends DurableObject<Env> {
       this.admissions.finishLocal()
       void this.count("admission.failed")
       logEvent("admission.failed", { transport: "http" })
-      const queued = await this.admissions.enqueue(prompt, undefined)
-      if (!queued) {
-        await this.store.advance("idle")
-        await releaseClaim()
-        return Response.json({ ok: false, error: "busy" }, { status: 503 })
-      }
-      return Response.json({ ok: true, queued: true, error: errorMessage(err) }, { status: 202 })
+      await this.store.patch({ phase: "idle", admissionID: undefined, admissionStartedAt: undefined })
+      return queueResponse()
     }
 
     const reservation = await this.acquireBudgetReservation()
@@ -727,7 +781,7 @@ export class Conversation extends DurableObject<Env> {
     try {
       // Once the durable dispatched marker is written, any transport error is
       // ambiguous: keep the hold and never turn it into queueable work.
-      await this.withClient((client) => client.session.prompt({ sessionID, text: prompt }))
+      await this.withClient((client) => client.session.prompt({ sessionID, text: prompt, delivery: "queue" }))
     } catch (err) {
       await this.admissions.recordAccepted(baseline, "ambiguous")
       if (idempotencyKey) await this.store.markTombstone(`msg:${idempotencyKey}`).catch(() => {})
@@ -749,6 +803,19 @@ export class Conversation extends DurableObject<Env> {
     const settings = await this.settings().catch(() => undefined)
     if (settings?.streaming) this.ctx.waitUntil(this.turnExecution.startStream(sessionID))
     return Response.json({ ok: true, sessionID })
+  }
+
+  private async stopObservation() {
+    const intent = await this.ctx.storage.get<{ sessionID: string; runStartedAt?: number; reservationID?: string; status: string; requestedAt: number }>("interruptIntent")
+    if (!intent) return null
+    const state = await this.store.get()
+    const current = intent.sessionID === state.sessionID && intent.runStartedAt === (state.runStartedAt ?? null)
+    return { ...intent, current, requested: true, observedStop: null,
+      settled: current && !state.budgetReservation && (state.phase === "idle" || state.phase === "queued") ? true : null }
+  }
+
+  private async turnObservation() {
+    return projectTurnObservation(await this.store.get(), Date.now(), await this.ctx.storage.get<PersistedTurnTimeout>("turnTimeout"))
   }
 
   private async settings(): Promise<HarnessSettings> {
@@ -860,7 +927,7 @@ export class Conversation extends DurableObject<Env> {
     }
     const state = await this.store.get()
     const phase = state.phase ?? "idle"
-    const active = phase === "admitting" || phase === "running" || phase === "settling" || phase === "queued"
+    const active = phase === "admitting" || phase === "running" || phase === "settling" || phase === "queued" || Boolean(state.queue?.length)
     if (state.budgetReservation || active || this.recoveryActions.active || this.scheduler.activeCount > 0 || state.checkpointPending) {
       return Response.json(
         { ok: false, error: "conversation has unresolved work; wait for it to settle before reset or delete" },
@@ -992,11 +1059,11 @@ export class Conversation extends DurableObject<Env> {
   async markBudgetReservationDispatched(
     reservation: BudgetReservation,
     turnBaseline: string | undefined,
-    fromQueue = false,
+    queueID?: string,
   ): Promise<boolean> {
     await this.scheduler.captureLegacyAlarmMigration(false)
     await this.lifecycle.start()
-    return await this.budgetReservations.markDispatched(reservation, turnBaseline, fromQueue)
+    return await this.budgetReservations.markDispatched(reservation, turnBaseline, queueID)
   }
 
   /** Release a known hold; keep local ownership unless Settings acknowledges it. */
@@ -1039,9 +1106,9 @@ export class Conversation extends DurableObject<Env> {
       }
     }
     if (action === "timeout") {
-      const reported = await this.ctx.storage.get<{ sessionID?: string; runStartedAt?: number }>("turnTimeout")
+      const reported = await this.ctx.storage.get<PersistedTurnTimeout>("turnTimeout")
       if (!reported || reported.sessionID !== state.sessionID || reported.runStartedAt !== state.runStartedAt) {
-        await this.ctx.storage.put("turnTimeout", { sessionID: state.sessionID, runStartedAt: state.runStartedAt })
+        await this.ctx.storage.put("turnTimeout", { sessionID: state.sessionID, runStartedAt: state.runStartedAt, observedAt: Date.now() })
         await this.count("turn.timedout")
         logEvent("turn.timedout", {
           conversationID: this.ctx.id.toString(),
@@ -1069,14 +1136,14 @@ export class Conversation extends DurableObject<Env> {
     if (!(await this.scheduler.isCurrent(payload)) || await this.runtimeUpgrades.hasPending()) return undefined
     const state = await this.store.get()
     if (payload.queueID) {
-      if (!state.queued || state.queued.id !== payload.queueID) return undefined
-      const due = state.queued.nextAttemptAt ?? 0
+      if (!state.queue?.[0] || state.queue?.[0].id !== payload.queueID) return undefined
+      const due = state.queue?.[0].nextAttemptAt ?? 0
       if (Date.now() < due) return { rescheduleAt: due }
       if (this.admissions.active || this.turnExecution.isPumping || this.recoveryActions.active) return { rescheduleAt: Date.now() + POLL_MS }
       await this.admissions.drainQueue()
       const after = await this.store.get()
-      if (!after.queued || after.queued.id !== payload.queueID) return undefined
-      return { rescheduleAt: Math.max(after.queued.nextAttemptAt ?? 0, Date.now() + POLL_MS) }
+      if (!after.queue?.[0] || after.queue?.[0].id !== payload.queueID) return undefined
+      return { rescheduleAt: Math.max(after.queue?.[0].nextAttemptAt ?? 0, Date.now() + POLL_MS) }
     }
     return undefined
   }
@@ -1103,8 +1170,8 @@ export class Conversation extends DurableObject<Env> {
         (payload.admissionID && state.admissionID !== payload.admissionID)) return undefined
       if (this.recoveryActions.active || this.admissions.active || this.turnExecution.isPumping) return { rescheduleAt: Date.now() + POLL_MS }
       if (staleAction(state, Date.now(), false) !== "admission") return undefined
-      const queueID = state.queued?.id ?? (state.queued ? crypto.randomUUID() : undefined)
-      const retryAt = state.queued ? Math.max(state.queued.nextAttemptAt ?? 0, Date.now()) : undefined
+      const queueID = state.queue?.[0]?.id
+      const retryAt = state.queue?.[0] ? Math.max(state.queue?.[0].nextAttemptAt ?? 0, Date.now()) : undefined
       await this.ctx.storage.transaction(async () => {
         const current = await this.store.get()
         if ((current.phase ?? "idle") !== "admitting" || current.budgetReservation?.dispatched ||
@@ -1112,10 +1179,10 @@ export class Conversation extends DurableObject<Env> {
         await this.store.patch({
           admissionID: undefined,
           admissionStartedAt: undefined,
-          phase: current.queued ? "queued" : "idle",
-          ...(current.queued && queueID ? { queued: { ...current.queued, id: queueID, nextAttemptAt: retryAt } } : {}),
+          phase: current.queue?.[0] ? "queued" : "idle",
+
         })
-        if (current.queued && queueID && retryAt !== undefined) await this.scheduler.schedule("admission:retry", retryAt, {
+        if (current.queue?.[0] && queueID && retryAt !== undefined) await this.scheduler.schedule("admission:retry", retryAt, {
           queueID,
           reason: "queued-after-stale-admission",
         })

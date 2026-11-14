@@ -19,6 +19,7 @@ import {
   type Form,
   type FormAnswer,
 } from "./slack-forms"
+import type { TurnObservation } from "./turn-observation"
 
 export interface SlackCommandServices {
   getState(): Promise<{
@@ -27,7 +28,8 @@ export interface SlackCommandServices {
     modelOverride?: string
     lastTurnError?: string
     settlementError?: string
-    queued?: unknown
+    queue?: Array<{ id?: string; text: string; enqueuedAt?: number }>
+    turnObservation?: TurnObservation
   }>
   getDefaultModel(): Promise<string>
   getModels(): Promise<ModelSummary[]>
@@ -36,7 +38,8 @@ export interface SlackCommandServices {
   switchModel(ref: string): Promise<void>
   selectSession(id: string): Promise<void>
   newSession(): Promise<void>
-  stop(): Promise<string>
+  steer(text: string): Promise<string>
+  stop(followUp?: string): Promise<string>
   leave(): Promise<string>
   listForms(sessionID: string): Promise<Form[]>
   answerForm(sessionID: string, formID: string, answer: FormAnswer): Promise<void>
@@ -54,11 +57,14 @@ const HELP = [
   "• Mention me to start a session; mention me in a thread to engage it before its follow-up replies. DMs are one continuous session.",
   "• `!help` — show commands",
   "• `!status` — show this conversation's session and pending work",
+  "• Messages without a command queue while a turn is active.",
   "• `!model` — list enabled models; `!model provider/model#variant` switches this conversation",
   "• `!sessions` — list recent sessions; `!session 2` or an id switches to one",
   "• `!answer` — show the waiting question; `!answer <value>` answers it",
   "• `!cancel` — dismiss the waiting question",
-  "• `!stop` — interrupt the running session",
+  "• `!steer <text>` — add guidance to the active turn",
+  "• `!stop` — interrupt the active turn and clear queued follow-ups",
+  "• `!stop <text>` — interrupt and use the text as the follow-up message",
   "• `!new` — start a fresh session",
   "• `!leave` — detach this thread; in DMs, use `!new` for a fresh session",
   "• `!usage` — show usage information",
@@ -68,6 +74,19 @@ const HELP = [
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function boundedSlackText(text: string, limit: number): string {
+  return mrkdwnEscape(text.slice(0, limit)).replace(/[`*_~|]/g, (char) => {
+    switch (char) {
+      case "`": return "ˋ"
+      case "*": return "＊"
+      case "_": return "＿"
+      case "~": return "～"
+      case "|": return "｜"
+      default: return char
+    }
+  })
 }
 
 function currentDirectorySession<T extends { parentID?: string; location?: { directory?: string } }>(session: T): boolean {
@@ -147,8 +166,18 @@ export async function handleSlackCommand(text: string, services: SlackCommandSer
       await reply(await services.leave())
       return true
     }
+    if (name === "steer") {
+      const guidance = args.trim()
+      if (!guidance) {
+        await reply("Use `!steer <text>` to add guidance to the active turn.")
+        return true
+      }
+      await reply(await services.steer(guidance))
+      return true
+    }
     if (name === "stop") {
-      await reply(await services.stop())
+      const followUp = args.trim()
+      await reply(await (followUp ? services.stop(followUp) : services.stop()))
       return true
     }
     if (name === "model") {
@@ -233,7 +262,21 @@ export async function handleSlackCommand(text: string, services: SlackCommandSer
         `Phase: ${state.phase ?? "idle"}`,
         ...(model ? [`Model: \`${model}\``] : []),
       ]
-      if (state.queued) lines.push("⏳ A message is queued.")
+      const queue = state.queue ?? []
+      if (queue.length) {
+        lines.push(`⏳ ${queue.length} message${queue.length === 1 ? "" : "s"} queued.`)
+        const head = queue[0]
+        if (head) {
+          const id = typeof head.id === "string" ? ` [${boundedSlackText(head.id, 80)}]` : ""
+          const queueText = typeof head.text === "string" ? head.text : "(message text unavailable)"
+          const boundedText = queueText.length > 180 ? `${queueText.slice(0, 177)}…` : queueText
+          lines.push(`Next: ${boundedSlackText(boundedText, 180)}${id}`)
+        }
+      }
+      if (state.turnObservation?.overdue) {
+        const minutes = Math.round(state.turnObservation.thresholdMs / 60_000)
+        lines.push(`⚠️ Turn exceeded the ${minutes}-minute observation threshold. This reports elapsed time only; execution is not automatically stopped.`)
+      }
       if (state.lastTurnError) lines.push(`⚠️ Last turn error: ${state.lastTurnError}`)
       if (state.settlementError) lines.push(`⚠️ Settlement error: ${state.settlementError}`)
       if (!state.sessionID) {

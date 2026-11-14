@@ -198,7 +198,7 @@ describe("operator-controlled evented runtime upgrade", () => {
     await runInDurableObject(env.CONVERSATION.getByName(key), async (_instance, state) => {
       await state.storage.put("state", {
         ...(await state.storage.get<ConversationState>("state")),
-        queued: { text: "must not dispatch", attempts: 0, nextAttemptAt: Date.now() + 5000 },
+        queue: [{ id: "q-upgrade", enqueuedAt: Date.now(), source: "http", text: "must not dispatch", attempts: 0, nextAttemptAt: Date.now() + 5000 }],
       })
     })
     const response = await call(key, "GET")
@@ -261,7 +261,7 @@ describe("operator-controlled evented runtime upgrade", () => {
     })
     expect(message.status).toBe(409)
     expect(await message.json()).toMatchObject({ error: expect.stringContaining("no message was queued") })
-    expect((await storedState(key)).state?.queued).toBeUndefined()
+    expect((await storedState(key)).state?.queue).toEqual([])
   })
 
   it("resumes a pre-destroy crash from the saved manifest and rechecks idle on restore", async () => {

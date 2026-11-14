@@ -98,7 +98,7 @@ async function send(instance: { fetch(request: Request): Promise<Response> }, te
 
 async function state(instance: { fetch(request: Request): Promise<Response> }) {
   const response = await instance.fetch(new Request("https://conversation/state"))
-  return (await response.json()) as { queued?: unknown; phase?: string }
+  return (await response.json()) as { queue?: unknown[]; phase?: string }
 }
 
 describe("checkpoint and the opencode port", () => {
@@ -120,7 +120,7 @@ describe("checkpoint and the opencode port", () => {
       expect(fake.counters.promptFail).toBe(0)
       expect(fake.counters.promptOK).toBe(2)
       expect(fake.counters.starts).toBe(1)
-      expect((await state(instance)).queued).toBeUndefined()
+      expect((await state(instance)).queue).toEqual([])
     })
   })
 

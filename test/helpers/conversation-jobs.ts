@@ -26,8 +26,18 @@ export async function makeConversationJobsDue(
     }
   }
   if (!state) return
-  if (options.queued && state.queued) {
-    await storage.put("state", { ...state, queued: { ...state.queued, nextAttemptAt: now } })
+  if (options.queued) {
+    const { queued: legacy, ...current } = state
+    const queue = Array.isArray(state.queue) ? state.queue : legacy ? [{
+      ...legacy,
+      id: legacy.id ?? "legacy-queued",
+      enqueuedAt: legacy.enqueuedAt ?? 0,
+      source: legacy.source ?? (legacy.slack ? "slack" : "http"),
+    }] : []
+    if (queue[0]) await storage.put("state", {
+      ...current,
+      queue: [{ ...queue[0], nextAttemptAt: now }, ...queue.slice(1)],
+    })
   } else if (options.checkpoint && state.checkpointPending) {
     await storage.put("state", { ...state, checkpointRetryAt: now })
   }

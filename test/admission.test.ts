@@ -85,7 +85,7 @@ async function send(instance: { fetch(request: Request): Promise<Response> }, te
 
 async function state(instance: { fetch(request: Request): Promise<Response> }) {
   const response = await instance.fetch(new Request("https://conversation/state"))
-  return (await response.json()) as { phase?: string; queued?: unknown }
+  return (await response.json()) as { phase?: string; queue?: unknown[] }
 }
 
 describe("simultaneous admissions", () => {
@@ -98,7 +98,7 @@ describe("simultaneous admissions", () => {
       const [first, second] = await Promise.all([send(instance, "one"), send(instance, "two")])
       expect([first.status, second.status].sort()).toEqual([200, 202])
       expect(fake.counters.prompts).toBe(1)
-      expect((await state(instance)).queued).toBeTruthy()
+      expect((await state(instance)).queue).toHaveLength(1)
 
       // The first turn completes and settles.
       fake.answer()
@@ -108,7 +108,7 @@ describe("simultaneous admissions", () => {
       // The queued message starts on the next alarm.
       await driveConversationJobs(instance, runtime.storage, ["admission:retry"], { queued: true })
       expect(fake.counters.prompts).toBe(2)
-      expect((await state(instance)).queued).toBeUndefined()
+      expect((await state(instance)).queue).toHaveLength(0)
     })
   })
 })

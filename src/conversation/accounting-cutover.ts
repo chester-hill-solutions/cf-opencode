@@ -3,6 +3,7 @@ import { ConversationStore } from "../state"
 import type { ConversationUsage, UsageCutoverLedger } from "./usage"
 import type { ConversationRuntime } from "./runtime"
 import { ACCOUNTING_POLICY_ID, assertAccountingPolicy } from "../accounting-policy"
+import { recoveryQueueSummary } from "../recovery"
 
 type UnknownRecord = Record<string, unknown>
 
@@ -34,7 +35,7 @@ export class ConversationAccountingCutover {
     const sessionID = state.sessionID
     if (!sessionID) blockers.push("current_session_missing")
     if ((state.phase ?? "idle") !== "idle") blockers.push("conversation_not_idle")
-    if (state.queued) blockers.push("queued_message_present")
+    if ((state.queue?.length ?? 0) > 0) blockers.push("queued_message_present")
     if (state.budgetReservation) blockers.push("budget_reservation_present")
 
     let ledger: UsageCutoverLedger | undefined
@@ -174,7 +175,7 @@ export class ConversationAccountingCutover {
       local: {
         sessionID: sessionID ?? null,
         phase: state.phase ?? "idle",
-        hasQueue: Boolean(state.queued),
+        queue: recoveryQueueSummary(state),
         reservation: state.budgetReservation
           ? { reservationID: state.budgetReservation.reservationID, date: state.budgetReservation.date, dispatched: state.budgetReservation.dispatched }
           : null,

@@ -161,11 +161,10 @@ export class ConversationScheduler {
         reason: "stale-admission-recovery",
       })
     }
-    if (state.queued && !this.capability.has("admission:retry")) {
-      const queueID = state.queued.id ?? crypto.randomUUID()
-      if (!state.queued.id) await this.options.store.patch({ queued: { ...state.queued, id: queueID } })
-      await this.schedule("admission:retry", state.queued.nextAttemptAt ?? Date.now(), {
-        queueID,
+    const queued = state.queue?.[0]
+    if (queued && !this.capability.has("admission:retry")) {
+      await this.schedule("admission:retry", queued.nextAttemptAt ?? Date.now(), {
+        queueID: queued.id,
         reason: "queued-admission",
       })
     }

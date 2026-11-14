@@ -114,6 +114,7 @@ export class ConversationImages {
     const allowed = new Set([
       "phase", "seen", "pending", "slackEngaged", "modelOverride",
       "transport", "slack", "announcedForms", "admissionID", "admissionStartedAt",
+      "queue", "permissionNotifications",
     ])
     if (Object.entries(state).some(([key, field]) => field !== undefined && !allowed.has(key))) return false
     if (state.phase !== undefined && state.phase !== "idle" && state.phase !== "admitting") return false
@@ -122,6 +123,10 @@ export class ConversationImages {
     if (state.pending !== undefined &&
       (!state.pending || typeof state.pending !== "object" || Array.isArray(state.pending) ||
         Object.keys(state.pending).length !== 0)) return false
+    if (state.queue !== undefined && (!Array.isArray(state.queue) || state.queue.length !== 0)) return false
+    if (state.permissionNotifications !== undefined &&
+      (!state.permissionNotifications || typeof state.permissionNotifications !== "object" ||
+        Array.isArray(state.permissionNotifications) || Object.keys(state.permissionNotifications).length !== 0)) return false
     if (state.slackEngaged !== undefined && typeof state.slackEngaged !== "boolean") return false
     if (state.admissionID !== undefined && (typeof state.admissionID !== "string" || !state.admissionID ||
       !Number.isSafeInteger(state.admissionStartedAt) || (state.admissionStartedAt as number) <= 0)) return false
@@ -183,13 +188,17 @@ export class ConversationImages {
     if (!state) return
     const allowedKeys = new Set([
       "phase", "seen", "pending", "slackEngaged", "modelOverride", "transport", "slack",
-      "announcedForms", "admissionID", "admissionStartedAt",
+      "announcedForms", "admissionID", "admissionStartedAt", "queue", "permissionNotifications",
     ])
     if (Object.keys(state).some((key) => !allowedKeys.has(key)) ||
       state.phase !== "admitting" ||
       (state.seen?.length ?? 0) > 1 ||
       (state.seen !== undefined && (!Array.isArray(state.seen) || !state.seen.every((id) => typeof id === "string"))) ||
       Object.keys(state.pending ?? {}).length > 0 ||
+      (state.queue !== undefined && (!Array.isArray(state.queue) || state.queue.length !== 0)) ||
+      (state.permissionNotifications !== undefined && (!state.permissionNotifications ||
+        typeof state.permissionNotifications !== "object" || Array.isArray(state.permissionNotifications) ||
+        Object.keys(state.permissionNotifications).length !== 0)) ||
       (state.slackEngaged !== undefined && state.slackEngaged !== true) ||
       (state.pending !== undefined && (!state.pending || typeof state.pending !== "object" || Array.isArray(state.pending))) ||
       (state.admissionID !== undefined && (typeof state.admissionID !== "string" || !state.admissionID ||

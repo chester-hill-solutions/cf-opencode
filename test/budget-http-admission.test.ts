@@ -127,7 +127,7 @@ describe("HTTP budget admission", () => {
       const body = await response.json() as { error?: string }
       const state = await (await instance.fetch(new Request("https://conversation/state"))).json() as {
         phase?: string
-        queued?: unknown
+        queue?: unknown[]
         budgetReservation?: { dispatched?: boolean }
       }
       return { status: response.status, body, state, prompts: fake.counters.prompts }
@@ -137,7 +137,7 @@ describe("HTTP budget admission", () => {
     expect(result.status).toBe(502)
     expect(result.body.error).toContain("outcome is unknown")
     expect(result.state.phase).toBe("running")
-    expect(result.state.queued).toBeUndefined()
+    expect(result.state.queue).toEqual([])
     expect(result.state.budgetReservation).toMatchObject({ dispatched: true })
     expect(result.prompts).toBe(1)
     expect(usage.reservedUSD).toBe(0.1)
