@@ -24,9 +24,16 @@ pass. The Cloudflare A/B, prewarm endpoint, and the Computer spike are next.
 checks through OpenCode/Stow startup, checkpoints, workspace/state restore and
 account-seed isolation, but the final host lifecycle-race observer timed out
 under Docker Desktop amd64 emulation and the Docker VM then became read-only.
-That is an environment failure, not an assertion failure; run the native amd64
-CI `container-smoke` job for Gate B before calling it closed. Docker Desktop on
-this machine needs a restart/reset after the failed run.
+That is an environment failure, not an assertion failure.
+
+**Gate B closed on native CI — 2026-11-14:** run
+[43614603372](https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43614603372)
+passed both `check` and `container-smoke` at `7f33cd6` (sandbox slice `f6e20f8`):
+the pruned 514 MB arm64 / 469 MB amd64 image boots through OpenCode/Stow startup,
+split checkpoint and restore, account-seed isolation and the 600 MB size guard on
+a real amd64 runner. This is the native re-run the local failure asked for; it is
+still not a Cloudflare measurement. Docker Desktop on this machine needs a
+restart/reset before further local amd64 work.
 
 | Ticket | Status |
 |---|---|
