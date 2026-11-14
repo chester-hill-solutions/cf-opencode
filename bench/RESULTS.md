@@ -103,3 +103,28 @@ secrets were removed after cleanup proved the runtime stopped and bucket empty.
 Raw samples and proof limits: [measurement receipt](lifecycle-idle-2026-11-12.json).
 The later telemetry validator fix retains native generation IDs beginning with
 `-` or `_`; it does not change the measured runtime path.
+
+## 2026-11-14 — Cloudflare instance-shape A/B (no inference)
+
+An isolated temporary Worker compared `standard-1`, the default custom
+1 vCPU / 2 GiB / 8 GB profile, and `standard-2`, all using the same stow-s3
+0.4.0 image. Each profile had one untimed image/runtime prime followed by three
+confirmed cold starts and immediate warm model-catalogue requests. The test made
+no message requests, created no session, and confirmed each reset stopped the
+container. Public network and model-list response time are included; no model
+prompt or inference ran.
+
+| Instance profile | Cold p50 | Cold range | Warm p50 | Warm range |
+| --- | ---: | ---: | ---: | ---: |
+| `standard-1` | 9.30 s | 9.20–9.73 s | 117 ms | 109–118 ms |
+| `custom-1cpu-2gib` | 9.65 s | 9.12–9.80 s | 107 ms | 102–161 ms |
+| `standard-2` | 9.85 s | 9.17–10.60 s | 141 ms | 111–212 ms |
+
+These three-sample, empty-workspace results do not establish p95, first-token or
+turn throughput, memory headroom, or cost per task. Keep the existing custom
+profile as the default: the larger `standard-2` showed no material cold/warm
+advantage in this bounded no-inference comparison. Do not treat this as the
+turn-latency or memory-guard gate.
+
+Raw requests, per-profile warm-up, runtime checks, versions and limits are in
+[the shape A/B receipt](cloudflare-instance-shape-2026-11-14.json).

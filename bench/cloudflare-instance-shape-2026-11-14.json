@@ -1,0 +1,76 @@
+{
+  "date": "2026-11-14",
+  "sourceCommit": "3d71de1",
+  "worker": "cf-opencode-shape-ab-20261114",
+  "workerVersions": {
+    "standard-1": "d8755e70-679d-4ba6-ab9b-c38cd31ec127",
+    "custom-1cpu-2gib": "9683b4a1-c4f5-4425-b59b-1a7e8d714bf9",
+    "standard-2": "408f8bfb-ee21-40c7-9a0f-488439598263"
+  },
+  "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-shape-ab@sha256:2cd03c57e7458d337fde892cb6a729969e5dd55d6e3f61d01f0ac67068fcc2ba",
+  "bucket": "cf-opencode-shape-ab-20261114",
+  "scenario": "Empty workspace OpenCode model-catalogue request; cold startup followed by immediate warm request; no message or model inference.",
+  "modelPrompts": 0,
+  "sessionCreated": false,
+  "method": {
+    "coldRequest": "GET /api/onboarding/opencode/models from a confirmed stopped runtime",
+    "warmRequest": "Immediate repeat of the same request after ready/image-backed runtime proof",
+    "resetRequest": "POST /api/onboarding/reset; each reset returned 200 and debug confirmed stopped",
+    "priming": "One untimed image/runtime start and reset per profile before three measured samples",
+    "checks": [
+      "container was stopped before each cold sample",
+      "runtime was ready and image-backed after each cold sample",
+      "no session, budget reservation or queued work was created",
+      "each profile used the same digest-pinned image and empty workspace"
+    ],
+    "publicNetworkLatencyIncluded": true
+  },
+  "profiles": {
+    "standard-1": {
+      "instance": "standard-1",
+      "primingMs": 9596.731582999999,
+      "samples": [
+        { "coldMs": 9734.174583, "warmMs": 118.20166700000118 },
+        { "coldMs": 9300.902875, "warmMs": 108.77620899999965 },
+        { "coldMs": 9202.439541, "warmMs": 117.36004099999991 }
+      ],
+      "p50Ms": { "cold": 9300.902875, "warm": 117.36004099999991 }
+    },
+    "custom-1cpu-2gib": {
+      "instance": { "vcpu": 1, "memoryMib": 2048, "diskMb": 8192 },
+      "primingMs": 9436.838709,
+      "samples": [
+        { "coldMs": 9115.305167000002, "warmMs": 161.42012500000055 },
+        { "coldMs": 9801.514124999998, "warmMs": 102.02083299999867 },
+        { "coldMs": 9646.739792000004, "warmMs": 107.25074999999924 }
+      ],
+      "p50Ms": { "cold": 9646.739792000004, "warm": 107.25074999999924 }
+    },
+    "standard-2": {
+      "instance": "standard-2",
+      "primingMs": 9596.274542,
+      "samples": [
+        { "coldMs": 10604.833833, "warmMs": 211.64045800000167 },
+        { "coldMs": 9165.949459, "warmMs": 110.7667500000025 },
+        { "coldMs": 9851.992999999995, "warmMs": 140.57508399999642 }
+      ],
+      "p50Ms": { "cold": 9851.992999999995, "warm": 140.57508399999642 }
+    }
+  },
+  "decision": "Keep custom-1cpu-2gib as the default. These three public-network, no-inference samples show no material cold/warm advantage for standard-2; they do not establish turn throughput, p95, memory headroom, or cost per accepted task.",
+  "limits": [
+    "Three samples per profile; no p95 claim.",
+    "Empty workspace and model-catalogue request, not first-token or model-turn latency.",
+    "Public network latency and model-list response time are included.",
+    "No representative repository, memory/RSS, OOM or active-hour cost measurement."
+  ],
+  "cleanup": {
+    "workerDeleted": true,
+    "containerApplicationDeleted": true,
+    "containerStoppedBeforeDelete": true,
+    "bucketObjectCountBeforeDelete": 0,
+    "bucketDeleted": true,
+    "imageTagDeleted": true,
+    "temporarySecretsDeleted": true
+  }
+}

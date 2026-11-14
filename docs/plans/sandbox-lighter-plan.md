@@ -47,6 +47,12 @@ passed both `check` and `container-smoke` at `37995f2`, including the full
 lifecycle-race gate. The local timeout is an emulation limitation, not an
 assertion pass or a product failure.
 
+**SL-1.2 Cloudflare shape comparison — 2026-11-14:** the isolated three-profile
+cold/warm model-catalogue A/B is recorded in [the receipt](../../bench/cloudflare-instance-shape-2026-11-14.json)
+and [bench results](../../bench/RESULTS.md). The no-inference scope means there
+is no model-turn/first-token result; the custom 1 vCPU / 2 GiB profile remains
+the default pending turn, memory and cost evidence.
+
 | Ticket | Status |
 |---|---|
 | SL-0.1 `/start` + `/restore` timings | done |
@@ -57,7 +63,7 @@ assertion pass or a product failure.
 | SL-2.1 runtime prune | done (739 → 514 MB arm64 / 469 MB amd64) |
 | SL-2.2 slim base | done |
 | SL-2.3 image-size budget | done (600 MB guard in container smoke) |
-| SL-1.2 Cloudflare A/B | next |
+| SL-1.2 Cloudflare A/B | partial (cold/warm no-inference A/B recorded; turn measurement remains open) |
 | SL-1.4 prewarm | next |
 | SL-5.1 Computer workerd spike | next |
 
