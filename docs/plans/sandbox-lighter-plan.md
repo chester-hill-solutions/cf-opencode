@@ -1,5 +1,7 @@
 # Sandbox lighter — cold-start and execution-tier plan
 
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is retained as technical evidence for the sandbox decisions folded into the roadmap (§4.4 and W4); the roadmap wins on any disagreement.
+
 Status: proposed, 2026-11-13.
 Scope: make the per-conversation sandbox lighter and faster without giving up the
 Linux execution plane. Covers the immediate compute/image fixes and the
@@ -7,10 +9,11 @@ Linux execution plane. Covers the immediate compute/image fixes and the
 
 ## 1. Decision summary
 
-**Canonical plan.** This is the single plan for sandbox weight, cold start, and the
-`@cloudflare/computer` execution-tier decision. The WASM/AgentOS research notes and
-the stow integration plan remain reference material; execution sequencing belongs
-here.
+**Scope.** Technical evidence for sandbox weight, cold start and the
+`@cloudflare/computer` execution-tier decision. The decisions and open work are
+owned by [the canonical plan](../roadmap.md) (§4.4 and W4); this document supplies
+the measurements and detail. The WASM/AgentOS research notes and the stow
+integration plan remain separate reference material.
 
 **Implementation status — 2026-11-13:** Phase 0 instrumentation and the first
 Phase 1 slice are in this change: `/start` and `/restore` phase timings, custom

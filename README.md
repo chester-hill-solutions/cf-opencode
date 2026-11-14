@@ -202,8 +202,12 @@ Apple `container` needs macOS 26+ on Apple silicon. `wrangler dev` with containe
 
 ## Testing and measurements
 
-- `bun test tests` — 116 unit tests (signature, conversation keys, permissions, state, SSE formatting, retry/backoff, helpers, UI kit registry, settings state machine).
-- `bun run test:workers` — 30 integration tests in workerd (Worker surface, DO state, Slack signature/routing, SSE, concurrency and admission-queue regressions, a latency guard).
+- `bun test tests` — unit/helper tests (signature, conversation keys, permissions,
+  state, SSE formatting, retry/backoff, helpers, UI kit registry, settings state
+  machine).
+- `bun run test:workers` — integration tests in workerd (Worker surface, DO state,
+  Slack signature/routing, SSE, concurrency and admission-queue regressions, a
+  latency guard). Current pass counts and evidence dates live in the roadmap.
 - `bun run check:config` — fails CI when the prod and test Wrangler configs drift on bindings, exports or vars.
 - `bench/measure.ts` — deployed Worker/SSE/turn latency.
 - `bench/container.sh` — cold start, checkpoint size/time, restore time.
@@ -212,17 +216,19 @@ Local numbers (workerd): `/health` p50 1.0 ms / p95 1.0 ms; DO state p50 1.0 ms 
 
 ## Roadmap
 
-Operating notes (deploy, health, first turn, failures, rollback) are in
-[docs/runbook.md](docs/runbook.md). The path from harness to product — R0 harness complete, R1 tenancy foundations, R2 self-onboarding,
-R3 configurable sandbox, R4 product — is in [docs/roadmap.md](docs/roadmap.md), with gates, estimates
-and the ticket-level backlog. Sandbox weight, cold start and the
-`@cloudflare/computer` decision are tracked in the
-[sandbox-lighter plan](docs/plans/sandbox-lighter-plan.md).
+The single canonical plan — product direction, current gate status, the ordered
+next-step queue and acceptance criteria — is [docs/roadmap.md](docs/roadmap.md).
+Every other file under `docs/plans/` and `docs/design/` is evidence, design input,
+research or an operational reference; none of them schedules work. Operating notes
+(deploy, health, first turn, failures, rollback) are in
+[docs/runbook.md](docs/runbook.md); the test layers are in
+[docs/testing.md](docs/testing.md).
 
 ## Limits and open work
 
 - The reply pump uses a warm event stream while the container is up, with a 2s alarm poll as fallback.
-- One container (`max_instances: 1`); extra conversations queue on alarms.
+- One container per conversation, with a global `maxContainers` cap; extra
+  conversations queue on alarms.
 - Checkpoints are per settled prompt; a crash mid-turn loses that turn.
 - Channel-level engagement (`!leave`) lives in the Slack adapter and is not ported.
 - Uploads and clip rendering are deferred; `slack_upload_file` lives in the container-side plugin.

@@ -1,5 +1,7 @@
 # Conversation Lifecycle adoption
 
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is retained as implementation evidence for the Lifecycle kernel; the roadmap controls sequencing and gate status.
+
 Status: required implementation and runtime qualification complete on the review
 branch. Production rollout remains separate; optional protocol extensions deferred.
 Date: 2026-11-12. Baseline: `0c90963`. Owner: platform/runtime.

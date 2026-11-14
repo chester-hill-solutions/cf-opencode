@@ -1,5 +1,7 @@
 # WASM execution and persistent storage options
 
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is retained as research reference only; no work here is scheduled, and the roadmap wins on any disagreement.
+
 Research checked 2026-11-11. Scope: runtime feasibility for Aboiteau, using primary documentation and upstream source. This note records researched capabilities and proposed experiments; it does not report a deployed or benchmarked implementation. OpenCode compatibility and stow-s3 internals are covered by the companion investigation.
 
 **Planning status — 2026-11-13:** implementation sequencing now follows the

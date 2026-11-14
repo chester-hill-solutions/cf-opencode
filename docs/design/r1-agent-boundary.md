@@ -1,5 +1,7 @@
 # R1 design — agent boundary and tenant isolation
 
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is design input for G1; the roadmap controls sequencing and gate status.
+
 Status: partially implemented; isolation gate open · Updated: 2026-11-11 · Scope: R1 (tenancy foundations)
 Related: `docs/roadmap.md` R1-1…R1-11, audit findings on agent credentials, control
 plane, checkpoints and tenancy.
@@ -118,6 +120,15 @@ Move harness state **out of the agent's workspace**:
 **Residual:** OpenCode and its tools run as the same `agent` user, so tools can
 still read `state` (OpenCode needs write access to its DB). The fix is not file
 permissions; it is keeping long-lived credentials out of `state` (see 3.4).
+
+**R0-19 receipt (2026-11-14), input to R1-7a:** the current 0.4.0 image's UID 1001
+recovered a synthetic credential through both allowlisted `find` and
+repository-controlled `bun test`. The pinned matcher denies literal state-root
+`cat` but allows both tested command forms. The
+[receipt and limitations](../evidence/w0-correctness-2026-11-14.md#r0-19--known_open_g1)
+and [raw output](../evidence/r0-19-2026-11-14.json) are known-open G1 evidence,
+not a security pass. R1-7a must test the proposed external boundary against these
+same execution paths before R1-7 enforcement can be claimed.
 
 **Observed execution path (audit 32):** `bun test` and `bun run typecheck` are
 default-allowed commands that execute repository-controlled code. A disposable Bun

@@ -1039,13 +1039,19 @@ export class Conversation extends DurableObject<Env> {
       }
     }
     if (action === "timeout") {
+      const reported = await this.ctx.storage.get<{ sessionID?: string; runStartedAt?: number }>("turnTimeout")
+      if (!reported || reported.sessionID !== state.sessionID || reported.runStartedAt !== state.runStartedAt) {
+        await this.ctx.storage.put("turnTimeout", { sessionID: state.sessionID, runStartedAt: state.runStartedAt })
+        await this.count("turn.timedout")
+        logEvent("turn.timedout", {
+          conversationID: this.ctx.id.toString(),
+          sessionID: state.sessionID,
+          ...(state.runStartedAt ? { durationMs: Date.now() - state.runStartedAt } : {}),
+        })
+      }
       if (state.budgetReservation?.dispatched) {
         await this.turnExecution.pauseSettlement("turn exceeded its time limit; dispatched reservation retained while context is checked")
       } else {
-        void this.count("turn.timedout")
-        logEvent("turn.timedout", {
-          ...(state.runStartedAt ? { durationMs: Date.now() - state.runStartedAt } : {}),
-        })
         await this.turnExecution.finishTimedOutTurn(state, state.lastReply ?? "", { message: "turn timed out" })
         return undefined
       }

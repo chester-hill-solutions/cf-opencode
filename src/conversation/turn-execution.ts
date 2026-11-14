@@ -44,9 +44,9 @@ export interface ConversationTurnExecutionOptions {
   conversationID: string
   storage: DurableObjectStorage
   store: ConversationStore
-  usage: ConversationUsage
-  checkpoints: ConversationCheckpoints
-  controlPlane: ConversationControlPlane
+  usage: Pick<ConversationUsage, "refresh" | "recordContext">
+  checkpoints: Pick<ConversationCheckpoints, "capture">
+  controlPlane: Pick<ConversationControlPlane, "pendingForms">
   runtime: {
     openStream(open: (port: ContainerPort) => Promise<Response>): Promise<Response>
     withClient<T>(fn: (client: ReturnType<typeof makeClient>) => Promise<T>, recoverOnRejection?: boolean): Promise<T>
@@ -74,6 +74,13 @@ export interface ConversationTurnExecutionOptions {
 
 const POLL_MS = 2_000
 const STREAM_STOP_WAIT_MS = 10_000
+const FORM_RETRY_BASE_MS = 5_000
+const FORM_RETRY_MAX_MS = 5 * 60_000
+
+interface FormRetries {
+  sessionID: string
+  forms: Record<string, { attempts: number; nextAttemptAt: number }>
+}
 
 /** Owns the reply poll and the one native OpenCode event stream for a turn. */
 export class ConversationTurnExecution {
@@ -239,7 +246,8 @@ export class ConversationTurnExecution {
         await this.options.store.patch({ lastReply: reply })
       }
       await this.pollPermissions(sessionID, pending)
-      await this.pollQuestions(sessionID, questions)
+      // Connector delivery and its bookkeeping must never prevent accounting.
+      await this.pollQuestions(sessionID, questions).catch((error) => this.reportQuestionFailure(error))
       if (settled || failure) {
         await this.finishTurn(state, reply, failure, messages)
         return true
@@ -267,6 +275,14 @@ export class ConversationTurnExecution {
       })
     }).catch(() => {})
     if (newlyPaused) {
+      if (!current.settlementError) {
+        await this.options.delivery.count("settlement.paused").catch(() => {})
+        logEvent("settlement.paused", {
+          conversationID: this.options.conversationID,
+          sessionID: current.sessionID,
+          message,
+        })
+      }
       await this.options.delivery.event({ type: "error", message: `Settlement paused: ${message}` }).catch(() => {})
     }
   }
@@ -327,8 +343,8 @@ export class ConversationTurnExecution {
         await this.pauseSettlement("reservation release was not acknowledged; reservation retained")
         return
       }
-      await this.options.store.patch({ settlementError: undefined })
     }
+    await this.options.store.patch({ settlementError: undefined })
     if (failure) {
       const key = failureKey(failure)
       if (key !== state.reportedError) {
@@ -389,8 +405,17 @@ export class ConversationTurnExecution {
     const state = await this.options.store.get()
     if (state.sessionID !== sessionID || !state.slack) return
     const key = this.options.conversationKey() ?? this.options.conversationID
-    for (const form of forms) {
-      if (state.announcedForms?.includes(form.id)) continue
+    const pending = forms.filter((form) => !state.announcedForms?.includes(form.id))
+    const saved = await this.options.storage.get<FormRetries>("slackFormRetries")
+    const retries: FormRetries = {
+      sessionID,
+      forms: Object.fromEntries(Object.entries(saved?.sessionID === sessionID ? saved.forms : {})
+        .filter(([id]) => pending.some((form) => form.id === id))),
+    }
+    await this.options.storage.put("slackFormRetries", retries)
+    for (const form of pending) {
+      const retry = retries.forms[form.id]
+      if (retry && Date.now() < retry.nextAttemptAt) continue
       const text = `${describeForm(form)}\n${answerHint(form)}`
       const common = { key, requestID: form.id, channel: state.slack.channel, sessionID }
       const actions = formButtons(form).map((option) => ({
@@ -404,15 +429,33 @@ export class ConversationTurnExecution {
         { type: "actions", elements: [{ type: "button", text: { type: "plain_text", text: "Skip question" },
           action_id: "form_cancel", value: JSON.stringify(common) }] },
       ]
-      await this.options.delivery.slack("chat.postMessage", {
-        channel: state.slack.channel, text,
-        ...(state.slack.replyTs ? { thread_ts: state.slack.replyTs } : {}), blocks,
-      })
+      try {
+        await this.options.delivery.slack("chat.postMessage", {
+          channel: state.slack.channel, text,
+          ...(state.slack.replyTs ? { thread_ts: state.slack.replyTs } : {}), blocks,
+        })
+      } catch (error) {
+        const attempts = Math.min((retry?.attempts ?? 0) + 1, 32)
+        const delay = Math.min(FORM_RETRY_BASE_MS * 2 ** (attempts - 1), FORM_RETRY_MAX_MS)
+        retries.forms[form.id] = { attempts, nextAttemptAt: Date.now() + delay }
+        await this.options.storage.put("slackFormRetries", retries)
+        await this.reportQuestionFailure(error)
+        continue
+      }
       const current = await this.options.store.get()
       if (current.sessionID === sessionID) {
         await this.options.store.patch({ announcedForms: [...(current.announcedForms ?? []), form.id].slice(-100) })
       }
     }
+  }
+
+  private async reportQuestionFailure(error: unknown): Promise<void> {
+    await this.options.delivery.count("slack.form.failed").catch(() => {})
+    logEvent("slack.form.failed", { conversationID: this.options.conversationID, message: errorMessage(error) })
+    // The failing Slack connector must not also handle its own failure event.
+    await this.options.delivery.event({
+      type: "error", message: `Slack question delivery failed; retrying with backoff: ${errorMessage(error)}`,
+    }, { slack: false }).catch(() => {})
   }
 }
 

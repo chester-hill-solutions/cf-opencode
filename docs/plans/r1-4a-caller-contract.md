@@ -1,5 +1,7 @@
 # R1-4a caller contract — inventory and frozen proposal
 
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is the contract proposal awaiting sign-off; its six decisions and acceptance matrix are folded into roadmap W3. The roadmap controls sequencing and gate status.
+
 Status: inventory complete, contract proposed 2026-11-14. Awaiting API/product
 sign-off before implementation. No code changed, no live resources touched.
 

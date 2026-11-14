@@ -1,8 +1,10 @@
 # Execution-service delivery
 
-Status: R0-16/R0-15A/B1/C1 verified; B2 direct native startup integration in progress.
-Updated: 2026-11-12. S8/S10 completion is recorded in their owning plans.
-Authority: [roadmap](../roadmap.md), especially G0, G1, G1-C, G2 and the pre-investment G3 gate.
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is retained as historical delivery evidence for R0-15/R0-16 and the measurement protocol; its open work is tracked in the roadmap's §5 queue, and the roadmap wins on any disagreement.
+
+Status: historical delivery record (2026-11-12). R0-16 and R0-15 A/B1/C1 were
+verified; later B2/C2 and sandbox evidence live in the linked evidence files and
+the canonical plan.
 
 ## Outcome and constraints
 
@@ -143,7 +145,7 @@ not a deployed reconnect test or a completed G1-C recovery protocol.
 The reviewed disposable runner and signed Bun probe passed on the configured
 evented image digest, `linux/amd64` under ARM emulation. The actual Stow binary
 reports `0.3.7`; its hash, image identity, CLI help, prior failed attempts and
-successful receipt are recorded in the [canonical plan](stow-workspace-integration.md).
+successful receipt are recorded in the [storage evidence](stow-workspace-integration.md).
 Direct files and generic S3-only objects were distinct. The workspace archive
 omitted the S3 store, and a new signed object write after the baseline fingerprint
 still produced HTTP 204. This reproduces the recovery gap; it does not repair it.
@@ -455,5 +457,5 @@ limitations; local mocks never close a runtime or external-pilot gate.
 
 Each completed slice updates the roadmap gate ledger with artifact/revision,
 commands/case results, evidence link, remaining uncertainty and next owner/action.
-Keep exact S8 receipts and approvals in their canonical plan/runbook. Never mark
+Keep exact S8 receipts and approvals in their owning evidence file/runbook. Never mark
 G0/G1/G1-C/G2 passed merely because a plan, build or local test suite is complete.

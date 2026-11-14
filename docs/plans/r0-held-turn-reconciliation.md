@@ -1,5 +1,7 @@
 # R0 F2 — held-turn recovery
 
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is retained as historical implementation evidence and permanent accounting constraints; the roadmap wins on any disagreement.
+
 Status: scoped local implementation and verification complete · 2026-11-11
 Baseline: existing dirty working tree; F1's latest local gate passed 351 tests.
 Related: [roadmap](../roadmap.md), [F1 implementation](r0-reliability-iteration.md#f1-policy-and-legacy-cutover--2026-11-11), [runbook](../runbook.md#usage-and-budget).

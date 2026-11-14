@@ -1,5 +1,7 @@
 # Next roadmap iteration — R0 reliability
 
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is retained as historical implementation evidence and permanent accounting constraints; the roadmap wins on any disagreement.
+
 Status: local implementation, review and gate complete · Updated: 2026-11-11
 Baseline: `ba94404` plus existing working-tree edits; preserve those edits.
 Coverage: local repairs in R0-10–R0-14. G0, G1 and audit 32 remain open.

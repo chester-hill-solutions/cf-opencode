@@ -1,5 +1,7 @@
 # Roadmap evidence history — 2026-11-11
 
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). These dated notes are historical checkpoints only; the roadmap gate ledger is the current state.
+
 These dated notes are preserved from the roadmap before the execution-service
 revision. They describe successive checkpoints, not a single current state.
 Statements such as “Live validation has not started” apply to their historical

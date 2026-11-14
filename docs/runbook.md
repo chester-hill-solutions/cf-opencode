@@ -1,5 +1,7 @@
 # Runbook — Aboiteau
 
+> Operational reference. Gate status and sequencing live in [the canonical plan](roadmap.md); this file covers deploy, recovery, rollback and onboarding procedures.
+
 Operational notes for the current single-tenant harness.
 
 ## Deploy
@@ -421,6 +423,7 @@ after the existing staging/container checks.
 ```
 
 Counters: `turn.settled`, `turn.failed`, `turn.timedout`, `checkpoint.saved`,
+`settlement.paused`, `slack.form.failed`,
 `checkpoint.skipped`, `checkpoint.failed`, `queue.enqueued`, `queue.drained`,
 `queue.failed`, `admission.failed`, `container.recycled`. Pass `?date=YYYY-MM-DD`
 for another UTC day.
@@ -466,6 +469,8 @@ against the last values reported:
 |---|---|
 | `capacity.rejected` | container cap hit |
 | `turn.failed`, `turn.timedout` | failed or abandoned turns |
+| `settlement.paused` | first entry into a paused settlement; inspect the conversation's `settlementError` and retained hold |
+| `slack.form.failed` | question-card delivery failed; check bot scopes/channel access; retries back off from 5 seconds to 5 minutes while the turn is active |
 | `checkpoint.failed`, `snapshot.failed` | durability failures |
 | `budget` | daily spend reaches 80% of `dailyBudgetUSD` |
 

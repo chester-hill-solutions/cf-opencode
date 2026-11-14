@@ -1,5 +1,7 @@
 # Testing
 
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](roadmap.md). This document is a verification reference; gate status and required live evidence live in the roadmap.
+
 The layers below verify different boundaries. Simulated container/model tests do
 not establish live provider accuracy, availability, latency, cost or task success.
 
@@ -243,6 +245,14 @@ model turn. Document the estimate and overshoot behavior; do not claim a hard
 provider-spend ceiling without separately verifying runtime enforcement.
 
 ## Required credential-boundary checks before G1
+
+R0-19's separate diagnostic is `bun scripts/probe-credential-boundary.ts` (requires
+a prebuilt local Docker image, optionally selected with `IMAGE`). It uses only
+synthetic credentials in a disposable network-disabled container. Exit 2 means
+`KNOWN_OPEN_G1`, and is intentionally excluded from the normal green test gate.
+See the [W0 receipt](evidence/w0-correctness-2026-11-14.md) and
+[raw probe result](evidence/r0-19-2026-11-14.json). This diagnostic records exposure;
+it does not satisfy the enforcement checks below.
 
 R0-12 records the initial trusted-operator/trusted-repository restriction. Audit 32
 remains open until R1-7's external credential injection and egress boundary pass

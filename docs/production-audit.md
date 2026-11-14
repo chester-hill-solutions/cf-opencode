@@ -1,12 +1,14 @@
 # Production audit — cf-opencode harness
 
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](roadmap.md). This audit is retained as historical evidence; current gate status and open work live in the roadmap.
+
 ## Initial implementation assessment — 2026-11-11 (historical snapshot)
 
 **Current status:** G0 is open. The findings below concern the assessed working tree,
 including pre-existing local edits; no product fixes were made during the assessment.
 They supersede any historical implication below that durability or the audit is fully closed.
-Release work is tracked in [the roadmap](roadmap.md#r0--harness-complete-current-work),
-with [regression acceptance checks](testing.md#required-regressions-before-g0).
+Release work is tracked in [the roadmap](roadmap.md), with
+[regression acceptance checks](testing.md#required-regressions-before-g0).
 
 | # | Priority / original status | Original finding and observed trigger | Source | Current status |
 |---|---|---|---|---|

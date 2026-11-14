@@ -1,5 +1,7 @@
 # S8 — Operator reconciliation and idle runtime migration
 
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is retained as live operational evidence and permanent reconciliation constraints; the roadmap wins on any disagreement.
+
 ## Outcome and boundary
 
 Both identified holds have been resolved through separately approved decisions,

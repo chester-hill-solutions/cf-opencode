@@ -1,5 +1,7 @@
 # Slack usability — 2026-11-11
 
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is retained as live Slack evidence and adapter limits; the roadmap wins on any disagreement.
+
 ## Mission and results
 
 Make the existing Team Nate OpenCode bot usable through Slack: commands must work

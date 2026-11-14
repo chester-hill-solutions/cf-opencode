@@ -1,5 +1,7 @@
 # Stow workspace integration and resource adoption
 
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is retained as storage evidence for R0-15; open work is tracked in the roadmap's §5 queue, and the roadmap wins on any disagreement.
+
 Status: A, B1, local C1, B2 startup integration and the bounded C2 Cloudflare/R2
 recovery proof verified. B2 passed the full rebuilt-container smoke on native
 amd64 CI. Production cutover and the wider storage qualification remain open.

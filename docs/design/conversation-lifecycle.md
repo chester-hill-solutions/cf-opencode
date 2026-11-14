@@ -1,5 +1,7 @@
 # Conversation lifecycle kernel
 
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is a contract summary; the roadmap controls sequencing and gate status.
+
 Status: implemented and locally verified; native CI and isolated Cloudflare cold
 restore qualification passed. Production has not been rolled out.
 Implementation sequence: [adoption plan](../plans/conversation-lifecycle-adoption.md).

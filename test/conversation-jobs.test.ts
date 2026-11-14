@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
 import type { ConversationState } from "../src/state"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
@@ -38,6 +38,43 @@ async function startLegacyBootstrap(
 }
 
 describe("Conversation Lifecycle job cutover", () => {
+  for (const reserved of [true, false]) {
+    it(`counts and logs a ${reserved ? "reserved" : "reservation-less"} timeout once`, async () => {
+      const stub = env.CONVERSATION.getByName(`C1:jobs-timeout-${reserved}`)
+      await runInDurableObject(stub, async (instance, runtime) => {
+        const prompts = { count: 0 }
+        instance.transport = observationTransport(prompts)
+        await runtime.storage.put("state", {
+          phase: "running", runStartedAt: Date.now() - 16 * 60_000,
+          sessionID: "ses_existing", seen: [], pending: {},
+          ...(reserved ? { budgetReservation: { reservationID: "timeout-hold", date: "2026-11-14", dispatched: true } } : {}),
+        } satisfies ConversationState)
+        const logs = vi.spyOn(console, "log")
+        const settings = env.SETTINGS.getByName("global")
+        const before = await (await settings.fetch("https://settings/metrics")).json() as { metrics: Record<string, number> }
+        await startLegacyBootstrap(instance, runtime.storage)
+        await driveConversationJobs(instance, runtime.storage, ["turn:observe"])
+        await driveConversationJobs(instance, runtime.storage, ["turn:observe"])
+        const after = await runtime.storage.get<ConversationState>("state")
+        const reported = await runtime.storage.get<{ sessionID: string }>("turnTimeout")
+        expect(reported?.sessionID).toBe("ses_existing")
+        expect(prompts.count).toBe(0)
+        if (reserved) {
+          expect(after?.budgetReservation?.reservationID).toBe("timeout-hold")
+          expect(after?.settlementError).toContain("time limit")
+        } else {
+          expect(after?.phase).toBe("idle")
+          expect(after?.settlementError).toBeUndefined()
+        }
+        const afterMetrics = await (await settings.fetch("https://settings/metrics")).json() as { metrics: Record<string, number> }
+        expect((afterMetrics.metrics["turn.timedout"] ?? 0) - (before.metrics["turn.timedout"] ?? 0)).toBe(1)
+        expect((afterMetrics.metrics["settlement.paused"] ?? 0) - (before.metrics["settlement.paused"] ?? 0)).toBe(reserved ? 1 : 0)
+        expect(logs.mock.calls.filter(([line]) => String(line).includes('"event":"turn.timedout"'))).toHaveLength(1)
+        logs.mockRestore()
+      })
+    })
+  }
+
   it("rehydrates an old admitting phase without an admission ID", async () => {
     const stub = env.CONVERSATION.getByName("C1:jobs-legacy-admission")
     const row = await runInDurableObject(stub, async (instance, runtime) => {
