@@ -36,6 +36,15 @@ connector. **OpenCode** remains the execution runtime; the service owns
 admission, persistence, accounting, recovery and upgrades. **Slack** is the first
 connector, not the execution model.
 
+**Next product workflow — GitHub repo to draft PR (R2-9).** A caller selects an
+authorized repository and base branch for a workspace, Aboiteau checks it out,
+the agent creates a working branch, makes changes and runs checks, then an
+explicitly authorized publication operation pushes that branch and returns a
+draft pull-request URL. HTTP/reference-client and Slack callers use the same
+operations. GitHub credentials stay outside repository-controlled execution.
+This is scheduled before G2 pilots; the storage, credential-boundary and public
+API prerequisites still apply.
+
 **Topology (retained).**
 
 ```
@@ -198,7 +207,7 @@ now part of the plan rather than a separate report.
 | **G0** | Do representative coding tasks complete and survive defined failures with correct admission/accounting and measured cost per accepted task? | **OPEN** | R0-1 staging rehearsal; R0-2 frozen task/fault matrix; R0-3 cost/latency baseline; R0-11 deployed container checks and legacy/manual ledger; R0-15 live recovery/storage cutover ([offline harness ready](evidence/storage-harness-preparation-2026-11-14.json)); R0-16 production replay rollout | platform + operator |
 | **G1** | Do credential, egress and strict tenant boundaries hold, including resolver outages and repository-controlled probes? | **OPEN** | R1-3 deployed lifecycle proof; R1-5/6/8 strict identity, scoped keys, quotas; R1-7a/7/9 real-container egress and cross-tenant enforcement; [R0-19 confirms current exposure](evidence/r0-19-2026-11-14.json) | security + platform |
 | **G1-C** | Can a non-Slack client use stable turns, questions, permissions, cancellation, reconnect and recovery solely through the public API? | **OPEN** | R1-4a sign-off and implementation; R1-4b neutral interactions; R1-4c reference-client conformance | API + connector |
-| **G2** | Can five external teams install in their own accounts, integrate, repeat work, and upgrade/restore without builder intervention? | **NOT STARTED** | R2-2/3/4/6/7/8, then pilots | pilot owner |
+| **G2** | Can five external teams install in their own accounts, integrate, repeat work, and upgrade/restore without builder intervention? | **NOT STARTED** | R2-2/3/4/6/7/8; R2-9; five pilots including one independent public-API repo-to-draft-PR integration | pilot owner |
 | **G3** | Before broad R3 investment, do pilot workloads demonstrate a need for specific image, size, workspace or network changes? | **NO DEMAND EVIDENCE** | Recorded blocked workloads from pilots or controlled observations | product owner |
 
 **Gate discipline.** A failed gate blocks expansion, not independent design,
@@ -258,6 +267,7 @@ alongside W1–W3 but closes no product gate. W5 waits for G1 + G1-C.
 | **W4** | **SL-7.x** | Runbook, canary and cost dashboard | M | SL-1.2 | Docs match code; canary + rollback proven; per-start/active-hour/turn cost visible |
 | **W4** | **SL-5.x** | Bounded Computer spike | L | SL-A, SL-6.1 | Gate SL-C evidence: workerd host boots, bundle fits, file ops measured, no credential/token leak, gap report; then stop or continue to SL-D |
 | **W5** | **R2-2/3/4** | Own-account bootstrap, install, minimal operator view | M slices | G1 + G1-C | Scoped key bootstrap; prerequisite diagnostics → repo/provider → verified task; active work/recovery/held usage/limits/revocation visible without source imports |
+| **W5** | **R2-9** | GitHub repository → workspace → tested branch → draft PR — next product workflow | M slices | R0-15, G1, G1-C | Public/private repo and base selected per workspace; scoped authenticated clone/fetch/push and draft-PR creation; checks and commit recorded; restart/retry reconciles publication without duplicate PRs; HTTP/Slack parity; caller receives PR URL. See §5.2 brief |
 | **W5** | **R2-6/7/8** | Operating measurements, security review, install/upgrade guide | M | R1-8, R1-7 | Cost/intervention baseline; no critical security findings; versioned install/upgrade/rollback/export/restore runbook with pilot attempts |
 | **W5** | **R2-1/R2-5** | Optional Slack OAuth install; tenant export/removal | M | R1-5, R1-6; demand-sequenced | Per-workspace install/uninstall if demanded; invite/remove/export/delete tenant with checkpoints; not a core onboarding prerequisite |
 | **W5** | **G2 pilots** | Five external own-account teams | L | G1 + G1-C + R2 | Predeclared tasks, later-day repeat use, prescribed upgrade/restore, one independent non-Slack integration; every failure kept |
@@ -346,6 +356,62 @@ the recovery inventory: natural and escaped/reserved keys, object metadata,
 unfinished multipart, background-writer consistency, registry identity. For each,
 preserve, rebuild or refuse before mutation. Name retained/reset operator data in
 the cutover receipt. Update README and runbook in the same change.
+
+**R2-9 — GitHub repository to draft PR (next product workflow).**
+
+User outcome: **choose repo → choose base branch → create working branch → make
+and test changes → publish draft PR → receive URL**. Implement the smallest
+supported GitHub workflow before external pilots. Design, fixtures and contract
+work can start alongside earlier waves; live credential-bearing publication
+depends on R0-15, G1 and G1-C. This does not displace the current correctness,
+storage and credential-boundary queue.
+
+Current gap: `HarnessSettings.workspaceRepo/workspaceBranch` are global defaults.
+The fresh-workspace path in `control-server.ts` shallow-clones the configured
+branch, and its saved GitHub token is wired only into that clone. The shipped
+image does not install `gh`; there is no first-class authenticated push/draft-PR
+operation. Clone support and shell permission prompts do not prove this workflow.
+
+Deliver in these bounded slices:
+
+1. **Workspace repository binding.** Accept an authorized GitHub repository and
+   base branch per workspace, resolve and retain the base commit, and check out
+   that identity into a fresh `/workspace`. Global settings may supply defaults;
+   changing them must not switch another workspace's repo. Bind the repository,
+   base and working branch to durable workspace state. Refuse a conflicting
+   existing checkout before mutation. Fetch additional history only when needed
+   for the supported task or comparison.
+2. **Branch, changes and checks.** Create a new working branch, use the existing
+   OpenCode turn/accounting engine for edits and tests, and record the resulting
+   commit SHA plus check commands and pass/fail/skipped results. Preserve `.git`,
+   workspace files and that binding across checkpoint/cold restore. A skipped or
+   failed check must never be reported as passing.
+3. **Scoped publication.** Use trusted service operations for authenticated
+   clone/fetch/push and GitHub draft-PR creation through the R1-7 credential
+   boundary. Repository-controlled code must not obtain tokens through files,
+   environment, argv, Git config, logs, checkpoints or internal APIs. Enforce
+   repository and new-branch scope, revocation and explicit publication authority
+   at the service; permission-pattern strings do not supply that boundary.
+   Return the repository, branch, commit SHA, draft-PR number and URL.
+4. **Recovery and caller parity.** Persist publication intent/status before
+   external writes. After a lost push/PR acknowledgement, reconcile the remote
+   branch/commit and PR before retrying; return an existing matching PR rather
+   than creating another. Unknown publication stays visible; no automatic prompt
+   resend, force-push or broader repository fallback. Expose credential-free
+   progress, checks, failures and the final PR URL through public HTTP/status/SSE,
+   the reference client and Slack without duplicating execution/accounting.
+
+Acceptance: deployed end-to-end runs on dedicated authorized public and private
+test repos, using only public caller contracts; correct repo/base/branch and
+resulting commit/PR URL verified; checkpoint/restore preserves the checkout;
+lost push and PR responses do not duplicate publication; revoked credentials,
+cross-repo requests, branch/base conflicts and insufficient permissions fail
+visibly without overwriting unrelated work. Include repository-controlled
+credential probes from R1-7, and record all attempts and check results. Local
+fixtures alone do not close this slice or a product gate.
+
+Initial scope is same-repository branches and draft PRs. Merging, force-push,
+fork/cross-repository publication and an in-app Git review UI remain deferred.
 
 **W4 — efficiency stays evidence-led.**
 Keep the 1 vCPU / 2 GiB / 8 GB shape and 300 s idle window until SL-1.2/1.5
@@ -442,6 +508,10 @@ fallback. No WASM/AgentOS rewrite, no stow POSIX shim, no snapshot-first recover
 - At least one independent developer integrates a non-Slack application using
   public contracts and examples, without server-source imports or a bespoke
   backend patch.
+- At least one independent pilot completes R2-9's selected GitHub repo →
+  workspace → tested branch → draft PR using only those public contracts, and
+  receives a verified PR URL. Connector-specific access to server internals does
+  not satisfy this requirement.
 - An operator sees actual/reserved/unknown usage and named limits, inspects
   recovery and revokes access unaided. Security review is signed off with no
   critical findings.
@@ -573,6 +643,12 @@ status field.
 7. **Truthfulness**: no gate closes on plans, builds, mocks or pattern strings.
 
 ## 11. Change log
+
+- **2026-11-14 (repo-to-PR scope)** — added R2-9 as the next product workflow:
+  per-workspace repository/base selection, branch/edit/checks, credential-scoped
+  push and draft-PR publication, recovery/retry reconciliation and HTTP/Slack
+  parity. Scheduled before G2 pilots with R0-15/G1/G1-C prerequisites; added the
+  public-API pilot acceptance criterion. No implementation or gate closure claimed.
 
 - **2026-11-14 (R0-15 harness)** — centralized the frozen Stow 0.4.0 artifact
   pins, enforced the explicit custom profile, rejected stale receipts, and
