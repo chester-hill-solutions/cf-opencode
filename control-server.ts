@@ -205,6 +205,27 @@ function expectedWorkspace() {
   return { root: WORKSPACE, registryDir: STOW_REGISTRY, bucket: STOW_BUCKET }
 }
 
+type PhaseTimings = Record<string, number>
+
+/**
+ * Per-operation phase timings for the cold path. They are deliberately
+ * best-effort and additive: a slow phase must not change control flow. The
+ * DO logs them with `container.ready` so a deployed cold start can be split
+ * into image start, restore, stow readiness and OpenCode readiness.
+ */
+function phaseTimer() {
+  const startedAt = performance.now()
+  const marks: PhaseTimings = {}
+  return {
+    mark(name: string): void {
+      marks[name] = Math.round(performance.now() - startedAt)
+    },
+    snapshot(): PhaseTimings {
+      return { ...marks, totalMs: Math.round(performance.now() - startedAt) }
+    },
+  }
+}
+
 function loadWorkspaceIdentity(): WorkspaceIdentity {
   if (workspaceIdentity) return workspaceIdentity
   const identityStat = tryLstat(STOW_IDENTITY)
@@ -766,16 +787,24 @@ function fixStatePermissions(): void {
 }
 
 async function startRuntime(): Promise<Response> {
+  const timer = phaseTimer()
+  const fail = (error: string, status: number, detail?: string) =>
+    Response.json(
+      { error, ...(detail ? { detail } : {}), timings: timer.snapshot() },
+      { status },
+    )
+
   try {
     // Establish the durable native root before any repository files are copied
     // into it. Existing identities are resumed, never re-prepared.
     await prepareWorkspaceIdentity()
   } catch (error) {
-    return Response.json(
-      { error: error instanceof Error ? error.message : "native workspace initialization failed" },
-      { status: 409 },
+    return fail(
+      error instanceof Error ? error.message : "native workspace initialization failed",
+      409,
     )
   }
+  timer.mark("workspaceIdentity")
 
   if (!initialized() && workspaceRepo) {
     const tmp = `/tmp/workspace-clone-${randomBytes(8).toString("hex")}`
@@ -785,38 +814,34 @@ async function startRuntime(): Promise<Response> {
     })
     const cloneError = await new Response(clone.stderr as ReadableStream).text()
     const code = await clone.exited
-    if (code !== 0) {
-      return Response.json(
-        { error: "workspace clone failed", detail: cloneError.trim().slice(-600) },
-        { status: 500 },
-      )
-    }
+    if (code !== 0) return fail("workspace clone failed", 500, cloneError.trim().slice(-600))
     if (tryLstat(`${tmp}/.stow`)) {
       rmSync(tmp, { recursive: true, force: true })
-      return Response.json({ error: "workspace repository conflicts with native .stow metadata" }, { status: 409 })
+      return fail("workspace repository conflicts with native .stow metadata", 409)
     }
+    timer.mark("clone")
     const copied = await run(["cp", "-a", `${tmp}/.`, WORKSPACE])
     rmSync(tmp, { recursive: true, force: true })
-    if (copied !== 0) return Response.json({ error: "workspace copy failed" }, { status: 500 })
+    if (copied !== 0) return fail("workspace copy failed", 500)
+    timer.mark("copy")
     fixWorkspacePermissions()
     try {
       await assertWorkspaceLinks()
     } catch (error) {
-      return Response.json(
-        { error: error instanceof Error ? error.message : String(error) },
-        { status: 500 },
-      )
+      return fail(error instanceof Error ? error.message : String(error), 500)
     }
+    timer.mark("workspaceLinks")
   }
 
   try {
     await ensureStow()
   } catch (error) {
-    return Response.json(
-      { error: error instanceof Error ? error.message : "native workspace failed readiness" },
-      { status: 503 },
+    return fail(
+      error instanceof Error ? error.message : "native workspace failed readiness",
+      503,
     )
   }
+  timer.mark("stow")
   try {
     await startOpencode()
   } catch {
@@ -829,8 +854,9 @@ async function startRuntime(): Promise<Response> {
     stow = undefined
     stowReadiness = undefined
     rmSync(STOW_READY, { force: true })
-    return Response.json({ error: "OpenCode failed readiness" }, { status: 503 })
+    return fail("OpenCode failed readiness", 503)
   }
+  timer.mark("opencode")
   if (!opencode || opencode.exitCode !== null || !opencodeGeneration || !nativeWorkspaceAvailable()) {
     await stopChild(opencode, "OpenCode")
     opencode = undefined
@@ -841,15 +867,17 @@ async function startRuntime(): Promise<Response> {
     stow = undefined
     stowReadiness = undefined
     rmSync(STOW_READY, { force: true })
-    return Response.json({ error: "OpenCode exited before accounting policy verification" }, { status: 503 })
+    return fail("OpenCode exited before accounting policy verification", 503)
   }
   mkdirSync(STATE_ROOT, { recursive: true })
   writeFileSync(MARKER, new Date().toISOString())
+  timer.mark("finish")
   return Response.json({
     ok: true,
     accountingPolicy: ACCOUNTING_POLICY_ID,
     opencodeGeneration,
     ...(opencodeEventPersistence ? { eventPersistence: true } : {}),
+    timings: timer.snapshot(),
   })
 }
 
@@ -1069,6 +1097,7 @@ if (import.meta.main) Bun.serve({
 
     if (url.pathname === "/restore" && request.method === "POST") {
       return enqueueLifecycle(async () => {
+      const timer = phaseTimer()
       const part = url.searchParams.get("part") ?? "workspace"
       if (part !== "workspace" && part !== "state") {
         return Response.json({ error: "unknown restore part" }, { status: 400 })
@@ -1076,12 +1105,14 @@ if (import.meta.main) Bun.serve({
       const tmp = `/tmp/restore-${part}.tar.gz`
       if (!request.body) return Response.json({ error: "empty restore body" }, { status: 400 })
       await drainToFile(request.body, tmp)
+      timer.mark("download")
       try {
         await assertSafeArchive(tmp)
       } catch {
         rmSync(tmp, { force: true })
-        return Response.json({ error: "archive rejected" }, { status: 400 })
+        return Response.json({ error: "archive rejected", timings: timer.snapshot() }, { status: 400 })
       }
+      timer.mark("validate")
       // A failed restore must not leave the marker behind, or the next start
       // will believe the half-restored root is complete.
       rmSync(MARKER, { force: true })
@@ -1100,19 +1131,21 @@ if (import.meta.main) Bun.serve({
       stowReadiness = undefined
       workspaceIdentity = undefined
       rmSync(STOW_READY, { force: true })
+      timer.mark("stop")
       if (part === "workspace") {
         rmSync(WORKSPACE, { recursive: true, force: true })
         mkdirSync(WORKSPACE, { recursive: true })
         chown(WORKSPACE, AGENT_UID, AGENT_GID)
         const code = await run(["tar", "xzf", tmp, "-C", WORKSPACE])
         rmSync(tmp, { force: true })
-        if (code !== 0) return Response.json({ error: "restore failed" }, { status: 500 })
+        timer.mark("extract")
+        if (code !== 0) return Response.json({ error: "restore failed", timings: timer.snapshot() }, { status: 500 })
         fixWorkspacePermissions()
         try {
           await assertWorkspaceLinks()
         } catch (error) {
           return Response.json(
-            { error: error instanceof Error ? error.message : String(error) },
+            { error: error instanceof Error ? error.message : String(error), timings: timer.snapshot() },
             { status: 500 },
           )
         }
@@ -1126,20 +1159,22 @@ if (import.meta.main) Bun.serve({
         chown(STATE_ROOT, AGENT_UID, AGENT_GID)
         const code = await run(["tar", "xzf", tmp, "-C", STATE_ROOT])
         rmSync(tmp, { force: true })
+        timer.mark("extract")
         if (code !== 0) {
           rmSync(MARKER, { force: true })
-          return Response.json({ error: "restore failed" }, { status: 500 })
+          return Response.json({ error: "restore failed", timings: timer.snapshot() }, { status: 500 })
         }
         fixStatePermissions()
         try {
           await assertStateLinks()
         } catch (error) {
           return Response.json(
-            { error: error instanceof Error ? error.message : String(error) },
+            { error: error instanceof Error ? error.message : String(error), timings: timer.snapshot() },
             { status: 500 },
           )
         }
       }
+      timer.mark("finalize")
       // A split restore is only complete once the state part is restored (or
       // the caller says there is no state part), so a failure in between keeps
       // `initialized` false and the restore is retried.
@@ -1149,7 +1184,8 @@ if (import.meta.main) Bun.serve({
         mkdirSync(STATE_ROOT, { recursive: true })
         writeFileSync(MARKER, new Date().toISOString())
       }
-      return Response.json({ ok: true, part })
+      timer.mark("commit")
+      return Response.json({ ok: true, part, timings: timer.snapshot() })
       })
     }
 

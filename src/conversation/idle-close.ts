@@ -11,11 +11,22 @@ import type { ConversationRuntimeAccess } from "./runtime-access"
 import { isContainerIdleRecord, type ContainerIdleRecord } from "./idle-state"
 export { isContainerIdleRecord, type ContainerIdleRecord } from "./idle-state"
 
-const IDLE_CLOSE_MS = 30_000
+const DEFAULT_IDLE_CLOSE_MS = 30_000
 const IDLE_RETRY_MS = 30_000
 const CONTROL_PORT = 4001
 const IDLE_KEY = "containerIdle"
 const IDLE_CLOSE_PENDING_MESSAGE = "container idle close is pending; wait for stop recovery"
+
+/**
+ * Deployment policy. Code defaults to the historical 30 s so unit fixtures
+ * stay deterministic; `wrangler.jsonc` sets the production value.
+ */
+export function parseIdleCloseMs(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === "") return undefined
+  const seconds = Number(value)
+  if (!Number.isFinite(seconds) || seconds < 30 || seconds > 3_600) return undefined
+  return Math.round(seconds * 1000)
+}
 
 export interface IdleCloseJobPayload {
   idleID?: string
@@ -36,6 +47,8 @@ export interface ConversationIdleCloseOptions {
   storage: DurableObjectStorage
   store: ConversationStore
   id: string
+  /** Override the default 30 s close delay. */
+  idleCloseMs?: number
   runtime: Pick<ConversationRuntime, "apiPort" | "generation" | "port" | "stop" | "confirmedStopped"> & {
     nativeRunning(): boolean
   }
@@ -73,7 +86,7 @@ export class ConversationIdleClose {
       version: 1,
       id: crypto.randomUUID(),
       generation,
-      dueAt: now + IDLE_CLOSE_MS,
+      dueAt: now + (this.options.idleCloseMs ?? DEFAULT_IDLE_CLOSE_MS),
       phase: "waiting",
     }
     return this.options.storage.transaction(async (txn) => {

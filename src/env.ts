@@ -13,6 +13,8 @@ export interface Env {
   EVENTED_CANARY_KEY?: string
   /** Opt in only never-started conversations to the persistent-event image. */
   EVENTED_FRESH_CONVERSATIONS?: string
+  /** Seconds an unused runtime stays warm; production sets 300, code defaults to 30. */
+  IDLE_CLOSE_SECONDS?: string
   CHECKPOINTS: R2Bucket
   /** Optional D1 database holding tenants, agents and channel bindings. */
   TENANCY?: import("./tenancy").TenancyDatabase

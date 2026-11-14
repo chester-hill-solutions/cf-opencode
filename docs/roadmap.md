@@ -95,7 +95,16 @@ See the [execution-service delivery plan](plans/execution-service-delivery.md).
 **Decision — 2026-11-11, confirmed by the product owner:** retain OpenCode in
 Cloudflare Containers, the stow-s3 hot workspace and R2 recovery checkpoints.
 Prioritize R0 reliability and measured recovery, R1 tenant/credential isolation,
-then R2 onboarding. No alternative-runtime prototype is scheduled.
+then R2 onboarding. No alternative-runtime migration is scheduled.
+
+**Sandbox weight update — 2026-11-13:** the deployed cold path measured
+6.16–7.39 s, and local shape testing showed the dominant term is OpenCode's
+single-threaded boot on the 0.5 vCPU `standard-1` instance, not image pull or R2
+restore. The product owner authorized the canonical
+[sandbox-lighter plan](plans/sandbox-lighter-plan.md): right-size to 1 vCPU,
+keep warm longer, diet the image, and run a bounded `@cloudflare/computer`
+workerd/VFS spike. The spike is not a migration; it must pass its gates before
+replacing the current container path.
 
 **Stow integration evidence — 2026-11-12:** native Workspace startup now passes
 the full rebuilt-container smoke on native amd64. An isolated Cloudflare test
@@ -106,10 +115,12 @@ writer consistency remain open under R0-15.
 See the [integration plan](plans/stow-workspace-integration.md).
 
 The [runtime feasibility research](plans/wasm-sandbox-feasibility.md) remains a
-reference for a later decision. Moving the OpenCode loop into a Durable Object,
-adding isolate/JavaScript/WASM execution, adopting AgentOS or Cloudflare Computer,
-and replacing the workspace backend are deferred. R1-4 extracts the current runtime
-and event responsibilities; it does not introduce a generic backend framework.
+reference. Moving the OpenCode loop into a Durable Object, isolate/JavaScript/WASM
+execution, and replacing the workspace backend are now being evaluated only through
+the bounded `@cloudflare/computer` spike in the
+[sandbox-lighter plan](plans/sandbox-lighter-plan.md). AgentOS adoption and a full
+WASM POSIX environment remain deferred. R1-4 extracts the current runtime and event
+responsibilities; it does not introduce a generic backend framework.
 The earlier suggestion to spend two days on a prototype is superseded.
 
 Borrow useful AgentOS concepts through the existing stack and release sequence:

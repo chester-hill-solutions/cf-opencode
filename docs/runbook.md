@@ -451,9 +451,11 @@ recycle/reset/delete and when a container fails to start, or they expire after
 10 minutes. Onboarding is exempt: it never takes a slot, so `/onboarding/` works
 even when every conversation is warm.
 
-Containers stay warm for 10 minutes after a conversation goes quiet
-(`setInactivityTimeout`), so quick follow-up turns skip the cold start. Raise it
-for latency, lower it for idle cost.
+Containers stay warm for `IDLE_CLOSE_SECONDS` after a conversation goes quiet
+(production: 300 s; code default: 30 s), so quick follow-up turns skip the cold
+start. The platform's 10-minute inactivity timeout is only a backstop. Raise it
+for latency, lower it for idle cost, and remember that a warm container holds one
+of the `maxContainers` lease slots.
 
 ## Alerts
 
@@ -623,7 +625,10 @@ A checkpoint that fails is retried from the alarm up to three times (`checkpoint
 ## Known limitations
 
 - Single container application on the `durable_object` scheduling policy. There is no per-application `max_instances`; account limits bound concurrency, so keep message throughput in mind.
-- Instance size is chosen at start (`standard-1`). `basic` has no exact equivalent on this policy.
+- Instance size is chosen at start: 1 vCPU, 2 GiB memory, 8 GB disk (custom
+  shape). OpenCode boot is CPU-bound; the old `standard-1` 0.5 vCPU shape was the
+  measured cold-start bottleneck. Raise memory to 3 GiB if a real repo's LSP or
+  plugins OOM.
 - Snapshots are a fast restore cache only: they are bound to the image they were taken from, have a 30-day TTL refreshed on restore, and are not portable across deploys. The R2 tar archive remains the source of truth.
 - `.stow` (the local S3 view) and `.state/cache` are excluded from checkpoints: files survive a restore, cached/provider state is rebuilt.
 - A crash mid-turn loses that turn (the checkpoint is written after settle).

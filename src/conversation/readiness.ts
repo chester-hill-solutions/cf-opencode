@@ -134,6 +134,8 @@ export class ConversationReadiness {
       signal: AbortSignal.timeout(10_000),
     })).json() as { initialized?: boolean }
 
+    let restoreWorkspaceMs: number | undefined
+    let restoreStateMs: number | undefined
     if (!status.initialized) {
       const checkpoint = upgradePending
         ? await this.options.upgrade.checkpoint(upgradePending)
@@ -146,25 +148,43 @@ export class ConversationReadiness {
         const workspaceQuery = checkpoint.split
           ? "?part=workspace" + (checkpoint.state ? "" : "&final=1")
           : ""
+        const workspaceStartedAt = Date.now()
         const restoredWorkspace = await control.fetch("http://container/restore" + workspaceQuery, {
           method: "POST", body: workspace, signal: AbortSignal.timeout(60_000),
         })
+        restoreWorkspaceMs = Date.now() - workspaceStartedAt
         if (!restoredWorkspace.ok) {
           logEvent("checkpoint.restore.failed", { part: "workspace", status: restoredWorkspace.status })
           throw new Error("workspace restore failed: " + restoredWorkspace.status)
         }
+        const workspaceProof = await restoredWorkspace.json().catch(() => undefined) as
+          { timings?: Record<string, number> } | undefined
+        logEvent("checkpoint.restore", {
+          part: "workspace",
+          durationMs: restoreWorkspaceMs,
+          ...(workspaceProof?.timings ? { timings: workspaceProof.timings } : {}),
+        })
         if (checkpoint.state) {
           const stateArchive = await this.options.checkpoints.decryptBody(
             checkpoint.state.body,
             checkpoint.state.customMetadata?.encrypted === "1",
           )
+          const stateStartedAt = Date.now()
           const restoredState = await control.fetch("http://container/restore?part=state", {
             method: "POST", body: stateArchive, signal: AbortSignal.timeout(60_000),
           })
+          restoreStateMs = Date.now() - stateStartedAt
           if (!restoredState.ok) {
             logEvent("checkpoint.restore.failed", { part: "state", status: restoredState.status })
             throw new Error("state restore failed: " + restoredState.status)
           }
+          const stateProof = await restoredState.json().catch(() => undefined) as
+            { timings?: Record<string, number> } | undefined
+          logEvent("checkpoint.restore", {
+            part: "state",
+            durationMs: restoreStateMs,
+            ...(stateProof?.timings ? { timings: stateProof.timings } : {}),
+          })
         }
         await this.options.store.patch({ checkpointFingerprint: undefined, checkpointStateFingerprint: undefined })
       } else if (!upgradePending) {
@@ -203,6 +223,7 @@ export class ConversationReadiness {
       accountingPolicy?: unknown
       opencodeGeneration?: unknown
       eventPersistence?: unknown
+      timings?: unknown
     } | undefined
     if (proof?.ok !== true || proof.accountingPolicy !== ACCOUNTING_POLICY_ID ||
       typeof proof.opencodeGeneration !== "string" || !proof.opencodeGeneration) {
@@ -253,7 +274,12 @@ export class ConversationReadiness {
       await this.options.store.patch({ settingsVersion: settings.version })
     }
 
-    logEvent("container.ready", { durationMs: Date.now() - startedAt })
+    logEvent("container.ready", {
+      durationMs: Date.now() - startedAt,
+      ...(restoreWorkspaceMs === undefined ? {} : { restoreWorkspaceMs }),
+      ...(restoreStateMs === undefined ? {} : { restoreStateMs }),
+      ...(proof.timings && typeof proof.timings === "object" ? { startTimings: proof.timings } : {}),
+    })
     this.options.runtime.markVerified(port, proof.opencodeGeneration, proof.eventPersistence === true)
     return port
   }

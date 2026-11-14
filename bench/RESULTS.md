@@ -54,6 +54,31 @@ bench/container.sh
 HARNESS_URL=… API_TOKEN=… bun run bench
 ```
 
+## 2026-11-13 — local shape sensitivity and image diet (directional)
+
+Local Docker on Apple Silicon, same runtime image, time from process start to
+`/api/info`. This is not a Cloudflare measurement; it isolates the CPU shape and
+image content. The deployed 6.16–7.39 s cold read is consistent with the 0.5 vCPU
+empty-workspace row.
+
+| CPU available | Empty workspace | `cf-opencode` repo |
+|---|---:|---:|
+| 0.25 vCPU (`basic`) | 39.1 s | — |
+| 0.5 vCPU (`standard-1`) | 5.9–6.5 s | 7.9 s |
+| 1 vCPU (`standard-2` shape) | 1.9–2.5 s | 3.3 s |
+| 2 vCPU | 1.4 s | — |
+
+Image probe: **739 MB → 514 MB arm64 / 469 MB amd64**. Removing `.d.ts`, `.map`,
+`.md`, `effect/src`, `effect/ai-docs`, musl prebuilds and Bun's hardlink install
+cache reduced `runtime/opencode/node_modules` from **416 MB to 214 MB**. The prune
+must run in the same layer as `bun install`; a later Docker layer cannot reclaim
+the hardlinked cache. A slim base (`oven/bun:1.3-slim`) also removes the full
+Debian userland. License files are preserved.
+
+Limits: Docker CPU quotas are not Cloudflare’s scheduler; the repo row includes
+the copied repo and cold page cache is not controlled. These numbers select the
+next A/B, they do not replace the Cloudflare run.
+
 ## 2026-11-12 — Cloudflare idle close and encrypted cold restore
 
 Three no-inference cycles at `02e4ddf`, using the retained native evented image,

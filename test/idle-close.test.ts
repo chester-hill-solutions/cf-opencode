@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import type { ConversationState } from "../src/state"
-import { ConversationIdleClose, type ConversationIdleCloseOptions, type IdleCloseJobPayload } from "../src/conversation/idle-close"
+import { ConversationIdleClose, parseIdleCloseMs, type ConversationIdleCloseOptions, type IdleCloseJobPayload } from "../src/conversation/idle-close"
 import type { ContainerIdleRecord } from "../src/conversation/idle-state"
 import type { RuntimeQuiescenceResult } from "../src/runtime-quiescence"
 import { ConversationRuntimeAccess } from "../src/conversation/runtime-access"
@@ -22,6 +22,7 @@ function makeHarness(options: {
   ledgerThrows?: boolean
   realAccess?: boolean
   queueUseOnSnapshotClear?: boolean
+  idleCloseMs?: number
 } = {}) {
   const values = new Map<string, unknown>()
   values.set("state", {
@@ -143,6 +144,7 @@ function makeHarness(options: {
     storage: storage as unknown as DurableObjectStorage,
     store: stateStore as unknown as ConversationIdleCloseOptions["store"],
     id: "conv-1",
+    idleCloseMs: options.idleCloseMs,
     runtime: runtime as unknown as ConversationIdleCloseOptions["runtime"],
     access: access as unknown as ConversationIdleCloseOptions["access"],
     usage: usage as unknown as ConversationIdleCloseOptions["usage"],
@@ -221,6 +223,18 @@ describe("ConversationIdleClose", () => {
     const closing = harness.values.get("containerIdle")
     expect(await harness.idleClose.touch()).toBe(false)
     expect(harness.values.get("containerIdle")).toEqual(closing)
+  })
+
+  it("uses a deployment idle-close override and rejects unsafe values", async () => {
+    const harness = makeHarness({ idleCloseMs: 300_000 })
+    expect(await harness.idleClose.touch()).toBe(true)
+    const record = harness.values.get("containerIdle") as ContainerIdleRecord
+    expect(record.dueAt).toBeGreaterThanOrEqual(Date.now() + 299_000)
+    expect(parseIdleCloseMs("300")).toBe(300_000)
+    expect(parseIdleCloseMs("29")).toBeUndefined()
+    expect(parseIdleCloseMs("3601")).toBeUndefined()
+    expect(parseIdleCloseMs("not-a-number")).toBeUndefined()
+    expect(parseIdleCloseMs(undefined)).toBeUndefined()
   })
 
   it("proves usage and archives before persisting closing, stopping, and releasing", async () => {

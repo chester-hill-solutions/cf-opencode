@@ -215,7 +215,9 @@ Local numbers (workerd): `/health` p50 1.0 ms / p95 1.0 ms; DO state p50 1.0 ms 
 Operating notes (deploy, health, first turn, failures, rollback) are in
 [docs/runbook.md](docs/runbook.md). The path from harness to product — R0 harness complete, R1 tenancy foundations, R2 self-onboarding,
 R3 configurable sandbox, R4 product — is in [docs/roadmap.md](docs/roadmap.md), with gates, estimates
-and the ticket-level backlog.
+and the ticket-level backlog. Sandbox weight, cold start and the
+`@cloudflare/computer` decision are tracked in the
+[sandbox-lighter plan](docs/plans/sandbox-lighter-plan.md).
 
 ## Limits and open work
 

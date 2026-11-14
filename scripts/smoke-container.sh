@@ -206,11 +206,11 @@ finish() {
   if [[ "$status" != 0 && "$RUNTIME" == "docker" ]]; then
     echo "container smoke failed; collecting process diagnostics" >&2
     if [[ "$CREATED_MAIN" == 1 ]]; then
-      docker top "$NAME" -eo pid,ppid,stat,comm >&2 || true
-      docker exec "$NAME" sh -c 'for p in /proc/[0-9]*; do test -r "$p/status" || continue; sed -n -e "/^Name:/p" -e "/^State:/p" -e "/^Pid:/p" -e "/^PPid:/p" "$p/status"; printf "wait: "; cat "$p/wchan" 2>/dev/null; printf "\n"; done' >&2 || true
-      docker logs --tail 200 "$NAME" >&2 || true
+      timeout 5 docker top "$NAME" -eo pid,ppid,stat,comm >&2 || true
+      timeout 5 docker exec "$NAME" sh -c 'for p in /proc/[0-9]*; do test -r "$p/status" || continue; sed -n -e "/^Name:/p" -e "/^State:/p" -e "/^Pid:/p" -e "/^PPid:/p" "$p/status"; printf "wait: "; cat "$p/wchan" 2>/dev/null; printf "\n"; done' >&2 || true
+      timeout 5 docker logs --tail 200 "$NAME" >&2 || true
     fi
-    if [[ "$CREATED_SECOND" == 1 ]]; then docker logs --tail 200 "$SECOND_NAME" >&2 || true; fi
+    if [[ "$CREATED_SECOND" == 1 ]]; then timeout 5 docker logs --tail 200 "$SECOND_NAME" >&2 || true; fi
   fi
   cleanup
   rm -rf "$WORK"
@@ -221,6 +221,13 @@ trap finish EXIT
 
 echo "building ${IMAGE}…"
 build_image
+if [ "$RUNTIME" = docker ]; then
+  image_bytes=$(docker image inspect "$IMAGE" --format '{{.Size}}')
+  echo "image size: $(( image_bytes / 1024 / 1024 )) MB"
+  if [ "$image_bytes" -gt "${IMAGE_MAX_BYTES:-600000000}" ]; then
+    fail "image exceeds ${IMAGE_MAX_BYTES:-600000000} byte budget"
+  fi
+fi
 
 echo "starting ${NAME}…"
 run_container

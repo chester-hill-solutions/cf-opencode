@@ -17,7 +17,7 @@ import type { ConversationEvent } from "./events"
 import { ConversationEventStream } from "./conversation/event-stream"
 import { ConversationCheckpoints } from "./conversation/checkpoints"
 import { ConversationRuntime } from "./conversation/runtime"
-import { ConversationIdleClose } from "./conversation/idle-close"
+import { ConversationIdleClose, IdleClosePendingError, parseIdleCloseMs } from "./conversation/idle-close"
 import { ConversationRuntimeAccess } from "./conversation/runtime-access"
 import { ConversationUsage } from "./conversation/usage"
 import { ConversationRecoveryActions } from "./conversation/recovery-actions"
@@ -41,7 +41,6 @@ import { staleAction } from "./lifecycle"
 import { GITHUB_TOKEN_KEY, workspaceID } from "./vault"
 import { LEGACY_ACCOUNT_STATE_KEY, parseConversationKey } from "./tenancy"
 import { AccountingPolicyError } from "./accounting-policy"
-import { IdleClosePendingError } from "./conversation/idle-close"
 import { parseOperatorReconciliationProposal } from "./operator-reconciliation"
 import { hasConnectedProvider } from "./onboarding"
 import type { ConversationJobPayload } from "./conversation/jobs"
@@ -374,6 +373,7 @@ export class Conversation extends DurableObject<Env> {
       storage: ctx.storage,
       store: this.store,
       id: ctx.id.toString(),
+      idleCloseMs: parseIdleCloseMs(this.env.IDLE_CLOSE_SECONDS),
       runtime: {
         get apiPort() { return runtime.apiPort },
         get generation() { return runtime.generation },

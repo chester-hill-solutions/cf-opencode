@@ -8,14 +8,14 @@
 # Cold storage: the Durable Object streams tar checkpoints to R2.
 #
 # Pins:
-#   base image       — oven/bun:1.3 pinned by manifest-list digest
+#   base image       — oven/bun:1.3-slim pinned by manifest-list digest
 #   @opencode/server — locked to the client contract the Worker is built against
 #   STOW_VERSION     — native stow-s3 release used for the local S3 workspace
 #
 # OpenCode's event-persistent server is installed as an isolated, locked runtime
 # package. The control plane remains in the root Bun application.
 
-FROM oven/bun:1.3@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4
+FROM oven/bun:1.3-slim@sha256:d56a2534ffd262e92c12fd3249d3924d296d97086da773f821d7d0477435ea04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git jq openssl ripgrep sqlite3 tar util-linux \
@@ -38,7 +38,19 @@ RUN cd /tmp \
 WORKDIR /app
 COPY control-server.ts entrypoint.sh ./
 COPY runtime/opencode/package.json runtime/opencode/bun.lock ./runtime/opencode/
-RUN cd /app/runtime/opencode && bun install --production --frozen-lockfile
+# Install and prune in one layer: a later RUN cannot shrink an earlier layer, and
+# Bun hardlinks node_modules to its install cache. Removing the cache here leaves
+# only the pruned runtime files. Types, source maps, package docs and Effect's TS
+# sources are not read by the server; musl prebuilds are dead on this glibc base.
+# This measured 416 MB -> ~217 MB of runtime files with the server still booting.
+RUN cd /app/runtime/opencode \
+    && bun install --production --frozen-lockfile \
+    && cd node_modules \
+    && find . -type f \( -name '*.d.ts' -o -name '*.map' -o -name '*.md' \) \
+         ! -iname 'license*' ! -iname 'copying*' ! -iname 'notice*' -delete \
+    && rm -rf effect/src effect/ai-docs \
+    && find . -type d \( -name '*-musl' -o -name '*-musl-*' \) -prune -exec rm -rf {} + \
+    && rm -rf /root/.bun/install/cache /root/.bun/install/global
 COPY runtime/opencode/server.ts runtime/opencode/options.ts ./runtime/opencode/
 COPY src/permissions.ts ./src/permissions.ts
 COPY src/control-auth.ts ./src/control-auth.ts

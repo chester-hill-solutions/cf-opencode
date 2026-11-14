@@ -6,6 +6,15 @@ import type { ConversationState } from "../state"
 
 type RuntimeContainer = NonNullable<DurableObjectState["container"]>
 
+/**
+ * OpenCode's boot is single-threaded. On the previous `standard-1` shape
+ * (0.5 vCPU) an empty runtime took ~6 s to answer `/api/info`; the same image
+ * at 1 vCPU took ~2 s. OpenCode RSS at boot is ~240-280 MB, so 2 GiB leaves
+ * room for LSP/plugins without paying for the 4 GiB `standard-1` reservation.
+ * 8 GB disk keeps `node_modules` installs from filling the workspace.
+ */
+export const CONTAINER_INSTANCE = { vcpu: 1, memoryMib: 2048, diskMb: 8192 } as const
+
 export interface ConversationImagesOptions {
   storage: DurableObjectStorage
   runtime: ConversationRuntime
@@ -33,9 +42,10 @@ export class ConversationImages {
     return {
       enableInternet: true,
       image,
-      // `basic` has no exact equivalent on this policy; standard-1 is the
-      // closest size with enough memory for OpenCode plus stow.
-      instance: "standard-1",
+      // One full vCPU: OpenCode boot is CPU-bound and 0.5 vCPU was the
+      // measured cold-start bottleneck. 2 GiB is enough for the observed
+      // ~240-280 MB runtime with headroom; 8 GB protects dependency installs.
+      instance: CONTAINER_INSTANCE,
       ...(token ? { env: { CONTROL_TOKEN: token } } : {}),
     } as ContainerStartupOptions
   }

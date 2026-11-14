@@ -11,7 +11,8 @@
     "OPENCODE_MODEL": "opencode/deepseek-v4.1-flash",
     "POLL_SECONDS": "2",
     "EVENTED_CANARY_KEY": "event-retention-canary-test",
-    "EVENTED_FRESH_CONVERSATIONS": "false"
+    "EVENTED_FRESH_CONVERSATIONS": "false",
+    "IDLE_CLOSE_SECONDS": "300"
   },
   "durable_objects": {
     "bindings": [

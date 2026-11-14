@@ -1,6 +1,8 @@
 # WASM sandbox with durable storage — feasibility research
 
-Research date: 2026-11-11. Status: retained research; experiment and runtime migration deferred by product-owner decision.
+Research date: 2026-11-11. Status: retained research; implementation now follows
+the [sandbox-lighter plan](sandbox-lighter-plan.md). Experiment and runtime
+migration remain gated by that plan's Computer spike.
 
 ## Current planning decision
 

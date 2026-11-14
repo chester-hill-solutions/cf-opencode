@@ -223,6 +223,7 @@ describe("isolated evented container image selection", () => {
 
     expect(result.image).toBe(EVENTED_IMAGE)
     expect(result.env).toEqual({ CONTROL_TOKEN: "control-token-test" })
+    expect(result.instance).toEqual({ vcpu: 1, memoryMib: 2048, diskMb: 8192 })
   })
 
   it("fails closed when the canary image is missing", async () => {

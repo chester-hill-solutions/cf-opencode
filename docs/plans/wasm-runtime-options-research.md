@@ -2,6 +2,11 @@
 
 Research checked 2026-11-11. Scope: runtime feasibility for Aboiteau, using primary documentation and upstream source. This note records researched capabilities and proposed experiments; it does not report a deployed or benchmarked implementation. OpenCode compatibility and stow-s3 internals are covered by the companion investigation.
 
+**Planning status — 2026-11-13:** implementation sequencing now follows the
+[sandbox-lighter plan](sandbox-lighter-plan.md). The bounded
+`@cloudflare/computer` spike is the only authorized alternative-runtime work; this
+note remains reference material.
+
 **Planning status — deferred.** The product owner chose to retain OpenCode in
 Cloudflare Containers, stow-s3 and R2. No alternative-runtime prototype is scheduled.
 The [roadmap runtime direction and revisit gate](../roadmap.md#runtime-direction--retain-the-current-stack)
