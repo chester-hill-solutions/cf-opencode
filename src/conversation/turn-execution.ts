@@ -74,8 +74,8 @@ export interface ConversationTurnExecutionOptions {
 
 const POLL_MS = 2_000
 const STREAM_STOP_WAIT_MS = 10_000
-const FORM_RETRY_BASE_MS = 5_000
-const FORM_RETRY_MAX_MS = 5 * 60_000
+const DELIVERY_RETRY_BASE_MS = 5_000
+const DELIVERY_RETRY_MAX_MS = 5 * 60_000
 
 interface FormRetries {
   sessionID: string
@@ -234,7 +234,7 @@ export class ConversationTurnExecution {
       const [messages, pending, questions] = await Promise.all([
         this.options.runtime.withClient((client) => client.session.context({ sessionID })) as Promise<MessageInfo[]>,
         this.options.runtime.withClient((client) => client.permission.list({ sessionID })).catch(
-          () => [] as PermissionSummary[],
+          () => undefined,
         ),
         state.slack ? this.options.controlPlane.pendingForms(sessionID).catch(() => [] as Form[]) : Promise.resolve([] as Form[]),
       ])
@@ -245,7 +245,8 @@ export class ConversationTurnExecution {
         await this.options.delivery.event({ type: "assistant", text: reply }, { slack: false })
         await this.options.store.patch({ lastReply: reply })
       }
-      await this.pollPermissions(sessionID, pending)
+      // An unavailable list is not an empty authoritative snapshot.
+      if (pending) await this.pollPermissions(sessionID, pending).catch(() => this.reportPermissionFailure())
       // Connector delivery and its bookkeeping must never prevent accounting.
       await this.pollQuestions(sessionID, questions).catch((error) => this.reportQuestionFailure(error))
       if (settled || failure) {
@@ -385,19 +386,38 @@ export class ConversationTurnExecution {
   }
 
   private async pollPermissions(sessionID: string, pending: PermissionSummary[]): Promise<void> {
-    if (pending.length === 0) return
-    const state = await this.options.store.get()
-    const fresh = pending.filter((request) => !state.pending[request.id])
-    if (fresh.length === 0) return
-    await this.options.store.rememberPermissions(fresh.map((request) => request.id), sessionID)
-    for (const request of fresh) {
-      await this.options.delivery.event({
-        type: "permission",
-        requestID: request.id,
-        action: request.action,
-        resources: request.resources,
-      })
+    await this.options.store.syncPermissions(sessionID, pending.map((request) => request.id))
+    for (const request of pending) {
+      try {
+        const state = await this.options.store.get()
+        const notification = state.permissionNotifications?.[request.id]
+        if (state.sessionID !== sessionID || !notification || notification.sessionID !== sessionID ||
+          notification.delivered || Date.now() < notification.nextAttemptAt) continue
+        const attempts = Math.min(notification.attempts + 1, 32)
+        const delay = Math.min(DELIVERY_RETRY_BASE_MS * 2 ** (attempts - 1), DELIVERY_RETRY_MAX_MS)
+        // Persist the retry bound before external delivery. A lost acknowledgement
+        // remains ambiguous; it can retry later, never claim exactly-once posting.
+        if (!await this.options.store.updatePermissionNotification(request.id, sessionID, {
+          attempts, nextAttemptAt: Date.now() + delay,
+        })) continue
+        await this.options.delivery.event({
+          type: "permission", requestID: request.id, action: request.action, resources: request.resources,
+        })
+        await this.options.store.updatePermissionNotification(request.id, sessionID, { delivered: true, nextAttemptAt: 0 })
+      } catch {
+        await this.reportPermissionFailure()
+      }
     }
+  }
+
+  private async reportPermissionFailure(): Promise<void> {
+    await this.options.delivery.count("permission.notification.failed").catch(() => {})
+    logEvent("permission.notification.failed", { conversationID: this.options.conversationID })
+    // Never send a connector's own failure through that connector or expose its
+    // error body, which can contain credentials or request payloads.
+    await this.options.delivery.event({
+      type: "error", message: "Permission notification failed; retrying with backoff.",
+    }, { slack: false }).catch(() => {})
   }
 
   private async pollQuestions(sessionID: string, forms: Form[]): Promise<void> {
@@ -436,7 +456,7 @@ export class ConversationTurnExecution {
         })
       } catch (error) {
         const attempts = Math.min((retry?.attempts ?? 0) + 1, 32)
-        const delay = Math.min(FORM_RETRY_BASE_MS * 2 ** (attempts - 1), FORM_RETRY_MAX_MS)
+        const delay = Math.min(DELIVERY_RETRY_BASE_MS * 2 ** (attempts - 1), DELIVERY_RETRY_MAX_MS)
         retries.forms[form.id] = { attempts, nextAttemptAt: Date.now() + delay }
         await this.options.storage.put("slackFormRetries", retries)
         await this.reportQuestionFailure(error)

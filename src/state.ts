@@ -78,6 +78,13 @@ export interface CheckpointManifest {
   createdAt: number
 }
 
+export interface PermissionNotification {
+  sessionID: string
+  delivered: boolean
+  attempts: number
+  nextAttemptAt: number
+}
+
 export interface ConversationState {
   /** Lifecycle phase; absent means "idle" for conversations from older builds. */
   phase?: ConversationPhase
@@ -156,6 +163,8 @@ export interface ConversationState {
   seen: string[]
   /** Pending permission requests: requestID -> sessionID. */
   pending: Record<string, string>
+  /** Delivery acknowledgement/backoff, independent of permission ownership. */
+  permissionNotifications?: Record<string, PermissionNotification>
 }
 
 export interface StoredEventEntry {
@@ -499,13 +508,55 @@ export class ConversationStore {
     return (await this.get()).pending[requestID]
   }
 
+  /** Apply only a successful current-session permission snapshot; prune resolved requests. */
+  async syncPermissions(sessionID: string, requestIDs: string[]): Promise<void> {
+    await this.transact((state) => {
+      if (state.sessionID !== sessionID) return { result: undefined }
+      if (requestIDs.length === Object.keys(state.pending).length &&
+        requestIDs.length === Object.keys(state.permissionNotifications ?? {}).length &&
+        requestIDs.every((id) => state.pending[id] === sessionID && state.permissionNotifications?.[id]?.sessionID === sessionID)) {
+        return { result: undefined }
+      }
+      const pending = Object.fromEntries(requestIDs.map((id) => [id, sessionID]))
+      const permissionNotifications = Object.fromEntries(requestIDs.map((id) => {
+        const saved = state.permissionNotifications?.[id]
+        return [id, state.pending[id] === sessionID && saved?.sessionID === sessionID ? saved : {
+          sessionID, delivered: false, attempts: 0, nextAttemptAt: 0,
+        }]
+      }))
+      return { next: { ...state, pending, permissionNotifications }, result: undefined }
+    })
+  }
+
+  /** A late delivery completion must not recreate a resolved/stale authorization. */
+  async updatePermissionNotification(
+    requestID: string,
+    sessionID: string,
+    patch: Partial<Omit<PermissionNotification, "sessionID">>,
+  ): Promise<boolean> {
+    return this.transact((state) => {
+      const saved = state.permissionNotifications?.[requestID]
+      if (state.sessionID !== sessionID || state.pending[requestID] !== sessionID || saved?.sessionID !== sessionID) {
+        return { result: false }
+      }
+      return {
+        next: { ...state, permissionNotifications: {
+          ...state.permissionNotifications, [requestID]: { ...saved, ...patch },
+        } },
+        result: true,
+      }
+    })
+  }
+
   /** Remove a permission only after the decision was recorded. */
   async clearPermission(requestID: string): Promise<void> {
     await this.transact((state) => {
-      if (!state.pending[requestID]) return { result: undefined }
+      if (!state.pending[requestID] && !state.permissionNotifications?.[requestID]) return { result: undefined }
       const pending = { ...state.pending }
       delete pending[requestID]
-      return { next: { ...state, pending }, result: undefined }
+      const permissionNotifications = { ...state.permissionNotifications }
+      delete permissionNotifications[requestID]
+      return { next: { ...state, pending, permissionNotifications }, result: undefined }
     })
   }
 }

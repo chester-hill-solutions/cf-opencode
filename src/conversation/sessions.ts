@@ -73,6 +73,7 @@ export class ConversationSessions {
       ...(slack ? { slack } : {}),
       ...(state.sessionID ? {
         pending: {},
+        permissionNotifications: undefined,
         announcedForms: [],
         turnBaseline: undefined,
         lastReply: undefined,

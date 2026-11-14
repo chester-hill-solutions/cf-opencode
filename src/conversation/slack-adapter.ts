@@ -389,6 +389,7 @@ export class ConversationSlackAdapter {
         await this.options.store.patch({
           sessionID, modelOverride: selectedModel, transport: "slack", slack: target,
           turnBaseline: undefined, runStartedAt: undefined, pending: {}, announcedForms: [],
+          permissionNotifications: undefined,
           lastReply: undefined, lastSlackReply: undefined, reportedError: undefined, lastTurnError: undefined,
           usage: undefined, usageAux: undefined, usageCursor: undefined, usageTerminal: undefined,
           usageExecution: undefined, usageError: undefined, settlementError: undefined,
