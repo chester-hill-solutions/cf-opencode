@@ -35,6 +35,15 @@ a real amd64 runner. This is the native re-run the local failure asked for; it i
 still not a Cloudflare measurement. Docker Desktop on this machine needs a
 restart/reset before further local amd64 work.
 
+**Stow 0.4.0 pin — 2026-11-14:** the container now downloads the v0.4.0
+`linux/amd64` binary and verifies its release checksum; the smoke also pins the
+binary SHA-256 `6f0f247912de4c4d5d296a3176fe291b7c29717498f5778d920949d4025420b6`.
+The local amd64 smoke built a 470 MB image and passed startup, workspace S3/file
+round trips, checkpoint/restore, refusal and account-seed checks. Its final
+host lifecycle-race observer timed out in Docker Desktop (`spawnSync docker
+ETIMEDOUT`), so native CI must qualify this exact revision; the local timeout is
+not recorded as an assertion pass or a product failure.
+
 | Ticket | Status |
 |---|---|
 | SL-0.1 `/start` + `/restore` timings | done |

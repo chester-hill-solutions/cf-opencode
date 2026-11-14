@@ -23,7 +23,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && useradd --uid 1001 --gid agent --create-home --shell /bin/bash agent \
     && rm -rf /var/lib/apt/lists/*
 
-ARG STOW_VERSION=0.3.7
+ARG STOW_VERSION=0.4.0
 ARG TARGETARCH
 RUN cd /tmp \
     && curl -fsSL -o "stow-linux-${TARGETARCH}.tar.gz" \
