@@ -131,15 +131,17 @@ These constrain every slice. Breaking one is a regression even if its own tests 
 
 ### 4.1 What is verified
 
-- W0 committed locally as `7626726` on base `39a42d5`: R0-17/R0-18 implemented and locally
+- W0 published as `7626726` on base `39a42d5`: R0-17/R0-18 implemented and locally
   verified; 401 Bun tests + 5 runtime tests + 351 Worker/DO tests pass, with
   typecheck/config/UI/diff checks passing. R0-19 recovered synthetic credentials
   through both allowlisted paths in the current 0.4.0 local image. See the
   [W0 receipt](evidence/w0-correctness-2026-11-14.md) for commands, source/artifact
   hashes and limitations, including one intermittent recovery-test failure between
-  passing full runs. This is **KNOWN_OPEN_G1** evidence. No deployment or
-  native CI qualification is claimed for W0; its push is awaiting explicit
-  destination approval after automatic approval review rejected the upload.
+  passing full runs. This is **KNOWN_OPEN_G1** evidence. Native CI
+  [run `43633250236`](https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43633250236)
+  passed both `check` and `container-smoke` for this commit; the recovered
+  intermittent test passed on native CI too. [Structured receipt](evidence/w0-native-ci-2026-11-14.json).
+  No production deployment or product-gate closure is claimed.
 
 - Local gate at HEAD `3d71de1`: `bun run typecheck` (five tsconfig projects plus
   `runtime/opencode`), `bun run check:config`, `bun run build:ui`, `bun test tests`
@@ -158,8 +160,9 @@ These constrain every slice. Breaking one is a regression even if its own tests 
   serialization and fresh-container split restore. [Run `43626528341`](https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43626528341)
   also passed at `3d71de1`; both receipts were previously missing from this plan.
   [Structured base receipt](evidence/native-ci-base-2026-11-14.json).
-  SL-B originally closed at `7f33cd6` (run `43614603372`). **W0 `7626726`
-  still needs its own native CI run** before that revision is smoke-qualified.
+  SL-B originally closed at `7f33cd6` (run `43614603372`). W0 `7626726` is now
+  separately smoke-qualified by run `43633250236` above. Later documentation-only
+  follow-ups remain local; native qualification belongs to the tested commit.
 - Lifecycle scheduler, sealed recovery, idle close, split checkpoints, reservation
   accounting, operator reconciliation, Slack commands/questions/images/replay and
   the onboarding wizard have local or recorded live evidence in their evidence
@@ -351,9 +354,9 @@ fallback. No WASM/AgentOS rewrite, no stow POSIX shim, no snapshot-first recover
    and reservation-less success clearing are covered by passing regressions.
 3. **R0-19 — RECORDED**: the synthetic current-image probe and raw result are
    committed with `7626726` as **KNOWN_OPEN_G1** evidence. Enforcement remains open.
-4. **CI — NEXT**: run native `check` + `container-smoke` for the revision that
-   includes W0 (`7626726`) once its branch push is approved, and record the run
-   id here. Base `39a42d5` is qualified by `43627788591`.
+4. **CI — DONE**: W0 `7626726` is pushed and native `check` + `container-smoke`
+   passed in [run `43633250236`](https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43633250236).
+   This qualifies that source/image build, not the remaining live product gates.
 5. **R0-15 — PREFLIGHT RECORDED**: the 0.4.0/custom-shape candidate pair and
    recovery matrix are [frozen](evidence/storage-preflight-2026-11-14.md).
    Confirm remote digest availability, update the historical harness pins and
@@ -560,6 +563,11 @@ status field.
 7. **Truthfulness**: no gate closes on plans, builds, mocks or pattern strings.
 
 ## 11. Change log
+
+- **2026-11-14 (W0 native CI)** — pushed the specifically approved commit
+  `7626726`; native `check` and `container-smoke` passed in `43633250236`.
+  Canceled duplicate manual run `43633264827`. Later evidence/documentation
+  commits remain local because upload approval covered only `7626726`.
 
 - **2026-11-14 (W0 follow-through)** — committed W0 as `7626726`; found and
   recorded successful base CI runs `43627788591`/`43626528341`; froze the R0-15

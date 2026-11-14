@@ -1,0 +1,40 @@
+{
+  "conclusion": "success",
+  "event": "pull_request",
+  "headSha": "7626726994cd9f3b8f74603d179a82d586b48449",
+  "jobs": [
+    {
+      "completedAt": "2026-11-14T19:40:33Z",
+      "conclusion": "success",
+      "id": 132564344613,
+      "name": "check",
+      "startedAt": "2026-11-14T19:39:15Z",
+      "status": "completed",
+      "url": "https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43633250236/job/132564344613"
+    },
+    {
+      "completedAt": "2026-11-14T19:41:34Z",
+      "conclusion": "success",
+      "id": 132564728573,
+      "name": "container-smoke",
+      "startedAt": "2026-11-14T19:40:35Z",
+      "status": "completed",
+      "url": "https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43633250236/job/132564728573"
+    }
+  ],
+  "runId": 43633250236,
+  "status": "completed",
+  "url": "https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43633250236",
+  "duplicateManualRun": {
+    "runId": 43633264827,
+    "status": "completed",
+    "conclusion": "cancelled",
+    "disposition": "canceled duplicate; kept the passing PR workflow for the same head"
+  },
+  "scope": {
+    "nativePlatform": "linux/amd64",
+    "ciReportedImageSizeMB": 156,
+    "productGateClosed": false,
+    "productionDeployment": false
+  }
+}

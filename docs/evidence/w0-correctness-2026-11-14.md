@@ -6,9 +6,10 @@ provider call, production mutation, or product-gate closure occurred.
 
 ## Revision and verification
 
-Base revision: `39a42d59683c806b1b15c3ff000c948b94b314ee`; source changes are in the
-working tree. The earlier `3d71de1` local receipt remains historical. Existing
-documentation edits were preserved.
+Base revision: `39a42d59683c806b1b15c3ff000c948b94b314ee`; the originally tested
+working-tree changes were committed and published as
+`7626726994cd9f3b8f74603d179a82d586b48449`. The earlier `3d71de1` local receipt
+remains historical. Existing documentation edits were preserved.
 
 | Command | Result |
 |---|---|
@@ -23,8 +24,7 @@ documentation edits were preserved.
 The sandbox initially prevented local servers: Vitest could not bind loopback,
 and two Bun readiness tests failed for the same reason. Both suites passed when
 rerun with local networking permitted. No product failure was inferred from those
-sandbox errors. No native CI or full container-smoke run is claimed for these
-working-tree changes.
+sandbox errors. The subsequent native qualification is recorded below.
 
 A final full-suite repeat produced 350 pass / 1 fail in the unchanged
 `test/lifecycle-recovery-faults.test.ts:205`: the sealed recovery rearm test saw
@@ -32,6 +32,32 @@ two scheduled jobs where it expected one. Its isolated repeat passed all 4 tests
 The first full run passed all 351 tests. No recovery implementation or assertion
 was changed to suppress this intermittent result; native CI must also check it.
 The subsequent full-suite repeat passed all 351 tests / 58 files.
+
+## Native CI — 2026-11-14
+
+After explicit approval to upload commit `7626726`, it was pushed to the existing
+`codex/conversation-lifecycle` branch. [Run `43633250236`](https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43633250236)
+completed successfully: `check` and native amd64 `container-smoke` both passed.
+[Structured receipt](w0-native-ci-2026-11-14.json) binds the run, head SHA and jobs.
+The run's Worker suite passed 351 tests / 58 files, including the recovery test
+that intermittently failed locally. That pass does not prove the flake is fixed.
+
+The container smoke reported a 156 MB image on the native runner and passed
+health/auth, startup, Stow binary verification, S3/file parity, workspace/state
+checkpoint and restore, registry refusal, account-seed isolation, lifecycle
+serialization, and fresh-container recovery from both archives. This is a local
+container test on native Linux, not a deployed Cloudflare/R2 qualification.
+
+The push automatically started the PR workflow; the explicit dispatch created a
+duplicate run `43633264827`, which was canceled. No CI rerun was needed to obtain
+the passing result. Automatic approval review refused including the later
+documentation-only commit in the upload because the approval named only
+`7626726`; that evidence follow-up and this receipt remain local.
+
+No production resource was changed; no product gate closed. R0-15 current-shape
+Cloudflare/R2 qualification and deployment remain open.
+
+## Tested source hashes
 
 Source SHA256 values identify the tested working tree:
 
