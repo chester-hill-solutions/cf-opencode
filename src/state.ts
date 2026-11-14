@@ -39,6 +39,8 @@ export interface QueuedMessage {
   /** Original admission transport. */
   source: Transport
   text: string
+  /** Optional request id used to return the same pending queue receipt. */
+  idempotencyKey?: string
   slack?: SlackTarget
   attempts: number
   /** When the next admission attempt is due. */
@@ -50,6 +52,7 @@ export interface QueuedMessage {
 /** Legacy singleton queue shape accepted only while normalizing stored records. */
 export interface LegacyQueuedMessage extends Partial<Pick<QueuedMessage, "id" | "enqueuedAt" | "source">> {
   text: string
+  idempotencyKey?: string
   slack?: SlackTarget
   attempts: number
   nextAttemptAt?: number

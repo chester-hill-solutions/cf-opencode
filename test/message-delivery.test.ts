@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { env, runInDurableObject } from "cloudflare:test"
+import { env, runInDurableObject, SELF } from "cloudflare:test"
 import { ConversationStore, type ConversationState } from "../src/state"
 import { ConversationDeliveryControls } from "../src/conversation/delivery-controls"
 import { driveConversationJobs } from "./helpers/conversation-jobs"
@@ -24,6 +24,36 @@ describe("HTTP delivery modes", () => {
       expect(state?.budgetReservation?.reservationID).toBe("hold")
       expect(state?.seen).not.toContain("msg:retry-full")
     })
+  })
+
+  it("forwards public delivery controls and returns the same pending entry on retry", async () => {
+    const key = "delivery-public-options"
+    const stub = env.CONVERSATION.getByName(key)
+    await runInDurableObject(stub, async (_instance, runtime) => {
+      await runtime.storage.put("state", { phase: "running", sessionID: "ses_delivery", budgetReservation: { reservationID: "public-hold", date: "2026-11-14", dispatched: true } })
+    })
+    const send = (body: unknown) => SELF.fetch(`https://harness.test/api/conversations/${key}/messages`, {
+      method: "POST", headers: { authorization: "Bearer test-token", "content-type": "application/json" }, body: JSON.stringify(body),
+    })
+    expect((await send({ text: "bad", delivery: "invalid" })).status).toBe(400)
+    expect((await send({ text: "bad", replaceQueue: "true" })).status).toBe(400)
+    const first = await send({ text: "accepted", idempotencyKey: "pending-retry" })
+    expect(first.status).toBe(202)
+    const accepted = await first.json() as { queue: { id: string } }
+    const duplicate = await send({ text: "accepted", idempotencyKey: "pending-retry" })
+    expect(await duplicate.json()).toMatchObject({ duplicate: true, queued: true, queue: { id: accepted.queue.id, position: 1, depth: 1 } })
+    expect((await send({ text: "replacement", replaceQueue: true })).status).toBe(202)
+    await runInDurableObject(stub, async (_instance, runtime) => {
+      expect((await new ConversationStore(runtime.storage).get()).queue?.map(entry => entry.text)).toEqual(["replacement"])
+    })
+    const idleKey = "delivery-public-idle"
+    for (const delivery of ["steer", "interrupt"]) {
+      const response = await SELF.fetch(`https://harness.test/api/conversations/${idleKey}/messages`, {
+        method: "POST", headers: { authorization: "Bearer test-token", "content-type": "application/json" }, body: JSON.stringify({ text: "guidance", delivery }),
+      })
+      expect(response.status).toBe(409)
+      expect(await response.json()).toMatchObject({ error: "no_active_turn" })
+    }
   })
 
   it("steers the active SDK session and interrupts with a durable fenced follow-up", async () => {

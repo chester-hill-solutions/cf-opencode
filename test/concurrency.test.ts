@@ -58,6 +58,31 @@ function fakeContainer(prompts: { count: number }) {
 }
 
 describe("admission queue", () => {
+  it("returns the existing queued receipt for a repeated idempotency key", async () => {
+    const stub = env.CONVERSATION.getByName("C1:queue-idempotent-receipt")
+    const result = await runInDurableObject(stub, async (instance, runtime) => {
+      await runtime.storage.put("state", {
+        phase: "queued",
+        queue: [
+          { id: "q-head", enqueuedAt: 1, source: "http", text: "first", attempts: 0 },
+          { id: "q-same", enqueuedAt: 2, source: "http", text: "same request", idempotencyKey: "request-1", attempts: 0 },
+        ],
+        seen: [],
+        pending: {},
+      })
+      const response = await instance.fetch(new Request("https://conversation/message", {
+        method: "POST",
+        body: JSON.stringify({ text: "same request", idempotencyKey: "request-1", replaceQueue: true }),
+      }))
+      const receipt = await response.json() as { queue?: { id?: string; position?: number; depth?: number; duplicate?: boolean } }
+      const state = await runtime.storage.get<{ queue?: { id: string; text: string }[] }>("state")
+      return { status: response.status, receipt, queue: state?.queue }
+    })
+    expect(result.status).toBe(202)
+    expect(result.receipt.queue).toMatchObject({ id: "q-same", position: 2, depth: 2, duplicate: true })
+    expect(result.queue?.map(({ id }) => id)).toEqual(["q-head", "q-same"])
+  })
+
   it("drops only a terminally failed head and schedules the next FIFO item", async () => {
     const stub = env.CONVERSATION.getByName("C1:queue-terminal-head")
     const result = await runInDurableObject(stub, async (instance, runtime) => {

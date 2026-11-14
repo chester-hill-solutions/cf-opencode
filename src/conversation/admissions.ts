@@ -1,4 +1,4 @@
-import { ConversationStore, type BudgetReservation, type ConversationPhase, type QueuedMessage, type SlackTarget } from "../state"
+import { ConversationStore, type BudgetReservation, type ConversationPhase, type QueueEnqueueResult, type QueuedMessage, type SlackTarget } from "../state"
 import type { ConversationBudgetReservations } from "./budget-reservations"
 import type { ConversationJobKind, ConversationJobPayload } from "./jobs"
 import type { HarnessSettings } from "../settings"
@@ -99,9 +99,9 @@ export class ConversationAdmissions {
     })
   }
 
-  async enqueue(text: string, slack?: SlackTarget, options: { replace?: boolean } = {}): Promise<
-    | { kind: "enqueued"; id: string; position: number; depth: number; limit: number }
-    | { kind: "queue_full" | "admission_in_progress"; depth: number; limit: number }
+  async enqueue(text: string, slack?: SlackTarget, options: { replace?: boolean; idempotencyKey?: string } = {}): Promise<
+    | (Extract<QueueEnqueueResult, { kind: "enqueued" }> & { duplicate?: boolean })
+    | Extract<QueueEnqueueResult, { kind: "queue_full" | "admission_in_progress" }>
     | { kind: "unavailable"; message: string }
   > {
     try {
@@ -117,13 +117,22 @@ export class ConversationAdmissions {
       enqueuedAt: Date.now(),
       source: slack ? "slack" : "http",
       text,
+      ...(options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}),
       ...(slack ? { slack } : {}),
       attempts: 0,
       nextAttemptAt,
     }
-    let outcome: Awaited<ReturnType<ConversationStore["enqueue"]>> | undefined
+    let outcome: QueueEnqueueResult & { duplicate?: boolean } | undefined
     try {
       outcome = await this.withLock(() => this.options.storage.transaction(async () => {
+        if (options.idempotencyKey) {
+          const state = await this.options.store.get()
+          const position = state.queue?.findIndex((queued) => queued.idempotencyKey === options.idempotencyKey) ?? -1
+          if (position >= 0) {
+            const existing = state.queue![position]!
+            return { kind: "enqueued", id: existing.id, position: position + 1, depth: state.queue!.length, limit: queueLimit, duplicate: true }
+          }
+        }
         if (options.replace && this.admitting) {
           const state = await this.options.store.get()
           return { kind: "admission_in_progress", depth: state.queue?.length ?? 0, limit: queueLimit }
@@ -140,6 +149,7 @@ export class ConversationAdmissions {
       return { kind: "unavailable", message: errorMessage(error) }
     }
     if (!outcome || outcome.kind !== "enqueued") return outcome ?? { kind: "unavailable", message: "queue admission was not persisted" }
+    if (outcome.duplicate) return outcome
     void this.options.delivery.count("queue.enqueued")
     this.emitLifecycle({ event: "queue.enqueued", result: "scheduled", reasonCode: "queued" })
     if (slack) {

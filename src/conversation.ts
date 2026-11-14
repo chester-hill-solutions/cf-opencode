@@ -693,7 +693,10 @@ export class Conversation extends DurableObject<Env> {
       }
       if (!(await this.store.claimEvent(`msg:${idempotencyKey}`))) {
         const current = await this.store.get()
-        return Response.json({ ok: true, duplicate: true, sessionID: current.sessionID })
+        const position = current.queue?.findIndex(entry => entry.idempotencyKey === idempotencyKey) ?? -1
+        const entry = position >= 0 ? current.queue?.[position] : undefined
+        return Response.json({ ok: true, duplicate: true, sessionID: current.sessionID,
+          ...(entry ? { queued: true, delivery: "queue", queue: { id: entry.id, position: position + 1, depth: current.queue!.length } } : {}) })
       }
     }
     // Only a message that was accepted (prompted or queued) may consume the
@@ -714,7 +717,7 @@ export class Conversation extends DurableObject<Env> {
       return Response.json(result, { status: result.status })
     }
     const queueResponse = async (): Promise<Response> => {
-      const result = await this.admissions.enqueue(prompt, undefined, { replace: input.replaceQueue })
+      const result = await this.admissions.enqueue(prompt, undefined, { replace: input.replaceQueue, idempotencyKey })
       if (result.kind !== "enqueued") {
         await releaseClaim()
         return Response.json({ ok: false, error: result.kind, ...result }, { status: result.kind === "queue_full" ? 429 : result.kind === "admission_in_progress" ? 409 : 503 })

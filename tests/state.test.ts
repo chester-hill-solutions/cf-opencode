@@ -280,6 +280,27 @@ describe("ConversationStore", () => {
     expect((await store.get()).queue?.map(({ id }) => id)).toEqual(["q2", "q3"])
   })
 
+  test("preserves idempotency metadata when recreating a queue head", async () => {
+    const storage = fakeStorage()
+    const store = new ConversationStore(storage)
+    await store.enqueue({
+      id: "same-queue-item",
+      idempotencyKey: "request-1",
+      enqueuedAt: 1,
+      source: "http",
+      text: "retry me",
+      attempts: 0,
+    })
+    expect(await store.updateQueueHead("same-queue-item", { attempts: 1, lastError: "temporary" })).toBe(true)
+    const restartedStore = new ConversationStore(storage)
+    expect((await restartedStore.get()).queue?.[0]).toMatchObject({
+      id: "same-queue-item",
+      idempotencyKey: "request-1",
+      attempts: 1,
+      lastError: "temporary",
+    })
+  })
+
   test("queue capacity uses a documented bounded fallback", () => {
     expect(queueCapacity(undefined)).toBe(DEFAULT_QUEUE_CAPACITY)
     expect(queueCapacity("7")).toBe(7)
