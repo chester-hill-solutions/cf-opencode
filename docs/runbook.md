@@ -626,9 +626,11 @@ A checkpoint that fails is retried from the alarm up to three times (`checkpoint
 
 - Single container application on the `durable_object` scheduling policy. There is no per-application `max_instances`; account limits bound concurrency, so keep message throughput in mind.
 - Instance size is chosen at start: 1 vCPU, 2 GiB memory, 8 GB disk (custom
-  shape). OpenCode boot is CPU-bound; the old `standard-1` 0.5 vCPU shape was the
-  measured cold-start bottleneck. Raise memory to 3 GiB if a real repo's LSP or
-  plugins OOM.
+  shape). The optional Worker variable `CONTAINER_INSTANCE_PROFILE` can select
+  `custom-1cpu-2gib` (default), `custom-1cpu-3gib`, `standard-1`, or `standard-2`;
+  unsupported values fail closed. OpenCode boot is CPU-bound; the old
+  `standard-1` 0.5 vCPU shape was the measured cold-start bottleneck. Use the
+  3 GiB profile if a real repo's LSP or plugins OOM.
 - Snapshots are a fast restore cache only: they are bound to the image they were taken from, have a 30-day TTL refreshed on restore, and are not portable across deploys. The R2 tar archive remains the source of truth.
 - `.stow` (the local S3 view) and `.state/cache` are excluded from checkpoints: files survive a restore, cached/provider state is rebuilt.
 - A crash mid-turn loses that turn (the checkpoint is written after settle).

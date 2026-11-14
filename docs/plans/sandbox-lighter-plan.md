@@ -41,14 +41,17 @@ binary SHA-256 `6f0f247912de4c4d5d296a3176fe291b7c29717498f5778d920949d4025420b6
 The local amd64 smoke built a 470 MB image and passed startup, workspace S3/file
 round trips, checkpoint/restore, refusal and account-seed checks. Its final
 host lifecycle-race observer timed out in Docker Desktop (`spawnSync docker
-ETIMEDOUT`), so native CI must qualify this exact revision; the local timeout is
-not recorded as an assertion pass or a product failure.
+ETIMEDOUT`), so it did not qualify the exact revision. Native CI run
+[43625818796](https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43625818796)
+passed both `check` and `container-smoke` at `37995f2`, including the full
+lifecycle-race gate. The local timeout is an emulation limitation, not an
+assertion pass or a product failure.
 
 | Ticket | Status |
 |---|---|
 | SL-0.1 `/start` + `/restore` timings | done |
 | SL-0.2 cold-path bench output | done (local; Cloudflare run next) |
-| SL-1.1 custom 1 vCPU / 2 GiB / 8 GB | done |
+| SL-1.1 configurable instance profiles | done (`custom-1cpu-2gib` default; custom 3 GiB, `standard-1`, and `standard-2` overrides) |
 | SL-1.3 `IDLE_CLOSE_SECONDS` | done (production 300 s) |
 | SL-3.4 readiness polling | deferred (not measured; baseline timing restored) |
 | SL-2.1 runtime prune | done (739 → 514 MB arm64 / 469 MB amd64) |

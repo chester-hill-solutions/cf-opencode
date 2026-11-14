@@ -15,6 +15,8 @@ export interface Env {
   EVENTED_FRESH_CONVERSATIONS?: string
   /** Seconds an unused runtime stays warm; production sets 300, code defaults to 30. */
   IDLE_CLOSE_SECONDS?: string
+  /** Optional container size profile; defaults to custom-1cpu-2gib. */
+  CONTAINER_INSTANCE_PROFILE?: string
   CHECKPOINTS: R2Bucket
   /** Optional D1 database holding tenants, agents and channel bindings. */
   TENANCY?: import("./tenancy").TenancyDatabase

@@ -209,6 +209,7 @@ export class Conversation extends DurableObject<Env> {
       env: () => ({
         EVENTED_CANARY_KEY: this.env.EVENTED_CANARY_KEY,
         EVENTED_FRESH_CONVERSATIONS: this.env.EVENTED_FRESH_CONVERSATIONS,
+        CONTAINER_INSTANCE_PROFILE: this.env.CONTAINER_INSTANCE_PROFILE,
       }),
       cachedToken: () => this.controlPlane.cachedToken,
       count: (name) => this.count(name),

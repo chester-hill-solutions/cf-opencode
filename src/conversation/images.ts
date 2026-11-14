@@ -15,6 +15,22 @@ type RuntimeContainer = NonNullable<DurableObjectState["container"]>
  */
 export const CONTAINER_INSTANCE = { vcpu: 1, memoryMib: 2048, diskMb: 8192 } as const
 
+function instanceForProfile(profile: string | undefined) {
+  switch (profile) {
+    case undefined:
+    case "":
+    case "custom-1cpu-2gib":
+      return CONTAINER_INSTANCE
+    case "custom-1cpu-3gib":
+      return { vcpu: 1, memoryMib: 3072, diskMb: 8192 }
+    case "standard-1":
+    case "standard-2":
+      return profile
+    default:
+      throw new Error("unsupported container instance profile")
+  }
+}
+
 export interface ConversationImagesOptions {
   storage: DurableObjectStorage
   runtime: ConversationRuntime
@@ -23,6 +39,7 @@ export interface ConversationImagesOptions {
   env(): {
     EVENTED_CANARY_KEY?: string
     EVENTED_FRESH_CONVERSATIONS?: string
+    CONTAINER_INSTANCE_PROFILE?: string
   }
   cachedToken(): string | undefined
   count(name: string): Promise<void>
@@ -45,7 +62,7 @@ export class ConversationImages {
       // One full vCPU: OpenCode boot is CPU-bound and 0.5 vCPU was the
       // measured cold-start bottleneck. 2 GiB is enough for the observed
       // ~240-280 MB runtime with headroom; 8 GB protects dependency installs.
-      instance: CONTAINER_INSTANCE,
+      instance: instanceForProfile(this.options.env().CONTAINER_INSTANCE_PROFILE),
       ...(token ? { env: { CONTROL_TOKEN: token } } : {}),
     } as ContainerStartupOptions
   }

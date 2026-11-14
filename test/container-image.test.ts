@@ -9,7 +9,11 @@ const BASE_IMAGE = "registry.cloudflare.com/test/conversation-base@sha256:base"
 const EVENTED_IMAGE = "registry.cloudflare.com/test/conversation-evented@sha256:evented"
 
 type Internal = {
-  env: { EVENTED_FRESH_CONVERSATIONS?: string; SLACK_BOT_TOKEN?: string }
+  env: {
+    EVENTED_FRESH_CONVERSATIONS?: string
+    CONTAINER_INSTANCE_PROFILE?: string
+    SLACK_BOT_TOKEN?: string
+  }
   controlPlane: { token(): Promise<string> }
   startOptions(): ContainerStartupOptions
   snapshotHandle(): Promise<unknown>
@@ -168,10 +172,12 @@ describe("isolated evented container image selection", () => {
 
   beforeEach(async () => {
     env.EVENTED_FRESH_CONVERSATIONS = undefined
+    env.CONTAINER_INSTANCE_PROFILE = undefined
     await resetSettings()
   })
   afterEach(() => {
     env.EVENTED_FRESH_CONVERSATIONS = undefined
+    env.CONTAINER_INSTANCE_PROFILE = undefined
     vi.unstubAllGlobals()
   })
 
@@ -225,6 +231,44 @@ describe("isolated evented container image selection", () => {
     expect(result.env).toEqual({ CONTROL_TOKEN: "control-token-test" })
     expect(result.instance).toEqual({ vcpu: 1, memoryMib: 2048, diskMb: 8192 })
   })
+
+  it.each([
+    ["custom-1cpu-2gib", { vcpu: 1, memoryMib: 2048, diskMb: 8192 }],
+    ["custom-1cpu-3gib", { vcpu: 1, memoryMib: 3072, diskMb: 8192 }],
+    ["standard-1", "standard-1"],
+    ["standard-2", "standard-2"],
+  ] as const)("uses the configured container instance profile %s", async (profile, expected) => {
+    env.CONTAINER_INSTANCE_PROFILE = profile
+    const stub = env.CONVERSATION.getByName(`image-profile-${profile}`)
+    const result = await runInDurableObject(stub, async (instance) => {
+      installContainer(instance, { base: BASE_IMAGE, evented: EVENTED_IMAGE })
+      return (instance as unknown as Internal).startOptions()
+    })
+
+    expect(result.instance).toEqual(expected)
+  })
+
+  it.each(["unrecognized", "constructor", "__proto__"])(
+    "rejects unsupported instance profile %s before container start",
+    async (profile) => {
+      env.CONTAINER_INSTANCE_PROFILE = profile
+      const stub = env.CONVERSATION.getByName(`image-profile-invalid-${profile}`)
+      const result = await runInDurableObject(stub, async (instance) => {
+        const { starts } = installContainer(instance, { base: BASE_IMAGE, evented: EVENTED_IMAGE })
+        let error = ""
+        try {
+          const internal = instance as unknown as Internal
+          internal.startOptions()
+        } catch (cause) {
+          error = cause instanceof Error ? cause.message : String(cause)
+        }
+        return { starts, error }
+      })
+
+      expect(result.error).toBe("unsupported container instance profile")
+      expect(result.starts).toEqual([])
+    },
+  )
 
   it("fails closed when the canary image is missing", async () => {
     const canaryKey = "image-selection-evented-missing"
