@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-11-14 22:46:16 UTC",
+  "repository": "chester-hill-solutions/cf-opencode",
+  "branch": "codex/conversation-lifecycle",
+  "sourceCommit": "8e74638d53ee55250e23169127f54219a80740e2",
+  "runID": 43649498746,
+  "url": "https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43649498746",
+  "event": "pull_request",
+  "jobs": [
+    {
+      "id": 132614577349,
+      "name": "check",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 132614933277,
+      "name": "container-smoke",
+      "status": "completed",
+      "conclusion": "success"
+    }
+  ],
+  "checks": {
+    "bunTestsPassed": 442,
+    "runtimeTestsPassed": 5,
+    "workerTestsPassed": 368,
+    "workerTestFiles": 62,
+    "typecheck": "passed",
+    "configurationAgreement": "passed",
+    "uiBuild": "passed",
+    "nativeContainerSmoke": "passed"
+  },
+  "limits": [
+    "No production rollout or live account-seed qualification in this batch.",
+    "Steer acknowledgement is inbox admission; same-execution consumption is unknown.",
+    "Deployed Slack checks and G0/G1/G1-C/G2 remain open."
+  ]
+}

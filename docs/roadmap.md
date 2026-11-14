@@ -482,17 +482,19 @@ existing engine: durable multi-message delivery, truthful timeout/budget status,
 and a ready encrypted account-seed rehearsal. This section executes the queue
 above; it is not a second planning authority.
 
-**Local outcome.** Implementation and cross-owner review are complete. The user
+**Verified outcome.** Implementation and cross-owner review are complete. The user
 confirmed observe-and-alert with manual stop as the timeout policy. FIFO,
 explicit delivery, durable stop fencing, timeout status and the low-budget probe
 pass the local gates. Steering acknowledgement proves inbox admission only:
 `resume:false` prevents a fresh execution, but a run that finishes its final poll
 can leave guidance pending until a later admitted turn. `consumed:null` records
 that uncertainty; R0-20's stronger same-execution consumption guarantee remains
-open for the stable caller contract and deployed verification. The account-seed fixture passes offline types/bundling and
-safety contracts; live rehearsal and production cutover remain open.
-[Batch evidence](evidence/orchestrated-delivery-batch-2026-11-14.md). Native and
-deployed checks remain tied to the exact uploaded revision.
+open for the stable caller contract and deployed verification. The account-seed
+fixture passes offline types/bundling and safety contracts; live rehearsal and production cutover remain open.
+[Batch evidence](evidence/orchestrated-delivery-batch-2026-11-14.md). Native
+[CI 43649498746](https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43649498746)
+passed both `check` and `container-smoke` at `8e74638` (442 Bun, 5 runtime and
+368 Worker/DO tests). Deployed checks remain open.
 
 **Key results.** (1) FIFO accepts bounded follow-ups without new holds or lost
 items and survives recreation; (2) queue/steer/interrupt agree over HTTP and

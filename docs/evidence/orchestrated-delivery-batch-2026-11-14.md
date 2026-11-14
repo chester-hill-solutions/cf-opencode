@@ -97,8 +97,14 @@ its current reply target. No measured token or cost savings are claimed.
   inference, real Slack delivery, deployment, production reset or live seed run
   was used for these local results.
 
-Native CI and deployed receipts must refer to the exact uploaded commit; this
-local receipt does not substitute for either. G0/G1/G1-C/G2 remain open.
+Native CI [run 43649498746](https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43649498746)
+passed `check` and `container-smoke` at **8e74638**: **442 Bun tests, 5 runtime
+tests and 368 Worker/DO tests in 62 files**. The gate includes all typecheck
+projects, config agreement and UI build. This includes the final pending-receipt
+and passive-steering safeguards. [Structured receipt](orchestrated-delivery-native-ci-2026-11-14.json).
+The native container smoke rebuilt the source-pinned patched Stow and exercised
+fresh account-seed boundaries and cold split restore. It does not qualify the
+new fixture's live encrypted-R2 path. G0/G1/G1-C/G2 remain open.
 
 ## Backout
 
