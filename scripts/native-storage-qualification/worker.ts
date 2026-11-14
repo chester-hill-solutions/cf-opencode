@@ -4,6 +4,8 @@ import type { Env as BaseEnv } from "../../src/env"
 import { bearerAuthorized } from "../../src/control-auth"
 import { parseWorkspaceIdentity } from "../../stow-workspace"
 import { NATIVE_STORAGE_PROBE } from "./container-probe"
+import { CONTAINER_INSTANCE } from "../../src/conversation/images"
+import { QUALIFICATION_ARTIFACT, matchesQualificationRuntime, matchesQualificationReceipt } from "./artifact"
 import {
   onlyWhenQualificationBucketEmpty,
   projectSafeProbe,
@@ -22,8 +24,7 @@ const QUALIFICATION_PATHS = {
   privateReadiness: "/tmp/c2-native-storage-probe/readiness.json",
 } as const
 const QUALIFICATION_STATE_KEY = "nativeStorageQualification"
-const CONTROLLER_SHA256 = "e70c25065a74c2d5384df19dd8c1612949b1b08d790b368a72cd0f5212cdd3a3"
-const BINARY_SHA256 = "780c3ccf89abdb4355e1b943ab686693d7436bd08cefdffd0f315226815f27da"
+const { controllerSHA256: CONTROLLER_SHA256, binarySHA256: BINARY_SHA256 } = QUALIFICATION_ARTIFACT
 
 type SafeReceipt = {
   stage: "prepared" | "checkpointed" | "verified"
@@ -31,6 +32,12 @@ type SafeReceipt = {
   image: string
   controllerSHA256: string
   binarySHA256: string
+  runtime: {
+    profile: string
+    requested: { vcpu: number; memoryMib: number; diskMb: number }
+    /** The current inspect API exposes image/labels, not resource allocations. */
+    observed: null
+  }
   directMarkerSHA256: string
   objectMarkerSHA256: string
   metadataMarkerSHA256: string
@@ -80,6 +87,11 @@ export class QualificationConversation extends BaseConversation {
     if (await request.text() !== "") return jsonError("request body must be empty", 400)
 
     try {
+      if (url.pathname !== "/qualification/cleanup" && !matchesQualificationRuntime({
+        image: this.ctx.container?.images.evented,
+        profile: this.env.CONTAINER_INSTANCE_PROFILE,
+        instance: CONTAINER_INSTANCE,
+      })) return jsonError("frozen qualification image and explicit instance profile are required", 409)
       if (url.pathname === "/qualification/prepare") return await this.prepare()
       if (url.pathname === "/qualification/recycle") return await this.recycleAndVerifyArchives()
       if (url.pathname === "/qualification/verify") return await this.verifyRestored()
@@ -95,8 +107,10 @@ export class QualificationConversation extends BaseConversation {
   private async prepare(): Promise<Response> {
     const existing = await this.ctx.storage.get<SafeReceipt>(QUALIFICATION_STATE_KEY)
     if (existing) {
+      this.requireCurrentReceipt(existing)
       if (existing.stage === "prepared") {
-        return Response.json({ ok: true, stage: existing.stage, workspaceID: existing.workspaceID, image: existing.image })
+        return Response.json({ ok: true, stage: existing.stage, workspaceID: existing.workspaceID, image: existing.image,
+          stowVersion: QUALIFICATION_ARTIFACT.stowVersion, runtime: existing.runtime })
       }
       return jsonError("qualification key has already been used; clean up and deploy a fresh key", 409)
     }
@@ -129,6 +143,7 @@ export class QualificationConversation extends BaseConversation {
       await super.fetch(this.internal("/debug")),
     )
     const inspected = await container.inspect()
+    const requested = this.requestedInstance()
     if (!debug.ready || debug.startMode !== "image" || debug.snapshot ||
       !inspected || inspected.image !== container.images.evented) {
       return jsonError("runtime did not use the configured evented image", 503)
@@ -161,17 +176,20 @@ export class QualificationConversation extends BaseConversation {
       image: inspected.image,
       controllerSHA256: CONTROLLER_SHA256,
       binarySHA256: BINARY_SHA256,
+      runtime: { profile: QUALIFICATION_ARTIFACT.profile, requested, observed: null },
       directMarkerSHA256: await sha256("c2-synthetic-direct-workspace-bytes-v1\n"),
       objectMarkerSHA256: await sha256("c2-synthetic-s3-workspace-bytes-v1\n"),
       metadataMarkerSHA256: await sha256("c2-synthetic-content-type-metadata-v1\n"),
       firstProbe: this.safeProbeFields(firstProbe),
     }
     await this.ctx.storage.put(QUALIFICATION_STATE_KEY, receipt)
-    return Response.json({ ok: true, stage: receipt.stage, workspaceID: receipt.workspaceID, image: receipt.image })
+    return Response.json({ ok: true, stage: receipt.stage, workspaceID: receipt.workspaceID, image: receipt.image,
+      stowVersion: QUALIFICATION_ARTIFACT.stowVersion, runtime: receipt.runtime })
   }
 
   private async recycleAndVerifyArchives(): Promise<Response> {
     const receipt = await this.ctx.storage.get<SafeReceipt>(QUALIFICATION_STATE_KEY)
+    if (receipt) this.requireCurrentReceipt(receipt)
     if (receipt?.stage === "checkpointed" || receipt?.stage === "verified") {
       return Response.json({ ok: true, stage: receipt.stage, manifest: receipt.manifest })
     }
@@ -219,6 +237,7 @@ export class QualificationConversation extends BaseConversation {
 
   private async verifyRestored(): Promise<Response> {
     const receipt = await this.ctx.storage.get<SafeReceipt>(QUALIFICATION_STATE_KEY)
+    if (receipt) this.requireCurrentReceipt(receipt)
     if (receipt?.stage === "verified") return this.verifiedResponse(receipt)
     if (!receipt || receipt.stage !== "checkpointed" || !receipt.manifest) {
       return jsonError("verified R2 checkpoint is required", 409)
@@ -231,6 +250,7 @@ export class QualificationConversation extends BaseConversation {
       await super.fetch(this.internal("/debug")),
     )
     const inspected = await this.ctx.container.inspect()
+    this.requestedInstance()
     if (!debug.ready || debug.startMode !== "image" || debug.snapshot || !inspected ||
       inspected.image !== receipt.image || inspected.image !== this.ctx.container.images.evented) {
       return jsonError("cold image start was not verified", 503)
@@ -280,6 +300,8 @@ export class QualificationConversation extends BaseConversation {
       image: receipt.image,
       controllerSHA256: receipt.controllerSHA256,
       binarySHA256: receipt.binarySHA256,
+      stowVersion: QUALIFICATION_ARTIFACT.stowVersion,
+      runtime: receipt.runtime,
       markerSHA256: {
         directFile: receipt.directMarkerSHA256,
         s3Object: receipt.objectMarkerSHA256,
@@ -301,6 +323,22 @@ export class QualificationConversation extends BaseConversation {
     const remaining = await this.listKeys(prefix)
     if (remaining.length) return jsonError("qualification cleanup left R2 objects", 503)
     return Response.json({ ok: true, runtimeStopped: true, qualificationR2ObjectsRemaining: 0 })
+  }
+
+  private requestedInstance(): { vcpu: number; memoryMib: number; diskMb: number } {
+    const options = this.startOptions()
+    if (!matchesQualificationRuntime({
+      image: options.image,
+      profile: this.env.CONTAINER_INSTANCE_PROFILE,
+      instance: options.instance,
+    })) throw new Error("startup options do not match the frozen qualification pair")
+    return { ...QUALIFICATION_ARTIFACT.instance }
+  }
+
+  private requireCurrentReceipt(receipt: SafeReceipt): void {
+    if (!matchesQualificationReceipt(receipt)) {
+      throw new Error("stored receipt belongs to a different qualification artifact")
+    }
   }
 
   private async copyReadinessToAgent(): Promise<void> {

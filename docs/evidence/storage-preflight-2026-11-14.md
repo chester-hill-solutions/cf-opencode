@@ -46,7 +46,7 @@ account-seed isolation, lifecycle serialization, and fresh-container restore fro
 both archives. It rebuilt an image; it does not certify the above deployed OCI
 digest, the W0 commit, or Cloudflare/R2 cold recovery on the current shape.
 
-## Harness preflight findings
+## Initial harness preflight findings (before preparation)
 
 The existing `scripts/native-storage-qualification/` fixture is historical C2,
 not ready for a current-pair run:
@@ -65,6 +65,32 @@ Update both probe pins from one shared artifact definition before deployment;
 require matching image, source/binary hashes and profile. Generate types and
 perform a local Wrangler dry run against a concrete isolated configuration.
 Do not overwrite the 2026-11-12 receipt or reinterpret it as current evidence.
+
+## Harness preparation completed locally — 2026-11-14
+
+The subsequent preparation resolves the stale fixture pins and adds a repeatable
+offline check. [Structured receipt](storage-harness-preparation-2026-11-14.json)
+records the artifact, source hashes and final checks; it is **PREPARATION_ONLY**.
+
+- `artifact.ts` is the single image/controller/binary/profile/shape definition.
+  The generated container program and Worker use its 0.4.0 pins. Artifact/profile
+  mismatches are rejected before startup; historical receipts are refused.
+- The template now explicitly requests `custom-1cpu-2gib` and 300 s idle. Prepared
+  and verified receipts carry the checked startup request. Observed allocations
+  remain `null`: the available `ContainerInfo` exposes image and labels only.
+- `bun run qualification:preflight` typechecks the fixture, runs six contracts,
+  generates bindings and runs Wrangler 4.158.0 `deploy --dry-run`. It passed with
+  a 652.83 KiB bundle / 129.91 KiB gzip. The generated config has a deliberate
+  all-zero account and nonexistent resource names; no resource was provisioned.
+- The regular gate now includes fixture typing/contracts and passed: 407 Bun
+  tests, 5 runtime tests, 351 Worker/DO tests, config/UI/diff checks. A focused
+  preflight repeat passed after the final contract assertions were added.
+
+The [harness README](../../scripts/native-storage-qualification/README.md) describes
+the offline command and separate live configuration. The historical receipt is
+unchanged. No current-slice native CI, actual resource measurements, remote image
+availability check, live Cloudflare/R2 recovery matrix, or production cutover is
+claimed. Those remain required for R0-15.
 
 ## Frozen recovery inventory for the next run
 

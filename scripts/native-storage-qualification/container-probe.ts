@@ -1,10 +1,12 @@
+import { QUALIFICATION_ARTIFACT } from "./artifact"
+
 /** Fixed, no-argument container-side probe used only by the staging C2 Worker. */
 export const NATIVE_STORAGE_PROBE = String.raw`
 import { createHash } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
 
-const expectedControllerSHA256 = "e70c25065a74c2d5384df19dd8c1612949b1b08d790b368a72cd0f5212cdd3a3"
-const expectedBinarySHA256 = "780c3ccf89abdb4355e1b943ab686693d7436bd08cefdffd0f315226815f27da"
+const expectedControllerSHA256 = ${JSON.stringify(QUALIFICATION_ARTIFACT.controllerSHA256)}
+const expectedBinarySHA256 = ${JSON.stringify(QUALIFICATION_ARTIFACT.binarySHA256)}
 const root = "/workspace"
 const identityPath = "/var/lib/aboiteau/state/stow/identity.json"
 const readinessPath = "/tmp/c2-native-storage-probe/readiness.json"

@@ -131,6 +131,14 @@ These constrain every slice. Breaking one is a regression even if its own tests 
 
 ### 4.1 What is verified
 
+- R0-15 harness preparation on base `dca482d`: shared 0.4.0 artifact pins,
+  explicit custom profile, stale-receipt refusal, six safety contracts and an
+  offline Wrangler dry run pass. The regular gate passes 407 Bun tests,
+  5 runtime tests, 351 Worker/DO tests and typecheck/config/UI/diff checks.
+  [Receipt](evidence/storage-harness-preparation-2026-11-14.json). Resource
+  allocations remain unmeasured; remote image availability and live recovery
+  qualification remain open.
+
 - W0 published as `7626726` on base `39a42d5`: R0-17/R0-18 implemented and locally
   verified; 401 Bun tests + 5 runtime tests + 351 Worker/DO tests pass, with
   typecheck/config/UI/diff checks passing. R0-19 recovered synthetic credentials
@@ -187,7 +195,7 @@ now part of the plan rather than a separate report.
 
 | Gate | Question | Status | Remaining evidence | Owner |
 |---|---|---|---|---|
-| **G0** | Do representative coding tasks complete and survive defined failures with correct admission/accounting and measured cost per accepted task? | **OPEN** | R0-1 staging rehearsal; R0-2 frozen task/fault matrix; R0-3 cost/latency baseline; R0-11 deployed container checks and legacy/manual ledger; R0-15 production storage cutover; R0-16 production replay rollout | platform + operator |
+| **G0** | Do representative coding tasks complete and survive defined failures with correct admission/accounting and measured cost per accepted task? | **OPEN** | R0-1 staging rehearsal; R0-2 frozen task/fault matrix; R0-3 cost/latency baseline; R0-11 deployed container checks and legacy/manual ledger; R0-15 live recovery/storage cutover ([offline harness ready](evidence/storage-harness-preparation-2026-11-14.json)); R0-16 production replay rollout | platform + operator |
 | **G1** | Do credential, egress and strict tenant boundaries hold, including resolver outages and repository-controlled probes? | **OPEN** | R1-3 deployed lifecycle proof; R1-5/6/8 strict identity, scoped keys, quotas; R1-7a/7/9 real-container egress and cross-tenant enforcement; [R0-19 confirms current exposure](evidence/r0-19-2026-11-14.json) | security + platform |
 | **G1-C** | Can a non-Slack client use stable turns, questions, permissions, cancellation, reconnect and recovery solely through the public API? | **OPEN** | R1-4a sign-off and implementation; R1-4b neutral interactions; R1-4c reference-client conformance | API + connector |
 | **G2** | Can five external teams install in their own accounts, integrate, repeat work, and upgrade/restore without builder intervention? | **NOT STARTED** | R2-2/3/4/6/7/8, then pilots | pilot owner |
@@ -228,7 +236,7 @@ alongside W1–W3 but closes no product gate. W5 waits for G1 + G1-C.
 | **W1** | **R0-2** | Frozen representative task/fault matrix | M | R0-1, R0-15 cutover | ≥10 predeclared coding tasks over ≥2 repos; accepted changes/checks/restart survival reported with all attempts in the denominator |
 | **W1** | **R0-3** | Cost and latency baseline | M | R0-2 | Cold/warm p50/p95, checkpoint/restore, recovery, interventions, container/R2/model cost per accepted task; unknowns stay unknown |
 | **W1** | **R0-11** | Deployed checks for R0-10/R0-11/R0-13 and the legacy/manual ledger | M | R0-15 | Audit 29/30/31/33 regressions pass in a deployed container; unprovable legacy cases named with their permanent marker |
-| **W1** | **R0-15** | Storage production cutover and full recovery inventory | L | — | Stow 0.4.0 + current shape re-qualified; escaped/reserved keys, metadata, multipart, background writers and registry identity each preserved/rebuilt/refused; production cutover names retained/reset operator data; README/runbook updated |
+| **W1** | **R0-15** | Storage production cutover and full recovery inventory — harness prepared locally | L | — | [Offline harness receipt](evidence/storage-harness-preparation-2026-11-14.json); live work remains: Stow 0.4.0 + current shape re-qualified; escaped/reserved keys, metadata, multipart, background writers and registry identity each preserved/rebuilt/refused; production cutover names retained/reset operator data; README/runbook updated |
 | **W1** | **R0-16** | Public replay production rollout | S | — | `Last-Event-ID` forwarding and reset path live; snapshot-vs-delta semantics documented; no prompt resend on reconnect |
 | **W1** | **R0-20** | Message delivery modes: durable FIFO queue, steer, interrupt-with-follow-up | L | R0-17, R0-18 | Default queue accepts multiple messages FIFO across restart; full queue refuses without loss; steer joins the active turn with no new hold; interrupt settles before the follow-up; ambiguous interrupt does not duplicate; Slack/HTTP parity; tests |
 | **W2** | **R1-7a** | Disposable credential/egress feasibility proof | M | R0-19 | Synthetic provider/git credentials injected outside the sandbox; default-deny egress proven for provider HTTP/SSE, clone/fetch, packages; unsupported paths rejected; OpenCode self-approval residual recorded |
@@ -357,11 +365,13 @@ fallback. No WASM/AgentOS rewrite, no stow POSIX shim, no snapshot-first recover
 4. **CI — DONE**: W0 `7626726` is pushed and native `check` + `container-smoke`
    passed in [run `43633250236`](https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43633250236).
    This qualifies that source/image build, not the remaining live product gates.
-5. **R0-15 — PREFLIGHT RECORDED**: the 0.4.0/custom-shape candidate pair and
-   recovery matrix are [frozen](evidence/storage-preflight-2026-11-14.md).
-   Confirm remote digest availability, update the historical harness pins and
-   record the live-run spend ceiling before re-qualification. R0-15 remains open;
-   the 0.3.7/`standard-1` receipts remain historical.
+5. **R0-15 — HARNESS PREPARED LOCALLY**: the 0.4.0/custom-shape candidate pair
+   and recovery matrix are [frozen](evidence/storage-preflight-2026-11-14.md).
+   Shared artifact pins, explicit profile/refusal checks, six contracts, binding
+   generation and the offline Wrangler dry run pass. [Receipt](evidence/storage-harness-preparation-2026-11-14.json).
+   Next confirm remote digest availability and record the live-run spend ceiling
+   before running the full recovery matrix. R0-15 remains open; the
+   0.3.7/`standard-1` receipts remain historical.
 6. **R1-4a**: circulate the seven decisions (including the delivery model) for
    API/product sign-off. No code until they are locked.
 
@@ -563,6 +573,12 @@ status field.
 7. **Truthfulness**: no gate closes on plans, builds, mocks or pattern strings.
 
 ## 11. Change log
+
+- **2026-11-14 (R0-15 harness)** — centralized the frozen Stow 0.4.0 artifact
+  pins, enforced the explicit custom profile, rejected stale receipts, and
+  recorded requested resources with observed allocations unknown. Added the
+  repeatable offline preflight and fixture coverage in the regular gate. All
+  local checks passed; live qualification and production cutover remain open.
 
 - **2026-11-14 (W0 native CI)** — pushed the specifically approved commit
   `7626726`; native `check` and `container-smoke` passed in `43633250236`.
