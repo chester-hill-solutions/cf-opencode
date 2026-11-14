@@ -21,11 +21,12 @@ Run the complete **offline** preflight:
 bun run qualification:preflight
 ```
 
-This typechecks the fixture, runs its safety contracts, generates binding types,
-and runs Wrangler `deploy --dry-run`. Its generated config uses a deliberate
-all-zero account ID and nonexistent resource names. Generated bindings and bundle
-live under `.wrangler/native-storage-preflight/` and are ignored by Git. The
-command creates no resources, uploads no image/Worker and uses no secrets.
+This typechecks both fixtures, runs their safety contracts, generates binding
+types, and runs Wrangler `deploy --dry-run` for both Workers. Their generated
+configs use a deliberate all-zero account ID and nonexistent resource names.
+Generated bindings and bundles live under `.wrangler/native-storage-preflight/`
+and are ignored by Git. The command creates no resources, uploads no image/Worker
+and uses no secrets.
 The fixture typecheck and contract tests also run in the normal integration gate.
 `build-probe.ts` bundles the typed container modules into ignored generated files;
 all three qualification commands and the regular typing/test commands build it first.
@@ -63,7 +64,7 @@ means the run or cleanup was incomplete. It prints safe JSON and attempts cleanu
 even after a partially acknowledged container creation. This command is outside
 the normal test gate and does not qualify Cloudflare/R2 or its custom shape.
 
-For a later **live** run, fill the template's account/bucket/image placeholders
+For a later **live** native storage run, fill the template's account/bucket/image placeholders
 in a separate config with a unique Worker name and newly created empty bucket.
 The image must match `artifact.ts`. Confirm remote digest availability before
 provisioning; keep source/binary/patch/image provenance in the receipt. If copying
@@ -102,3 +103,32 @@ recovery matrix are in the [preflight evidence](../../docs/evidence/storage-pref
 The [roadmap](../../docs/roadmap.md) owns sequencing and gate status. The current
 offline preparation uses no paid resources. Record destination, limits and spend
 ceiling before live qualification. Preparing this harness closes no live recovery gate.
+
+The separate `account-seed.ts` fixture is the bounded R0-15a live rehearsal.
+It uses fixed source and recipient Durable Object names and the legacy global
+account seed key. `/prepare` starts a source with the ordinary read-only
+onboarding catalogue path and writes only synthetic marker data; `/capture`
+calls the ordinary account state checkpoint endpoint and applies the same
+workspace-key derivation and encryption used by onboarding before writing R2;
+`/verify` starts a distinct clean recipient through ordinary readiness, which
+consumes that encrypted seed, then checks the synthetic account marker, distinct
+Stow identity, absent source workspace sentinel, pinned binary/controller
+hashes, and refusal of a second seed after initialization. `/cleanup` resets
+both fixed conversations, removes the seed, and proves the staging bucket empty.
+No model prompt or real provider credentials are used. The marker proves archive
+fidelity only; this rehearsal does not prove live provider authentication,
+tenant/agent seed isolation, removal of arbitrary source history (the account
+archive includes SQLite backup), or live rejection of a conversation-state
+archive. That last negative remains covered by `smoke-container.sh` local
+evidence. Receipts must contain only explicit booleans, hashes, IDs and bounded
+sizes; never return archive bytes, settings contents, readiness credentials, or
+upstream/native error output.
+Source and recipient refuse any prior startup token; recipient verification is
+claimed once before startup and cannot be replayed after a partial attempt.
+Use a fresh Worker/DO namespace for each rehearsal, including after cleanup.
+
+Use `account-seed-wrangler.template.jsonc` for that rehearsal, with its own
+unique Worker and newly created empty bucket. Its endpoint sequence is
+`/prepare`, `/capture`, `/verify`, then `/cleanup`; the shared
+`qualification:preflight` command also checks this second Worker configuration
+without deploying it.
