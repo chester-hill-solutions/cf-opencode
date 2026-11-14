@@ -25,7 +25,9 @@ BASE="http://127.0.0.1:${CONTROL_PORT}"
 SECOND_NAME="${SECOND_NAME:-${NAME}-account-seed}"
 SECOND_CONTROL_PORT="${SECOND_CONTROL_PORT:-$((CONTROL_PORT + 10))}"
 SECOND_BASE="http://127.0.0.1:${SECOND_CONTROL_PORT}"
-EXPECTED_STOW_SHA256="6f0f247912de4c4d5d296a3176fe291b7c29717498f5778d920949d4025420b6"
+# Source-pinned v0.4.0 plus patches/stow/metadata-refusal.patch, Go 1.25.6,
+# CGO disabled, linux/amd64, trimpath and no build VCS metadata.
+EXPECTED_STOW_SHA256="78e69bb95cef92433543ac339fa9a38ffc3a8d4b66173820a776a097e3e5ed0b"
 EXPECTED_KERNEL_EXECUTABLE="/usr/local/bin/stow-s3"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/cf-opencode-smoke.XXXXXX")"
 WS_ARCHIVE="${WORK}/workspace.tar.gz"

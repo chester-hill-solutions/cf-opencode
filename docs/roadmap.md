@@ -370,11 +370,16 @@ the cutover receipt. Update README and runbook in the same change.
 
 The first expanded live matrix is complete and failed: acknowledged metadata
 does not round-trip Cache-Control, Content-Disposition or Content-Encoding.
-Resolve that native Stow contract before re-qualification; do not weaken the
+The [downstream safe-refusal patch](evidence/storage-metadata-remediation-2026-11-14.md)
+now rejects those unsupported properties before mutation, with SDK regressions
+passing against the isolated release source. Native CI and corrected live
+qualification are pending. Resolve that native Stow contract before re-qualification; do not weaken the
 probe to treat silent metadata loss as an unsupported safe refusal. The other
 16 fixed cases passed their declared observations once. Account-seed isolation
 and the production retained/reset-data inventory still need current-pair cutover
 evidence. Keep the successful 0.3.7 receipts historical.
+The [prepared cutover runbook](runbooks/storage-cutover.md) retains operator data
+and intentionally resets none; it is not production approval.
 
 **R2-9 — GitHub repository to draft PR (next product workflow).**
 
@@ -455,8 +460,10 @@ fallback. No WASM/AgentOS rewrite, no stow POSIX shim, no snapshot-first recover
    $1 operational budget and 30-minute window. The cached image was republished
    with the same frozen digest; 14 cases were preserved, 2 registry faults were
    refused and accepted metadata lost three headers. [Evidence and next action](evidence/storage-matrix-2026-11-14.md).
-   Next fix metadata persistence or refuse unsupported mutations before writes,
-   then repeat qualification on a frozen candidate before production cutover.
+   A source-pinned downstream refusal patch and SDK regressions are now prepared.
+   Next pass native CI and repeat qualification on the corrected frozen candidate
+   before production cutover. See the [remediation record](evidence/storage-metadata-remediation-2026-11-14.md)
+   and [retained-data runbook](runbooks/storage-cutover.md).
    No further provisioning or production reset is implied by this completed run.
 6. **R1-4a**: circulate the seven decisions (including the delivery model) for
    API/product sign-off. No code until they are locked.

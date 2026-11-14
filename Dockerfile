@@ -15,6 +15,26 @@
 # OpenCode's event-persistent server is installed as an isolated, locked runtime
 # package. The control plane remains in the root Bun application.
 
+FROM --platform=$BUILDPLATFORM golang:1.25.6-bookworm@sha256:f4490d7b261d73af4543c46ac6597d7d101b6e1755bcdd8c5159fda7046b6b3e AS stow-builder
+WORKDIR /src
+ADD --checksum=sha256:387c91bcf9f9a4ac2691fbf980885ccfb88e6eaf7b3732681e75a2eca2b1adc8 https://codeload.github.com/chester-hill-solutions/stow-s3/tar.gz/3bb3e890bbe56f11dd783c2ccfb9bd2813156919 /tmp/stow-source.tar.gz
+RUN tar -xzf /tmp/stow-source.tar.gz --strip-components=1 \
+      --wildcards '*/go.mod' '*/go.sum' '*/cmd/*' '*/internal/*' '*/pkg/*' \
+    && rm /tmp/stow-source.tar.gz
+COPY patches/stow/metadata-refusal_test.go internal/s3api/metadata_refusal_test.go
+# Verify that the regression reaches the original silent-success bug, rather
+# than treating a compilation or environment error as an expected failing test.
+RUN if GOMAXPROCS=2 go test -p 2 ./internal/s3api -run '^TestSDKUnsupportedObjectMetadataRefusedBeforeMutation$' > /tmp/baseline.log 2>&1; then \
+      cat /tmp/baseline.log; exit 1; \
+    else cat /tmp/baseline.log; grep -F 'want typed 501 NotImplemented, got <nil>' /tmp/baseline.log; fi
+COPY patches/stow/metadata-refusal.patch /tmp/stow-metadata.patch
+RUN git apply --check /tmp/stow-metadata.patch \
+    && git apply /tmp/stow-metadata.patch \
+    && GOMAXPROCS=2 go test -p 2 ./internal/s3api
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} GOMAXPROCS=2 \
+    go build -p 2 -buildvcs=false -trimpath -ldflags '-s -w' -o /out/stow-s3 ./cmd/stow-s3
+
 FROM oven/bun:1.3-slim@sha256:d56a2534ffd262e92c12fd3249d3924d296d97086da773f821d7d0477435ea04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -24,16 +44,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ARG STOW_VERSION=0.4.0
-ARG TARGETARCH
-RUN cd /tmp \
-    && curl -fsSL -o "stow-linux-${TARGETARCH}.tar.gz" \
-      "https://github.com/chester-hill-solutions/stow-s3/releases/download/v${STOW_VERSION}/stow-linux-${TARGETARCH}.tar.gz" \
-    && curl -fsSL -o SHA256SUMS.txt \
-      "https://github.com/chester-hill-solutions/stow-s3/releases/download/v${STOW_VERSION}/SHA256SUMS.txt" \
-    && grep " stow-linux-${TARGETARCH}.tar.gz$" SHA256SUMS.txt | sha256sum -c - \
-    && tar -xzf "stow-linux-${TARGETARCH}.tar.gz" -C /usr/local/bin stow-s3 \
-    && chmod +x /usr/local/bin/stow-s3 \
-    && rm -f "stow-linux-${TARGETARCH}.tar.gz" SHA256SUMS.txt
+COPY --from=stow-builder /out/stow-s3 /usr/local/bin/stow-s3
 
 WORKDIR /app
 COPY control-server.ts entrypoint.sh ./
