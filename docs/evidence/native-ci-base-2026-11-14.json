@@ -1,0 +1,27 @@
+{
+  "conclusion": "success",
+  "headSha": "39a42d59683c806b1b15c3ff000c948b94b314ee",
+  "jobs": [
+    {
+      "completedAt": "2026-11-14T18:40:27Z",
+      "conclusion": "success",
+      "id": 132547452543,
+      "name": "check",
+      "startedAt": "2026-11-14T18:39:12Z",
+      "status": "completed",
+      "url": "https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43627788591/job/132547452543"
+    },
+    {
+      "completedAt": "2026-11-14T18:41:25Z",
+      "conclusion": "success",
+      "id": 132547823584,
+      "name": "container-smoke",
+      "startedAt": "2026-11-14T18:40:30Z",
+      "status": "completed",
+      "url": "https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43627788591/job/132547823584"
+    }
+  ],
+  "runId": 43627788591,
+  "status": "completed",
+  "url": "https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43627788591"
+}

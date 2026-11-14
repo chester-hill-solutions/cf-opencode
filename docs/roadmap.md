@@ -131,14 +131,15 @@ These constrain every slice. Breaking one is a regression even if its own tests 
 
 ### 4.1 What is verified
 
-- W0 working tree on base `39a42d5`: R0-17/R0-18 implemented and locally
+- W0 committed locally as `7626726` on base `39a42d5`: R0-17/R0-18 implemented and locally
   verified; 401 Bun tests + 5 runtime tests + 351 Worker/DO tests pass, with
   typecheck/config/UI/diff checks passing. R0-19 recovered synthetic credentials
   through both allowlisted paths in the current 0.4.0 local image. See the
   [W0 receipt](evidence/w0-correctness-2026-11-14.md) for commands, source/artifact
   hashes and limitations, including one intermittent recovery-test failure between
   passing full runs. This is **KNOWN_OPEN_G1** evidence. No deployment or
-  native CI qualification is claimed for this working tree.
+  native CI qualification is claimed for W0; its push is awaiting explicit
+  destination approval after automatic approval review rejected the upload.
 
 - Local gate at HEAD `3d71de1`: `bun run typecheck` (five tsconfig projects plus
   `runtime/opencode`), `bun run check:config`, `bun run build:ui`, `bun test tests`
@@ -152,10 +153,13 @@ These constrain every slice. Breaking one is a regression even if its own tests 
   preexisting-workspace refusal. It exited 1 only when the host lifecycle-race
   observer hit `spawnSync docker ETIMEDOUT` under arm64 emulation (environment,
   not an assertion).
-- Latest recorded native CI pass: run `43625818796` at `37995f2` passed `check`
-  and `container-smoke`, including the lifecycle race. Gate B (image) closed at
-  `7f33cd6` (run `43614603372`). **Base `39a42d5` and the W0 changes have no recorded native CI run in
-  the plans**; re-run before treating the current revision as smoke-qualified.
+- Latest verified base native CI pass: [run `43627788591`](https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43627788591)
+  at `39a42d5` passed `check` and `container-smoke`, including lifecycle
+  serialization and fresh-container split restore. [Run `43626528341`](https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43626528341)
+  also passed at `3d71de1`; both receipts were previously missing from this plan.
+  [Structured base receipt](evidence/native-ci-base-2026-11-14.json).
+  SL-B originally closed at `7f33cd6` (run `43614603372`). **W0 `7626726`
+  still needs its own native CI run** before that revision is smoke-qualified.
 - Lifecycle scheduler, sealed recovery, idle close, split checkpoints, reservation
   accounting, operator reconciliation, Slack commands/questions/images/replay and
   the onboarding wizard have local or recorded live evidence in their evidence
@@ -346,13 +350,15 @@ fallback. No WASM/AgentOS rewrite, no stow POSIX shim, no snapshot-first recover
 2. **R0-18 — DONE locally**: both timeout paths, immediate paused-episode alerts
    and reservation-less success clearing are covered by passing regressions.
 3. **R0-19 — RECORDED**: the synthetic current-image probe and raw result are
-   retained in the working tree as **KNOWN_OPEN_G1** evidence, ready to commit
-   with this slice. Enforcement remains open.
+   committed with `7626726` as **KNOWN_OPEN_G1** evidence. Enforcement remains open.
 4. **CI — NEXT**: run native `check` + `container-smoke` for the revision that
-   includes W0 (base `39a42d5`) and record the run id here; the latest recorded
-   pass remains `37995f2`.
-5. **R0-15**: freeze the artifact pair (Stow 0.4.0, custom shape) and schedule the
-   re-qualification; do not reuse the 0.3.7/`standard-1` receipts as current.
+   includes W0 (`7626726`) once its branch push is approved, and record the run
+   id here. Base `39a42d5` is qualified by `43627788591`.
+5. **R0-15 — PREFLIGHT RECORDED**: the 0.4.0/custom-shape candidate pair and
+   recovery matrix are [frozen](evidence/storage-preflight-2026-11-14.md).
+   Confirm remote digest availability, update the historical harness pins and
+   record the live-run spend ceiling before re-qualification. R0-15 remains open;
+   the 0.3.7/`standard-1` receipts remain historical.
 6. **R1-4a**: circulate the seven decisions (including the delivery model) for
    API/product sign-off. No code until they are locked.
 
@@ -554,6 +560,11 @@ status field.
 7. **Truthfulness**: no gate closes on plans, builds, mocks or pattern strings.
 
 ## 11. Change log
+
+- **2026-11-14 (W0 follow-through)** — committed W0 as `7626726`; found and
+  recorded successful base CI runs `43627788591`/`43626528341`; froze the R0-15
+  candidate artifact pair and next recovery matrix. W0 CI awaits branch-upload
+  approval; no live resources were created and no product gate changed.
 
 - **2026-11-14 (W0)** — implemented and locally verified R0-17/R0-18; retained
   the R0-19 current-image synthetic exposure receipt. Updated the queue and G1
