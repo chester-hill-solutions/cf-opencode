@@ -62,7 +62,10 @@ Message bodies accept `delivery: "queue" | "steer" | "interrupt"` (default
 capacity from 1–100 (default 10). Entries survive restart and wait for settlement
 before acquiring their own budget hold.
 
-`steer` requires a running, dispatched turn and adds guidance without a new hold.
+`steer` requires a running, dispatched turn and accepts guidance without a new
+hold. Acknowledgement is admission, with `consumed: null`: if the run finishes
+before reading it, guidance stays pending until a later turn. Steering sets
+`resume: false` so it cannot wake a fresh execution.
 `interrupt` requires an active turn and queues the supplied text after it;
 `replaceQueue: true` explicitly replaces pending follow-ups. Interrupt results
 separate `stopRequested`, `observedStop` (currently unknown/null), and `settled`.

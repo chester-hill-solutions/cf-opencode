@@ -17,8 +17,20 @@ verification. The existing roadmap remains the scheduling authority.
   being admitted.
 - HTTP validates and forwards queue/steer/interrupt plus explicit replacement.
   Queue acceptance returns ID, position and depth; full queues return 429 without
-  mutation. Both transports explicitly send normal SDK prompts with `queue`.
+  mutation. Pending idempotency retries return the same entry ID and current
+  position/depth, including after the recent claim is pruned. Matching pending
+  keys cannot replace or append another item. Completed-entry dedupe retains its
+  existing bounded claim/tombstone semantics; no permanent turn ledger is added.
+  Both transports explicitly send normal SDK prompts with `queue`.
 - Steering requires a running dispatched turn and uses its existing hold.
+  It sets SDK `resume:false` so a race with runtime completion cannot wake a
+  new execution. The installed core's `Session.prompt` otherwise calls
+  `execution.wake` after inbox admission (`location-6rysv0em.js`). An active
+  runner polls pending steer rows at step boundaries (`location-pn0wtb08.js`);
+  if it has finished its final poll, the guidance remains pending until a later
+  admitted turn wakes it. Acknowledgement reports `consumed:null`. Confirmed
+  attribution to a particular execution is deferred to the stable caller
+  contract; R0-20's stronger consumption guarantee stays open.
   Stop intent and follow-up changes commit before the SDK interrupt. A repeated
   same-turn stop intent cannot call the SDK again after acknowledgement loss or
   restart. Interrupt acknowledgement neither releases the hold nor confirms a
@@ -28,8 +40,7 @@ verification. The existing roadmap remains the scheduling authority.
   clears admission ownership before enqueue, so the queue can drain.
 - `/state` and `/debug` distinguish timeout observation, stop request/acknowledgement,
   unknown runtime stop, and accounting settlement. The threshold remains
-  **observe-and-alert**, with no automatic interruption. The policy choice remains
-  open. The daily budget is an admission gate, not an active-turn spending cap.
+  **observe-and-alert**, with no automatic interruption. The user chose this policy explicitly; manual stop remains available. The daily budget is an admission gate, not an active-turn spending cap.
 - A real SettingsDO regression admits a $0.10 hold under a $0.10 daily budget,
   records $5 of sourced usage, and rejects the next admission.
 

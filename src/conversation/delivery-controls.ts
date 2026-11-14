@@ -9,6 +9,7 @@ export interface DeliveryControlResult {
   outcome?: "acknowledged" | "ambiguous"
   queue?: { id: string; position: number; depth: number }
   stopRequested?: boolean
+  consumed?: null
   observedStop?: null
   settled?: boolean
 }
@@ -79,13 +80,13 @@ export class ConversationDeliveryControls {
         }
       }
       await this.options.event({ type: "steered", sessionID: state.sessionID }).catch(() => {})
-      return { ok: true, status: 200, delivery: "steer", outcome: "acknowledged" }
+      return { ok: true, status: 200, delivery: "steer", outcome: "acknowledged", consumed: null }
     })
   }
 
   async stop(
     followUp?: string,
-    options: { replaceQueue?: boolean; requireActive?: boolean; slack?: SlackTarget } = {},
+    options: { replaceQueue?: boolean; requireActive?: boolean; slack?: SlackTarget; idempotencyKey?: string } = {},
   ): Promise<DeliveryControlResult> {
     const text = followUp?.trim() || undefined
     return this.options.withLock(async () => {
@@ -184,7 +185,7 @@ export class ConversationDeliveryControls {
 
   private async writeQueue(
     text: string | undefined,
-    options: { replaceQueue?: boolean; slack?: SlackTarget },
+    options: { replaceQueue?: boolean; slack?: SlackTarget; idempotencyKey?: string },
     active: boolean,
   ): Promise<QueueWrite> {
     const state = await this.options.store.get()
@@ -201,6 +202,7 @@ export class ConversationDeliveryControls {
       enqueuedAt: Date.now(),
       source: options.slack ? "slack" : "http",
       text,
+      ...(options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}),
       ...(options.slack ? { slack: options.slack } : {}),
       attempts: 0,
       nextAttemptAt: Date.now() + 5000,

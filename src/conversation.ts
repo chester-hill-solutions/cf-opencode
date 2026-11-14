@@ -413,7 +413,7 @@ export class Conversation extends DurableObject<Env> {
       unavailable: async () => this.recoveryActions.active || await this.runtimeUpgrades.hasPending(),
       admitting: () => this.admissions.active,
       queueLimit: queueCapacity(env.QUEUE_LIMIT),
-      steer: async (sessionID, text) => { await this.withClient((client) => client.session.prompt({ sessionID, text, delivery: "steer" }), false) },
+      steer: async (sessionID, text) => { await this.withClient((client) => client.session.prompt({ sessionID, text, delivery: "steer", resume: false }), false) },
       interrupt: async (sessionID) => { await this.withClient((client) => client.session.interrupt({ sessionID, resume: false }), false) },
       schedule: async () => {
         const state = await this.store.get()
@@ -432,7 +432,7 @@ export class Conversation extends DurableObject<Env> {
         steer: async (text) => {
           const result = await this.deliveryControls.steer(text)
           if (result.error === "no_active_turn") return "No running turn to steer. Send a normal message to start or queue work."
-          return result.ok ? "Steering sent to the active turn; no new budget hold was created." : `Steering ${result.outcome === "ambiguous" ? "outcome is unknown; do not resend automatically" : "was refused"}: ${result.error}`
+          return result.ok ? "Guidance accepted; the running turn may use it at its next step. No new budget hold was created." : `Steering ${result.outcome === "ambiguous" ? "outcome is unknown; do not resend automatically" : "was refused"}: ${result.error}`
         },
         stop: async (followUp, target) => {
           const result = await this.deliveryControls.stop(followUp, { replaceQueue: true, slack: target })
@@ -711,7 +711,7 @@ export class Conversation extends DurableObject<Env> {
     if (delivery !== "queue") {
       const result = delivery === "steer"
         ? await this.deliveryControls.steer(prompt)
-        : await this.deliveryControls.stop(prompt, { requireActive: true, replaceQueue: input.replaceQueue })
+        : await this.deliveryControls.stop(prompt, { requireActive: true, replaceQueue: input.replaceQueue, idempotencyKey })
       if (!result.ok && result.outcome !== "ambiguous") await releaseClaim()
       else if (idempotencyKey) await this.store.markTombstone(`msg:${idempotencyKey}`).catch(() => {})
       return Response.json(result, { status: result.status })

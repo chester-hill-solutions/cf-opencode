@@ -82,13 +82,18 @@ describe("HTTP delivery modes", () => {
       const reservation = { reservationID: "delivery-hold", date: "2026-11-14", dispatched: true }
       await runtime.storage.put("state", { phase: "running", sessionID: "ses_delivery", runStartedAt: Date.now(), budgetReservation: reservation })
       const send = (body: unknown) => instance.fetch(new Request("https://conversation/message", { method: "POST", body: JSON.stringify(body) }))
-      expect((await send({ text: "adjust", delivery: "steer" })).status).toBe(200)
+      const steered = await send({ text: "adjust", delivery: "steer" })
+      expect(steered.status).toBe(200)
+      expect(await steered.json()).toMatchObject({ outcome: "acknowledged", consumed: null })
       const interrupted = await send({ text: "after stop", delivery: "interrupt", idempotencyKey: "interrupt-once" })
       expect(interrupted.status).toBe(200)
-      expect(await interrupted.json()).toMatchObject({ stopRequested: true, observedStop: null, settled: false })
-      expect((await send({ text: "after stop", delivery: "interrupt", idempotencyKey: "interrupt-once" })).status).toBe(200)
+      const receipt = await interrupted.json() as { queue: { id: string } }
+      expect(receipt).toMatchObject({ stopRequested: true, observedStop: null, settled: false })
+      const retried = await send({ text: "after stop", delivery: "interrupt", idempotencyKey: "interrupt-once" })
+      expect(retried.status).toBe(200)
+      expect(await retried.json()).toMatchObject({ duplicate: true, queue: { id: receipt.queue.id, position: 1, depth: 1 } })
       expect(calls).toEqual([
-        { path: "/api/session/ses_delivery/prompt", body: { text: "adjust", delivery: "steer" } },
+        { path: "/api/session/ses_delivery/prompt", body: { text: "adjust", delivery: "steer", resume: false } },
         { path: "/api/session/ses_delivery/interrupt", body: { resume: "false" } },
       ])
       await driveConversationJobs(instance, runtime.storage, ["admission:retry"], { queued: true })
