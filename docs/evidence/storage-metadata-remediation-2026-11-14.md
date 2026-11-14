@@ -32,7 +32,8 @@ consumer gate. No neighbouring Stow working-tree files were modified.
 
 The [cutover runbook](../runbooks/storage-cutover.md) names retained data and
 intentional resets (none). It is prepared input, not production approval. Native
-CI and corrected live qualification are pending; R0-15 remains open.
+CI and corrected live qualification subsequently passed; production cutover and
+the remaining R0-15 obligations remain open (results below).
 
 
 ## Selector hardening follow-up
@@ -46,3 +47,52 @@ inventory after typed refusal. The complete S3 API package passed again (10.9 s)
 The final linux/amd64 candidate SHA256 is
 `39615975e58008a60a94b0c696e9ee46aa8dba77e1899e5297dcb4f5010e3174`.
 The earlier `78e69bb9…` candidate is superseded and is not the final live target.
+
+
+## Final verification
+
+Final fix commit `fa5411bd93092fd102fb65d4d69c0562712d6fa0` is pushed to the
+existing branch. [Native CI 43643079964](https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43643079964)
+passed both jobs: type/config/UI checks, 412 Bun tests, 5 runtime tests, all 351
+Worker/DO tests, and native container smoke. The native image independently
+matched the final `39615975…` binary hash. The complete native S3 API package,
+including selector regressions, passed after proving the original failure.
+[Structured CI receipt](storage-metadata-native-ci-2026-11-14.json). Earlier
+busy-host failures remain recorded; this native run resolves the regression gate.
+
+The final image was assembled without local Docker using checksum-verified
+`crane` 0.22.1 from its official release: the frozen 0.4.0 base plus exactly one
+layer replacing `/usr/local/bin/stow-s3` with the independently hash-matched binary.
+Runtime config values and the entire base layer prefix were read back and matched.
+Crane omitted an empty/null `OnBuild` config key; no runtime value changed.
+Final image:
+`registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-metadata-candidate@sha256:4fe5c456f39903be5cbba5027a5d00f1961ac37fb63c7e6a3493c09af2903f24`.
+The source/patch/binary/image pins are in `artifact.ts`; receipts explicitly label
+this downstream build `metadata-refusal.2` rather than claiming an upstream release.
+
+The corrected [live Cloudflare/R2 receipt](storage-metadata-live-2026-11-14.json)
+reports **17/17 accepted outcomes: 14 preserved, 3 refused before mutation, zero
+failed or unexercised**. Unsupported metadata returned 501 before creating an
+object or altering workspace/registry bytes; the absent object remained absent
+after recovery. The two registry faults returned 409/503 without mutation.
+Keys, multipart completion, Git, imported history and the active-writer recovery
+point passed after encrypted R2-only recovery, with stable identity and no snapshot.
+The active capture took 2.441 s, within the 30-second writer lifetime, with no
+quiesced retry. Workspace/state archives were 14,780 / 943,792 bytes.
+
+`metadataTypeMatches: false` is expected in this receipt because the complete
+unsupported metadata PUT was refused and that object never existed. Supported
+content type and user metadata round trips remain covered by native S3 API tests;
+this is not evidence that the three unsupported properties are now persisted.
+
+The fixed matrix is one synthetic run, not throughput, arbitrary-writer or
+production-cutover qualification. Native smoke also passed account-seed identity,
+ephemeral credential exclusions and fresh-recipient tests; a live account-seed
+rehearsal and production rollout inventory/approval remain R0-15 work. The
+[cutover runbook](../runbooks/storage-cutover.md) retains operator data and resets
+none. Actual billed cost remains unknown; no product/security gate was closed.
+
+Temporary Worker, container application, bucket and private test-secret files
+were removed after the run. The superseded intermediate image tag is removed;
+the qualified candidate tag is retained. The earlier failed live receipt and
+historical 0.3.7 evidence remain unchanged.

@@ -140,7 +140,16 @@ These constrain every slice. Breaking one is a regression even if its own tests 
 
 ### 4.1 What is verified
 
-- R0-15's expanded 17-case probe ran on the frozen Stow 0.4.0 image and
+- The corrected R0-15 candidate (`metadata-refusal.2`) passed **17/17 fixed live
+  Cloudflare/R2 outcomes: 14 preserved, 3 safely refused, zero failures**.
+  Unsupported metadata writes now return 501 before mutation. Final source
+  `fa5411b` passed native CI (412 Bun + 5 runtime + all 351 Worker/DO tests and
+  native container smoke). [Remediation and receipts](evidence/storage-metadata-remediation-2026-11-14.md).
+  The [retained-data runbook](runbooks/storage-cutover.md) resets no operator data.
+  Live account-seed rehearsal and production cutover remain open; no product or
+  security gate closes from this fixed synthetic qualification.
+
+- The initial unpatched R0-15 probe ran on the frozen Stow 0.4.0 image and
   requested custom shape in live Cloudflare/R2: **14 preserved, 2 registry
   refusals before mutation, 1 metadata failure**. Encrypted split archives,
   cold image start, exact keys, multipart completion, Git, imported session
@@ -215,7 +224,7 @@ now part of the plan rather than a separate report.
 
 | Gate | Question | Status | Remaining evidence | Owner |
 |---|---|---|---|---|
-| **G0** | Do representative coding tasks complete and survive defined failures with correct admission/accounting and measured cost per accepted task? | **OPEN** | R0-1 staging rehearsal; R0-2 frozen task/fault matrix; R0-3 cost/latency baseline; R0-11 deployed container checks and legacy/manual ledger; R0-15 metadata remediation/re-qualification and storage cutover ([live matrix failed](evidence/storage-matrix-live-2026-11-14.json)); R0-16 production replay rollout | platform + operator |
+| **G0** | Do representative coding tasks complete and survive defined failures with correct admission/accounting and measured cost per accepted task? | **OPEN** | R0-1 staging rehearsal; R0-2 frozen task/fault matrix; R0-3 cost/latency baseline; R0-11 deployed container checks and legacy/manual ledger; R0-15 live account-seed rehearsal and production cutover ([corrected fixed matrix passed](evidence/storage-metadata-live-2026-11-14.json)); R0-16 production replay rollout | platform + operator |
 | **G1** | Do credential, egress and strict tenant boundaries hold, including resolver outages and repository-controlled probes? | **OPEN** | R1-3 deployed lifecycle proof; R1-5/6/8 strict identity, scoped keys, quotas; R1-7a/7/9 real-container egress and cross-tenant enforcement; [R0-19 confirms current exposure](evidence/r0-19-2026-11-14.json) | security + platform |
 | **G1-C** | Can a non-Slack client use stable turns, questions, permissions, cancellation, reconnect and recovery solely through the public API? | **OPEN** | R1-4a sign-off and implementation; R1-4b neutral interactions; R1-4c reference-client conformance | API + connector |
 | **G2** | Can five external teams install in their own accounts, integrate, repeat work, and upgrade/restore without builder intervention? | **NOT STARTED** | R2-2/3/4/6/7/8; R2-9; five pilots including one independent public-API repo-to-draft-PR integration | pilot owner |
@@ -256,7 +265,7 @@ alongside W1–W3 but closes no product gate. W5 waits for G1 + G1-C.
 | **W1** | **R0-2** | Frozen representative task/fault matrix | M | R0-1, R0-15 cutover | ≥10 predeclared coding tasks over ≥2 repos; accepted changes/checks/restart survival reported with all attempts in the denominator |
 | **W1** | **R0-3** | Cost and latency baseline | M | R0-2 | Cold/warm p50/p95, checkpoint/restore, recovery, interventions, container/R2/model cost per accepted task; unknowns stay unknown |
 | **W1** | **R0-11** | Deployed checks for R0-10/R0-11/R0-13 and the legacy/manual ledger | M | R0-15 | Audit 29/30/31/33 regressions pass in a deployed container; unprovable legacy cases named with their permanent marker |
-| **W1** | **R0-15** | Storage production cutover and full recovery inventory — live metadata defect recorded | L | — | [Live matrix receipt](evidence/storage-matrix-live-2026-11-14.json): 14 preserved, 2 registry refusals, 1 metadata failure. Fix accepted metadata loss or refuse unsupported mutation before writes; re-qualify the current artifact/shape, cover remaining account-seed/cutover inventory, name retained/reset operator data and update runbook |
+| **W1** | **R0-15** | Storage production cutover and full recovery inventory — corrected fixed matrix qualified | L | — | [Corrected live receipt](evidence/storage-metadata-live-2026-11-14.json): 14 preserved, 3 safely refused, zero failures. Native CI passes. Complete live account-seed rehearsal and remaining cutover inventory, then review the [retained-data runbook](runbooks/storage-cutover.md) and production rollout; no operator data reset proposed |
 | **W1** | **R0-16** | Public replay production rollout | S | — | `Last-Event-ID` forwarding and reset path live; snapshot-vs-delta semantics documented; no prompt resend on reconnect |
 | **W1** | **R0-20** | Message delivery modes: durable FIFO queue, steer, interrupt-with-follow-up | L | R0-17, R0-18 | Default queue accepts multiple messages FIFO across restart; full queue refuses without loss; steer joins the active turn with no new hold; interrupt settles before the follow-up; ambiguous interrupt does not duplicate; Slack/HTTP parity; tests |
 | **W2** | **R1-7a** | Disposable credential/egress feasibility proof | M | R0-19 | Synthetic provider/git credentials injected outside the sandbox; default-deny egress proven for provider HTTP/SSE, clone/fetch, packages; unsupported paths rejected; OpenCode self-approval residual recorded |
@@ -371,13 +380,13 @@ the cutover receipt. Update README and runbook in the same change.
 The first expanded live matrix is complete and failed: acknowledged metadata
 does not round-trip Cache-Control, Content-Disposition or Content-Encoding.
 The [downstream safe-refusal patch](evidence/storage-metadata-remediation-2026-11-14.md)
-now rejects those unsupported properties before mutation, with SDK regressions
-passing against the isolated release source. Native CI and corrected live
-qualification are pending. Resolve that native Stow contract before re-qualification; do not weaken the
-probe to treat silent metadata loss as an unsupported safe refusal. The other
-16 fixed cases passed their declared observations once. Account-seed isolation
-and the production retained/reset-data inventory still need current-pair cutover
-evidence. Keep the successful 0.3.7 receipts historical.
+now rejects those unsupported properties before mutation, including malformed
+multipart-selector fallthrough. Native CI and the corrected fixed live matrix
+pass: 14 preserved and 3 safe refusals. This qualifies the safe-refusal contract,
+not full metadata persistence. Keep the original failure receipt. Account-seed
+isolation passed native smoke; live account-seed rehearsal and the production
+retained/reset-data inventory still need current-pair cutover evidence. Keep the
+successful 0.3.7 receipts historical.
 The [prepared cutover runbook](runbooks/storage-cutover.md) retains operator data
 and intentionally resets none; it is not production approval.
 
@@ -455,16 +464,14 @@ fallback. No WASM/AgentOS rewrite, no stow POSIX shim, no snapshot-first recover
 4. **CI — DONE**: W0 `7626726` is pushed and native `check` + `container-smoke`
    passed in [run `43633250236`](https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43633250236).
    This qualifies that source/image build, not the remaining live product gates.
-5. **R0-15 — LIVE MATRIX FAILED ON METADATA**: the expanded probe and 11
-   offline contracts are ready. The user approved one isolated live run with a
-   $1 operational budget and 30-minute window. The cached image was republished
-   with the same frozen digest; 14 cases were preserved, 2 registry faults were
-   refused and accepted metadata lost three headers. [Evidence and next action](evidence/storage-matrix-2026-11-14.md).
-   A source-pinned downstream refusal patch and SDK regressions are now prepared.
-   Next pass native CI and repeat qualification on the corrected frozen candidate
-   before production cutover. See the [remediation record](evidence/storage-metadata-remediation-2026-11-14.md)
-   and [retained-data runbook](runbooks/storage-cutover.md).
-   No further provisioning or production reset is implied by this completed run.
+5. **R0-15 — CORRECTED FIXED MATRIX PASSED**: downstream `metadata-refusal.2`
+   rejects unsupported properties before mutation. Native CI on `fa5411b` is
+   green, including all 351 Worker regressions and native smoke. The approved
+   corrected live run passed 17/17 fixed outcomes (14 preserved, 3 refused) and
+   cleaned up its temporary resources. [Remediation and receipts](evidence/storage-metadata-remediation-2026-11-14.md).
+   Next complete the live account-seed rehearsal and review the production
+   [retained-data runbook](runbooks/storage-cutover.md). It proposes no resets;
+   production cutover and all product/security gates remain open.
 6. **R1-4a**: circulate the seven decisions (including the delivery model) for
    API/product sign-off. No code until they are locked.
 
@@ -670,6 +677,13 @@ status field.
 7. **Truthfulness**: no gate closes on plans, builds, mocks or pattern strings.
 
 ## 11. Change log
+
+- **2026-11-14 (R0-15 metadata remediation)** — added a source-pinned downstream
+  refusal patch and SDK/selector regressions; native CI on `fa5411b` passed the
+  complete consumer gate and independently verified the corrected binary hash.
+  The corrected frozen image passed 17/17 live fixed outcomes. Recorded safe
+  receipts and a no-reset cutover runbook; removed temporary resources. Live
+  account-seed rehearsal and production cutover remain open.
 
 - **2026-11-14 (R0-15 expanded live matrix)** — implemented the versioned
   17-case recovery probe, raw signed-path transport, imported synthetic history,

@@ -10,7 +10,7 @@ import { digest } from "./s3-probe-client"
 
 // Local evidence only, intentionally outside the green test gate. Exit 2 records
 // observed matrix failures. No network, volume mounts, account credentials or R2.
-const image = process.env.IMAGE ?? "cf-opencode-shape-ab:stow040-3d71de1"
+const image = process.env.IMAGE ?? "cf-opencode-metadata-candidate:fa5411b"
 const token = "R0-15-SYNTHETIC-CONTROL-TOKEN"
 const program = resolve(import.meta.dir, "../../.wrangler/native-storage-preflight/probe.js")
 const scratch = mkdtempSync(join(tmpdir(), "aboiteau-matrix-"))

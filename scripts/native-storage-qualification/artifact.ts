@@ -1,9 +1,12 @@
 /** Frozen R0-15 candidate; changing any pin requires a new qualification receipt. */
 export const QUALIFICATION_ARTIFACT = {
-  image: "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-shape-ab@sha256:2cd03c57e7458d337fde892cb6a729969e5dd55d6e3f61d01f0ac67068fcc2ba",
+  image: "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-metadata-candidate@sha256:4fe5c456f39903be5cbba5027a5d00f1961ac37fb63c7e6a3493c09af2903f24",
   stowVersion: "0.4.0",
+  stowPatch: "metadata-refusal.2",
+  stowSourceCommit: "3bb3e890bbe56f11dd783c2ccfb9bd2813156919",
+  stowPatchSHA256: "054b8b091a052189af1d4e17d2464b9a2a95b5fa55421a8f3b9358c326c7d014",
   controllerSHA256: "0ec5e1e2dff12951041e837cab3aa877701f1d02359f6ecc8650e1cf20c8cace",
-  binarySHA256: "6f0f247912de4c4d5d296a3176fe291b7c29717498f5778d920949d4025420b6",
+  binarySHA256: "39615975e58008a60a94b0c696e9ee46aa8dba77e1899e5297dcb4f5010e3174",
   profile: "custom-1cpu-2gib",
   instance: { vcpu: 1, memoryMib: 2048, diskMb: 8192 },
 } as const

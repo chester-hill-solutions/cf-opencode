@@ -125,7 +125,7 @@ export class QualificationConversation extends BaseConversation {
       this.requireCurrentReceipt(existing)
       if (existing.stage === "prepared") {
         return Response.json({ ok: true, stage: existing.stage, workspaceID: existing.workspaceID, image: existing.image,
-          stowVersion: QUALIFICATION_ARTIFACT.stowVersion, runtime: existing.runtime,
+          stowVersion: QUALIFICATION_ARTIFACT.stowVersion, stowPatch: QUALIFICATION_ARTIFACT.stowPatch, runtime: existing.runtime,
           preparationPassed: preparationPassed(existing.firstProbe.matrix) && existing.sessionResult.disposition === "prepared",
           matrix: existing.firstProbe.matrix, sessionResult: existing.sessionResult })
       }
@@ -207,7 +207,7 @@ export class QualificationConversation extends BaseConversation {
     }
     await this.ctx.storage.put(QUALIFICATION_STATE_KEY, receipt)
     return Response.json({ ok: true, stage: receipt.stage, workspaceID: receipt.workspaceID, image: receipt.image,
-      stowVersion: QUALIFICATION_ARTIFACT.stowVersion, runtime: receipt.runtime,
+      stowVersion: QUALIFICATION_ARTIFACT.stowVersion, stowPatch: QUALIFICATION_ARTIFACT.stowPatch, runtime: receipt.runtime,
       preparationPassed: preparationPassed(receipt.firstProbe.matrix) && receipt.sessionResult.disposition === "prepared",
       matrix: receipt.firstProbe.matrix, sessionResult: receipt.sessionResult })
   }
@@ -373,6 +373,7 @@ export class QualificationConversation extends BaseConversation {
       controllerSHA256: receipt.controllerSHA256,
       binarySHA256: receipt.binarySHA256,
       stowVersion: QUALIFICATION_ARTIFACT.stowVersion,
+      stowPatch: QUALIFICATION_ARTIFACT.stowPatch,
       runtime: receipt.runtime,
       markerSHA256: {
         directFile: receipt.directMarkerSHA256,

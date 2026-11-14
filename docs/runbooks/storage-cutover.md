@@ -1,10 +1,12 @@
 # R0-15 storage cutover runbook
 
-Status: **prepared; production cutover not authorized or qualified**.
+Status: **prepared; fixed candidate matrix passed; production rollout remains pending**.
 The [roadmap](../roadmap.md) owns scheduling and gates. The first live matrix
 [failed on metadata](../evidence/storage-matrix-2026-11-14.md). A downstream
 [Stow patch](../../patches/stow/README.md) refuses unsupported object metadata
-before mutation; its corrected candidate must pass qualification before rollout.
+before mutation. Its corrected candidate passed the fixed live matrix and native
+CI; see the [remediation result](../evidence/storage-metadata-remediation-2026-11-14.md).
+Remaining inventory, live account-seed checks and production approval still apply.
 
 ## Retained and reset data
 

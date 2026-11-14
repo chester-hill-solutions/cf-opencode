@@ -7,7 +7,8 @@ It sends no model prompt. The fixed authenticated API exposes only POST `/prepar
 
 Use a unique new Worker name/DO namespace, a newly created empty R2 bucket and
 fresh `API_TOKEN` and `VAULT_MASTER_KEY` secrets. Never reuse production bindings
-or credentials. The current candidate is Stow **0.4.0** and the explicit
+or credentials. The current candidate is Stow **0.4.0** with downstream
+**metadata-refusal.2** ([patch and scope](../../patches/stow/README.md)) and the explicit
 `custom-1cpu-2gib` profile (1 vCPU, 2048 MiB memory, 8192 MB disk), with a 300 s
 idle window. Image, controller/binary hashes and requested shape are frozen in
 [`artifact.ts`](artifact.ts); the Worker and generated container probe use those
@@ -65,7 +66,7 @@ the normal test gate and does not qualify Cloudflare/R2 or its custom shape.
 For a later **live** run, fill the template's account/bucket/image placeholders
 in a separate config with a unique Worker name and newly created empty bucket.
 The image must match `artifact.ts`. Confirm remote digest availability before
-provisioning: the earlier shape experiment removed its registry tag. If copying
+provisioning; keep source/binary/patch/image provenance in the receipt. If copying
 the config elsewhere, resolve its `main` and schema paths accordingly. The
 template explicitly sets `CONTAINER_INSTANCE_PROFILE=custom-1cpu-2gib` and
 `IDLE_CLOSE_SECONDS=300`.
