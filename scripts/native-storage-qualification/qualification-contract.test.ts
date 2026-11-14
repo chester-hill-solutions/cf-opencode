@@ -5,6 +5,7 @@ import { NATIVE_STORAGE_PROBE } from "./container-probe"
 import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
+import { ALL_CASE_IDS, CONTAINER_CASE_IDS, MATRIX_VERSION, matrixPassed, preparationPassed, projectMatrix, type CaseResult } from "./matrix"
 
 describe("staging qualification safety contract", () => {
   const frozenRuntime = {
@@ -83,6 +84,7 @@ describe("staging qualification safety contract", () => {
   })
 
   test("probe projection drops unexpected credential-like output fields", () => {
+    const matrix = CONTAINER_CASE_IDS.map((id): CaseResult => ({ id, disposition: "preserved", reason: "bytes_restored" }))
     const projected = projectSafeProbe({
       mode: "restored",
       ok: true,
@@ -95,6 +97,9 @@ describe("staging qualification safety contract", () => {
       controllerSHA256: "a".repeat(64),
       binarySHA256: "b".repeat(64),
       secretAccessKey: "synthetic-secret-must-not-survive",
+      matrixVersion: MATRIX_VERSION,
+      matrix: matrix.map((row) => ({ ...row, authorization: "synthetic-secret-must-not-survive",
+        checks: { bytes: true, secretAccessKey: "synthetic-secret-must-not-survive" } })),
     })
 
     expect(projected).toEqual({
@@ -108,7 +113,31 @@ describe("staging qualification safety contract", () => {
       agentUID: 1001,
       controllerSHA256: "a".repeat(64),
       binarySHA256: "b".repeat(64),
+      matrixVersion: MATRIX_VERSION,
+      matrix: matrix.map((row) => ({ ...row, checks: { bytes: true } })),
     })
     expect(projected).not.toHaveProperty("secretAccessKey")
+    expect(JSON.stringify(projected)).not.toContain("synthetic-secret-must-not-survive")
+  })
+
+  test("a complete green matrix needs every case exactly once with its required disposition", () => {
+    const rows = ALL_CASE_IDS.map((id): CaseResult => ({ id,
+      disposition: id.startsWith("registry-") ? "refused_before_mutation" : "preserved",
+      reason: id.startsWith("registry-") ? "registry_refused" : "bytes_restored" }))
+    expect(matrixPassed(rows)).toBe(true)
+    expect(matrixPassed(rows.map((row) => row.id === "object-metadata" ? { ...row, checks: { cacheControl: false } } : row))).toBe(false)
+    expect(matrixPassed(rows.slice(1))).toBe(false)
+    expect(matrixPassed([...rows.slice(1), rows[1]])).toBe(false)
+    for (const disposition of ["failed", "not_exercised", "prepared", "refused_before_mutation"] as const) {
+      expect(matrixPassed(rows.map((row) => row.id === "git-state" ? { ...row, disposition } : row))).toBe(false)
+    }
+    expect(matrixPassed(rows.map((row) => row.id === "registry-missing" ? { ...row, disposition: "preserved" } : row))).toBe(false)
+    expect(projectMatrix(rows.map((row) => ({ ...row, reason: "credential-containing arbitrary error" })), ALL_CASE_IDS)).toBeUndefined()
+    const prepared = CONTAINER_CASE_IDS.map((id): CaseResult => ({ id, disposition: "prepared", reason: "awaiting_cold_restore" }))
+    expect(preparationPassed(prepared)).toBe(true)
+    expect(preparationPassed(prepared.map((row) => row.id === "key-natural" ? { ...row, checks: { bytes: false } } : row))).toBe(false)
+    expect(matrixPassed(prepared)).toBe(false)
+    expect(preparationPassed(prepared.map((row) => ({ ...row, disposition: "failed" })))).toBe(false)
+    expect(projectMatrix(rows.map((row) => ({ ...row, checks: { bytes: "not-a-boolean" } })), ALL_CASE_IDS)).toBeUndefined()
   })
 })
