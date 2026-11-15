@@ -4,6 +4,7 @@ import { connect as netConnect } from "node:net"
 import { PROVIDER_PROXY_HOST, PROVIDER_PROXY_PATH } from "../../src/provider-egress"
 import { providerQualificationPassed, type ProviderQualificationResult } from "./result"
 import { scanSameUIDEnvironments, scanStateFiles } from "./scans"
+import { ChatCompletionSSEParser } from "./sse"
 
 const STATE = "/var/lib/aboiteau/state"
 const WORKSPACE = "/workspace"
@@ -142,23 +143,20 @@ async function sseResponse(token: string, model: string): Promise<{ ok: boolean;
       return { ok: false, chunks: 0 }
     }
     const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let data = ""
+    const parser = new ChatCompletionSSEParser(MAX_RESPONSE)
     let bytes = 0
-    let chunks = 0
     while (true) {
       const next = await reader.read()
       if (next.done) break
-      chunks++
       bytes += next.value.byteLength
       if (bytes > MAX_RESPONSE) {
         await reader.cancel()
-        return { ok: false, chunks }
+        return { ok: false, chunks: 0 }
       }
-      data += decoder.decode(next.value, { stream: true })
+      parser.push(next.value)
     }
-    data += decoder.decode()
-    return { ok: data.includes(STREAM_MARKER), chunks }
+    const parsed = parser.finish()
+    return { ok: parsed.valid && parsed.content.includes(STREAM_MARKER), chunks: parsed.chunks }
   } catch {
     return { ok: false, chunks: 0 }
   }

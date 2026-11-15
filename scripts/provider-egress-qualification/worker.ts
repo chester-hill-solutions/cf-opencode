@@ -235,6 +235,7 @@ export class ProviderEgressQualification extends DurableObject<QualificationEnv>
     if (!sdkMarker) return error(503, "OpenCode SDK did not consume the fixed streamed marker; cleanup is required")
 
     const process = await container.exec(["bun", "-e", PROVIDER_EGRESS_PROBE], {
+      cwd: "/workspace",
       user: "1001:1001",
       env: { PROVIDER_PROXY_TOKEN: grant.token, PROVIDER_PROXY_MODEL: MODEL },
       signal: AbortSignal.timeout(120_000),
