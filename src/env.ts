@@ -1,4 +1,6 @@
 export interface Env {
+  /** First provider-proxy credential; read by the Worker entrypoint only. */
+  PROVIDER_PROXY_API_KEY?: string
   /** Durable pending-message capacity, integer 1..100; default 10. */
   QUEUE_LIMIT?: string
   /** Slack adapter is optional; without these the Slack routes return 503. */

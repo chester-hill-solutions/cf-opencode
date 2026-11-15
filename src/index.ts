@@ -19,6 +19,7 @@ import { parseObjectJson } from "./http-json"
 
 export { Conversation } from "./conversation"
 export { Settings } from "./settings-do"
+export { ProviderEgress } from "./provider-egress-entrypoint"
 
 const DECISIONS = {
   oc_perm_once: "once",

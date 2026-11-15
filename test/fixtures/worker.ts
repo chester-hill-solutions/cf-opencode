@@ -1,4 +1,5 @@
 export { default } from "../../src/index"
 export { Conversation } from "../../src/conversation"
 export { Settings } from "../../src/settings-do"
+export { ProviderEgress } from "../../src/provider-egress-entrypoint"
 export { LifecycleProbe } from "./lifecycle-host"

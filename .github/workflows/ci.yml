@@ -18,6 +18,7 @@ jobs:
       - run: bun install --cwd runtime/opencode --frozen-lockfile
       - run: bun run check:config
       - run: bun run typecheck
+      - run: bun scripts/provider-egress-qualification/preflight.ts
       - run: bun run build:ui
       - run: bun run test
       - run: bun run test:workers

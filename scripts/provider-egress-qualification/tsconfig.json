@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "types": ["@cloudflare/workers-types", "bun"] },
+  "include": ["*.ts", "../../src/provider-egress.ts", "../../src/provider-egress-entrypoint.ts", "../../src/provider-proxy-config.ts", "../../.wrangler/provider-egress-preflight/provider-egress-mainmodule.d.ts"]
+}

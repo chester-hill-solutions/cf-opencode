@@ -541,6 +541,73 @@ release script is permission to deploy production. Never roll old singleton-only
 code back onto a queue with multiple entries: preserve/export or drain it first.
 Keep schema/retry migration limits and remaining R0-15/G1/G1-C/G2 gates open.
 
+### 5.5 Active credential-proxy slice — R1-7a
+
+**Mission.** Implement one usable provider boundary and a disposable native
+qualification path: OpenCode uses a scoped proxy token, while the upstream key
+stays in a trusted Worker. This is the first feasibility slice of R1-7a;
+production migration and full R1-7 enforcement remain separate work.
+
+**Implementation status.** Code and independent review are complete. Local
+verification passed 465 Bun + 5 runtime + 370 Worker/DO tests, all typing/config/UI
+checks and the offline fixture bundle. Native CI and live qualification remain
+pending. [Evidence](evidence/provider-egress-prototype-2026-11-14.md).
+
+**Decision from current source/docs.** Use an exact virtual HTTP hostname,
+`provider.aboiteau`, intercepted by a `WorkerEntrypoint`. Its only upstream is
+`https://api.openai.com/v1/chat/completions`. Register the intercept before every
+start with `enableInternet:false`. This uses Cloudflare's documented internal
+[bindings gateway](https://developers.cloudflare.com/containers/configuration/workers-connections/)
+and [outbound control](https://developers.cloudflare.com/containers/configuration/outbound-traffic/),
+without adding TLS interception/CA changes to the pinned runtime image. Request
+URL/Host, path, model, method, token and expiry are still checked inside the
+trusted handler. Redirects never receive forwarded credentials.
+
+**Upstream reuse check.** The inspected Cloudflare
+[runner outbound handler](https://github.com/cloudflare/sandbox-sdk/blob/main/examples/coding-agents/runner/outbound.ts)
+(blob `9cb80650360b188a3dcb431fd08ee3310a47685a`) already uses native
+intercepts and Worker-side credential injection. Exo's
+[network adapter](https://github.com/exoharness/exo/blob/1eeab021a854dc8db502d82b9fe656cbaf044671/exoharness/cloudflare/src/network.ts)
+uses trusted identity props and manual redirects. Reuse that platform pattern;
+the new code adds only the single-provider grant, request/model policy and
+qualification checks. Guest HTTP terminates at the internal binding; credentialed
+upstream requests are rebuilt with a fixed HTTPS destination. Broader component
+reuse and comparative outcomes remain C0 work.
+
+**Scope and finish line.** A fresh fixed qualification DO runs the current pinned
+image, a custom OpenAI-compatible provider and a synthetic upstream. Actual
+OpenCode output must consume the synthetic SSE; repository-controlled tests must
+read the proxy token but find no upstream key in readable state/process data.
+Portable state capture must contain no upstream key. Unmatched HTTP/HTTPS and
+raw network probes must be denied under native egress policy. Fault cases cover
+wrong scope/token/model/host, expiry, redirects and unavailable upstream. Streaming
+must return incrementally, with cancellation and generic secret-free errors.
+
+**Boundaries.** Existing seeds/checkpoints contain credentials; the proof requires
+fresh state and refuses reuse. There is no silent archive migration, provider-key
+sync or direct-network fallback. No real provider inference is needed: the
+qualification upstream is deterministic and synthetic. Existing production
+configuration stays outside this prototype. Short-lived proxy capabilities are
+not long-lived provider keys; production renewal/restore and Git/package egress
+are later R1-7a/R1-7 slices. No G1, tenant-isolation or general credential-removal
+claim follows from mocked tests or an offline bundle.
+
+| ID | Deliverable | Owner / model | Acceptance |
+|---|---|---|---|
+| R1-7a.1 | Scoped grant + strict streaming forwarder and Worker entrypoint | queue_core / persistent Luna medium | Synthetic auth/expiry/routing/model/redirect/error/SSE regressions |
+| R1-7a.2 | Managed provider config and fixed agent-UID probe | exposure_contracts / persistent Luna medium | Valid installed-schema config; real key never a config/probe input |
+| R1-7a.3 | Fixed native qualification DO, synthetic upstream, preflight and cleanup | seed_rehearsal / persistent Luna medium | Fresh-only, internet disabled, exact intercept, bounded actions/output; cleanup on manual/alarm paths |
+| R1-7a.4 | Contract/integration review, required gate, CI and receipts | parent | Cross-owner findings resolved; local/native/live evidence distinguished |
+
+**Verification and backout.** Pure protocol/config tests and credential-free
+Worker tests precede native CI and any isolated live proof. Prepare concrete
+source/config/resource/budget/cleanup details before an external upload. A live
+run uses fresh synthetic secrets and disposable resources with a $1/30-minute
+limit; it never touches production archives or real provider credentials. Remove
+the qualification Worker/container and synthetic secrets afterward. Failed or
+unavailable enforcement keeps R1-7a and G1 open; do not substitute an
+Internet-enabled proxy and call the boundary enforced.
+
 ## 6. Gate definitions and exit criteria
 
 ### G0 — dependable task completion
