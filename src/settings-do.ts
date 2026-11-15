@@ -8,7 +8,7 @@ import {
 } from "./settings"
 import { accountVault, workspaceID } from "./vault"
 import { evaluateAlerts } from "./alerts"
-import { decideLease } from "./leases"
+import { decideContainerLease } from "./leases"
 import type { Env } from "./env"
 import type { VaultKeyValueStorage } from "@chester-hill-solutions/vault/core"
 import {
@@ -780,7 +780,7 @@ export class Settings extends DurableObject<Env> {
       6 * 60 * 60_000,
     )
     const active = await this.activeLeases()
-    const decision = decideLease({ leases: active, id, now: Date.now(), ttlMs: ttl, cap })
+    const decision = decideContainerLease({ leases: active, id, now: Date.now(), ttlMs: ttl, cap })
     if (!decision.grant) {
       return Response.json(
         { ok: false, cap, active: decision.active, retryAt: decision.retryAt },
