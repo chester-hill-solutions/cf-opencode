@@ -548,10 +548,15 @@ qualification path: OpenCode uses a scoped proxy token, while the upstream key
 stays in a trusted Worker. This is the first feasibility slice of R1-7a;
 production migration and full R1-7 enforcement remain separate work.
 
-**Implementation status.** Code and independent review are complete. Local
-verification passed 465 Bun + 5 runtime + 370 Worker/DO tests, all typing/config/UI
-checks and the offline fixture bundle. Native CI and live qualification remain
-pending. [Evidence](evidence/provider-egress-prototype-2026-11-14.md).
+**Implementation status.** The first provider slice is implemented and live
+qualified at `ac5f9bf`: a real OpenCode streamed reply, agent-UID exposure probes,
+default-deny network probes, fixed failure cases and a secret-free portable state
+archive passed. Native CI passed 475 Bun + 5 runtime + 370 Worker/DO tests, all
+typing/config/UI/offline checks and native container smoke. Cleanup of
+all disposable Workers, container applications and synthetic secrets is confirmed.
+This does not close R1-7a or G1.
+[Evidence](evidence/provider-egress-prototype-2026-11-14.md) ·
+[Live receipts](evidence/provider-egress-native-2026-11-14.json).
 
 **Decision from current source/docs.** Use an exact virtual HTTP hostname,
 `provider.aboiteau`, intercepted by a `WorkerEntrypoint`. Its only upstream is

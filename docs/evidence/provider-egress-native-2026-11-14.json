@@ -1,0 +1,401 @@
+{
+  "schemaVersion": 1,
+  "qualificationPassed": true,
+  "liveRetryPending": false,
+  "cleanupFinalizationStatus": "complete",
+  "ci": [
+    {
+      "runID": "43661716788",
+      "sourceCommit": "940c008ef3934f7be42e6fcde587cdd10866bb20",
+      "status": "success",
+      "summary": "Both jobs passed."
+    },
+    {
+      "runID": "43662671508",
+      "sourceCommit": "f5a30bd1d174803ef97631f0bee8868d317a2176",
+      "status": "success"
+    },
+    {
+      "runID": "43662928092",
+      "sourceCommit": "c43e13e95196b2610a80a86c813cdac296ac5cf8",
+      "status": "success"
+    },
+    {
+      "runID": "43663273967",
+      "sourceCommit": "fec77ab72fd274eb814c831e129ecd67b8ea2991",
+      "status": "success",
+      "counts": {
+        "bun": 472,
+        "worker": 370,
+        "runtime": 5
+      }
+    },
+    {
+      "runID": "43663561329",
+      "sourceCommit": "ac5f9bf78260637a03655ef1b61b9d4cea7ba8bd",
+      "status": "success",
+      "counts": {
+        "bun": 475,
+        "runtime": 5,
+        "worker": 370
+      },
+      "checkStatus": "success",
+      "containerSmokeStatus": "success"
+    }
+  ],
+  "liveAttempts": [
+    {
+      "sourceCommit": "940c008ef3934f7be42e6fcde587cdd10866bb20",
+      "name": "aboiteau-egress-r1-7a-202611150112-544e7a",
+      "workerVersion": "66af3967-4705-41b1-b644-a3921c499017",
+      "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-metadata-candidate@sha256:4fe5c456f39903be5cbba5027a5d00f1961ac37fb63c7e6a3493c09af2903f24",
+      "profile": "custom-1cpu-2gib",
+      "instance": {
+        "vcpu": 1,
+        "memoryMib": 2048,
+        "diskMb": 8192
+      },
+      "operationalBudgetUSD": 1,
+      "maxWallClockMs": 1800000,
+      "syntheticOnly": true,
+      "productionBindings": false,
+      "guards": {
+        "passed": true,
+        "outcomes": [
+          {
+            "name": "unauthorizedPrepare",
+            "status": 401,
+            "passed": true
+          },
+          {
+            "name": "methodRefused",
+            "status": 404,
+            "passed": true
+          },
+          {
+            "name": "callerBodyRefused",
+            "status": 404,
+            "passed": true
+          },
+          {
+            "name": "genericProxyRefused",
+            "status": 404,
+            "passed": true
+          },
+          {
+            "name": "verifyBeforePrepareRefused",
+            "status": 409,
+            "passed": true
+          }
+        ],
+        "observedAt": "2026-11-15T01:15:41.577Z"
+      },
+      "prepare": {
+        "status": 503,
+        "durationMs": 18651,
+        "error": "provider egress qualification operation failed",
+        "passed": false,
+        "observedAt": "2026-11-15T01:16:14.610Z"
+      },
+      "cleanup": {
+        "status": 200,
+        "runtimeStopped": true,
+        "grantForgotten": true,
+        "workerDeleted": true,
+        "matchingContainerApplicationsRemaining": 0,
+        "localSyntheticSecretsDeleted": true,
+        "confirmedAt": "2026-11-15T01:22:21.324Z",
+        "observedAt": "2026-11-15T01:19:03.383Z"
+      }
+    },
+    {
+      "sourceCommit": "c43e13e95196b2610a80a86c813cdac296ac5cf8",
+      "name": "aboiteau-egress-r1-7a-202611150120-c8e3af",
+      "workerVersion": "3ec3691d-73c4-46ec-a99d-fa821c0dd700",
+      "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-metadata-candidate@sha256:4fe5c456f39903be5cbba5027a5d00f1961ac37fb63c7e6a3493c09af2903f24",
+      "profile": "custom-1cpu-2gib",
+      "instance": {
+        "vcpu": 1,
+        "memoryMib": 2048,
+        "diskMb": 8192
+      },
+      "operationalBudgetUSD": 1,
+      "maxWallClockMs": 1800000,
+      "syntheticOnly": true,
+      "productionBindings": false,
+      "guards": {
+        "passed": true,
+        "outcomes": [
+          {
+            "name": "unauthorizedPrepare",
+            "status": 401,
+            "passed": true
+          },
+          {
+            "name": "methodRefused",
+            "status": 404,
+            "passed": true
+          },
+          {
+            "name": "callerBodyRefused",
+            "status": 404,
+            "passed": true
+          },
+          {
+            "name": "genericProxyRefused",
+            "status": 404,
+            "passed": true
+          },
+          {
+            "name": "verifyBeforePrepareRefused",
+            "status": 409,
+            "passed": true
+          }
+        ],
+        "observedAt": "2026-11-15T01:24:49.061Z"
+      },
+      "prepare": {
+        "status": 200,
+        "durationMs": 4316,
+        "stage": "prepared",
+        "qualificationPassed": false,
+        "artifactMatches": true,
+        "sdkMarker": false,
+        "observedAt": "2026-11-15T01:24:53.403Z",
+        "controllerSHA256": "0ec5e1e2dff12951041e837cab3aa877701f1d02359f6ecc8650e1cf20c8cace",
+        "binarySHA256": "39615975e58008a60a94b0c696e9ee46aa8dba77e1899e5297dcb4f5010e3174"
+      },
+      "verify": {
+        "status": 503,
+        "durationMs": 32913,
+        "error": "OpenCode SDK did not consume the fixed streamed marker; cleanup is required",
+        "passed": false,
+        "observedAt": "2026-11-15T01:25:34.850Z"
+      },
+      "cleanup": {
+        "status": 200,
+        "runtimeStopped": true,
+        "grantForgotten": true,
+        "workerDeleted": true,
+        "matchingContainerApplicationsRemaining": 0,
+        "localSyntheticSecretsDeleted": true,
+        "confirmedAt": "2026-11-15T01:28:22.220Z",
+        "observedAt": "2026-11-15T01:25:44.415Z"
+      }
+    },
+    {
+      "sourceCommit": "fec77ab72fd274eb814c831e129ecd67b8ea2991",
+      "name": "aboiteau-egress-r1-7a-202611150128-03e67c",
+      "workerVersion": "14ce5519-d2de-4c91-9101-ddae4d5c6258",
+      "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-metadata-candidate@sha256:4fe5c456f39903be5cbba5027a5d00f1961ac37fb63c7e6a3493c09af2903f24",
+      "profile": "custom-1cpu-2gib",
+      "instance": {
+        "vcpu": 1,
+        "memoryMib": 2048,
+        "diskMb": 8192
+      },
+      "operationalBudgetUSD": 1,
+      "maxWallClockMs": 1800000,
+      "syntheticOnly": true,
+      "productionBindings": false,
+      "guards": {
+        "passed": true,
+        "outcomes": [
+          {
+            "name": "unauthorizedPrepare",
+            "status": 401,
+            "passed": true
+          },
+          {
+            "name": "methodRefused",
+            "status": 404,
+            "passed": true
+          },
+          {
+            "name": "callerBodyRefused",
+            "status": 404,
+            "passed": true
+          },
+          {
+            "name": "genericProxyRefused",
+            "status": 404,
+            "passed": true
+          },
+          {
+            "name": "verifyBeforePrepareRefused",
+            "status": 409,
+            "passed": true
+          }
+        ],
+        "observedAt": "2026-11-15T01:29:37.937Z"
+      },
+      "prepare": {
+        "status": 200,
+        "durationMs": 4062,
+        "stage": "prepared",
+        "qualificationPassed": false,
+        "artifactMatches": true,
+        "sdkMarker": false,
+        "observedAt": "2026-11-15T01:29:42.029Z",
+        "controllerSHA256": "0ec5e1e2dff12951041e837cab3aa877701f1d02359f6ecc8650e1cf20c8cace",
+        "binarySHA256": "39615975e58008a60a94b0c696e9ee46aa8dba77e1899e5297dcb4f5010e3174"
+      },
+      "verify": {
+        "status": 503,
+        "durationMs": 10838,
+        "error": "OpenCode SDK did not consume the fixed streamed marker; cleanup is required",
+        "sdkFailure": "terminal_error",
+        "passed": false,
+        "probe": {
+          "agentUID1001": true,
+          "cwdIsWorkspace": true,
+          "configHasScopedToken": true,
+          "stateHasUpstreamSecret": false,
+          "stateScanCompleted": true,
+          "stateFilesRead": 44,
+          "envHasUpstreamSecret": false,
+          "sameUIDProcHasUpstreamSecret": false,
+          "sameUIDProcScanCompleted": true,
+          "sameUIDEnvironmentsRead": 3,
+          "ownEnvironmentRead": true,
+          "repoBunTestCanReadUpstreamSecret": false,
+          "repoBunTestCompleted": true,
+          "httpJson": true,
+          "sse": true,
+          "sseChunks": 5,
+          "wrongTokenRejected": true,
+          "wrongModelRejected": true,
+          "wrongPathRejected": true,
+          "hostSpoofRejected": true,
+          "wrongMethodRejected": true,
+          "exampleHttpBlocked": true,
+          "openaiHttpsBlocked": true,
+          "rawIPHttpsBlocked": true,
+          "rawIPTCPBlocked": true
+        },
+        "observedAt": "2026-11-15T01:29:52.895Z"
+      },
+      "cleanup": {
+        "status": 200,
+        "runtimeStopped": true,
+        "grantForgotten": true,
+        "workerDeleted": true,
+        "matchingContainerApplicationsRemaining": 0,
+        "localSyntheticSecretsDeleted": true,
+        "confirmedAt": "2026-11-15T01:32:30.683Z",
+        "observedAt": "2026-11-15T01:30:29.433Z"
+      }
+    },
+    {
+      "sourceCommit": "ac5f9bf78260637a03655ef1b61b9d4cea7ba8bd",
+      "name": "aboiteau-egress-r1-7a-202611150132-db049d",
+      "workerVersion": "0231aaa9-bb9c-4ee1-8a35-9935644e31a5",
+      "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-metadata-candidate@sha256:4fe5c456f39903be5cbba5027a5d00f1961ac37fb63c7e6a3493c09af2903f24",
+      "profile": "custom-1cpu-2gib",
+      "instance": {
+        "vcpu": 1,
+        "memoryMib": 2048,
+        "diskMb": 8192
+      },
+      "operationalBudgetUSD": 1,
+      "maxWallClockMs": 1800000,
+      "syntheticOnly": true,
+      "productionBindings": false,
+      "guards": {
+        "passed": true,
+        "outcomes": [
+          {
+            "name": "unauthorizedPrepare",
+            "status": 401,
+            "passed": true
+          },
+          {
+            "name": "methodRefused",
+            "status": 404,
+            "passed": true
+          },
+          {
+            "name": "callerBodyRefused",
+            "status": 404,
+            "passed": true
+          },
+          {
+            "name": "genericProxyRefused",
+            "status": 404,
+            "passed": true
+          },
+          {
+            "name": "verifyBeforePrepareRefused",
+            "status": 409,
+            "passed": true
+          }
+        ],
+        "observedAt": "2026-11-15T01:33:08.770Z"
+      },
+      "prepare": {
+        "status": 200,
+        "durationMs": 8691,
+        "stage": "prepared",
+        "qualificationPassed": false,
+        "artifactMatches": true,
+        "observedAt": "2026-11-15T01:33:17.489Z",
+        "controllerSHA256": "0ec5e1e2dff12951041e837cab3aa877701f1d02359f6ecc8650e1cf20c8cace",
+        "binarySHA256": "39615975e58008a60a94b0c696e9ee46aa8dba77e1899e5297dcb4f5010e3174"
+      },
+      "verify": {
+        "status": 200,
+        "durationMs": 15340,
+        "stage": "verified",
+        "qualificationPassed": true,
+        "sdkMarker": true,
+        "archiveSecretAbsent": true,
+        "archiveContainsScopedConfig": true,
+        "artifactMatches": true,
+        "expiredGrantRejected": true,
+        "scopeTokenMismatchRejected": true,
+        "upstreamUnavailable": true,
+        "restoredProxyHealthy": true,
+        "probe": {
+          "agentUID1001": true,
+          "cwdIsWorkspace": true,
+          "configHasScopedToken": true,
+          "stateHasUpstreamSecret": false,
+          "stateScanCompleted": true,
+          "stateFilesRead": 44,
+          "envHasUpstreamSecret": false,
+          "sameUIDProcHasUpstreamSecret": false,
+          "sameUIDProcScanCompleted": true,
+          "sameUIDEnvironmentsRead": 3,
+          "ownEnvironmentRead": true,
+          "repoBunTestCanReadUpstreamSecret": false,
+          "repoBunTestCompleted": true,
+          "httpJson": true,
+          "sse": true,
+          "sseChunks": 5,
+          "wrongTokenRejected": true,
+          "wrongModelRejected": true,
+          "wrongPathRejected": true,
+          "hostSpoofRejected": true,
+          "wrongMethodRejected": true,
+          "exampleHttpBlocked": true,
+          "openaiHttpsBlocked": true,
+          "rawIPHttpsBlocked": true,
+          "rawIPTCPBlocked": true
+        },
+        "observedAt": "2026-11-15T01:33:32.895Z",
+        "controllerSHA256": "0ec5e1e2dff12951041e837cab3aa877701f1d02359f6ecc8650e1cf20c8cace",
+        "binarySHA256": "39615975e58008a60a94b0c696e9ee46aa8dba77e1899e5297dcb4f5010e3174"
+      },
+      "cleanup": {
+        "status": 200,
+        "runtimeStopped": true,
+        "grantForgotten": true,
+        "workerDeleted": true,
+        "matchingContainerApplicationsRemaining": 0,
+        "localSyntheticSecretsDeleted": true,
+        "confirmedAt": "2026-11-15T01:35:44.743Z",
+        "observedAt": "2026-11-15T01:33:50.247Z"
+      }
+    }
+  ]
+}
