@@ -9,6 +9,7 @@ import {
   type ProviderProxyScope,
 } from "../../src/provider-egress"
 import { providerProxyConfig } from "../../src/provider-proxy-config"
+import { successfulStartProof } from "./response-proof"
 import { ProviderEgress } from "../../src/provider-egress-entrypoint"
 import { isSettled, latestAssistantReply, type MessageInfo } from "../../src/messages"
 import { QUALIFICATION_ARTIFACT } from "../native-storage-qualification/artifact"
@@ -176,9 +177,7 @@ export class ProviderEgressQualification extends DurableObject<QualificationEnv>
     const merged = await this.execRoot(["bun", "-e", mergeProgram])
     if (!merged) return error(503, "fixed scoped provider configuration failed; cleanup is required")
     const started = await authorized.fetch("http://container/start", { method: "POST", signal: AbortSignal.timeout(120_000) })
-    const startProof = started.ok ? await started.json().catch(() => undefined) as { ok?: unknown } | undefined : undefined
-    await started.body?.cancel()
-    if (!started.ok || startProof?.ok !== true) return error(503, "pinned OpenCode runtime did not start; cleanup is required")
+    if (!(await successfulStartProof(started))) return error(503, "pinned OpenCode runtime did not start; cleanup is required")
     await container.setInactivityTimeout(300_000)
     const artifactMatches = await this.measureArtifactHashes()
     if (!artifactMatches) return error(503, "running container artifact hashes did not match the frozen pins; cleanup is required")
