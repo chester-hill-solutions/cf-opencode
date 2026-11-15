@@ -7,6 +7,7 @@ import {
   type OnboardingState,
 } from "./settings"
 import { accountVault, workspaceID } from "./vault"
+import { decideSecretRead } from "./secret-read-policy"
 import { evaluateAlerts } from "./alerts"
 import { decideLease } from "./leases"
 import type { Env } from "./env"
@@ -666,11 +667,16 @@ export class Settings extends DurableObject<Env> {
     }
 
     if (url.pathname === "/secrets/get" && request.method === "POST") {
+      const body = (await request.json()) as { key?: string }
+      // Decide before touching the vault: a refused name must not be distinguishable
+      // from a missing one, and must not reach decryption at all.
+      const decision = decideSecretRead(body.key)
+      if (!decision.allowed) {
+        return Response.json({ error: "credential is not readable by name" }, { status: 404 })
+      }
       const vault = this.vaultOrError()
       if (vault instanceof Response) return vault
-      const body = (await request.json()) as { key?: string }
-      if (!body.key) return Response.json({ error: "key is required" }, { status: 400 })
-      const value = await vault.getSecret(workspaceID(this.env), body.key)
+      const value = await vault.getSecret(workspaceID(this.env), decision.key)
       return Response.json({ value })
     }
 
