@@ -11,10 +11,10 @@ import {
 import { providerProxyConfig } from "../../src/provider-proxy-config"
 import { successfulStartProof } from "./response-proof"
 import { ProviderEgress } from "../../src/provider-egress-entrypoint"
-import { isSettled, latestAssistantReply, type MessageInfo } from "../../src/messages"
+import { isSettled, latestAssistantReply, turnFailure, type MessageInfo } from "../../src/messages"
 import { QUALIFICATION_ARTIFACT } from "../native-storage-qualification/artifact"
 import { PROVIDER_EGRESS_PROBE } from "../../.wrangler/provider-egress-preflight/probe-source"
-import { providerQualificationPassed, type ProviderQualificationResult } from "./result"
+import { providerQualificationEvidence, providerQualificationPassed, type ProviderQualificationResult } from "./result"
 
 const FIXED_NAME = "R1-7A"
 const ATTEMPT_KEY = "providerEgressQualificationAttempted"
@@ -214,26 +214,6 @@ export class ProviderEgressQualification extends DurableObject<QualificationEnv>
     if (!controlToken) return error(503, "runtime control authorization is unavailable")
     const control = this.authenticatedPort(container.getTcpPort(4001), controlToken)
     const client = makeClient(portFetch(opencodeViaControl(control)))
-    let sdkMarker = false
-    try {
-      const session = await client.session.create({
-        location: { directory: "/workspace" }, title: "r1-7a-provider-egress-qualification",
-      }, { signal: AbortSignal.timeout(20_000) })
-      await client.session.prompt({
-        sessionID: session.id,
-        text: "Return exactly the qualification marker.",
-        delivery: "queue",
-      }, { signal: AbortSignal.timeout(30_000) })
-      const until = Date.now() + 30_000
-      while (Date.now() < until) {
-        const context = await client.session.context({ sessionID: session.id }, { signal: AbortSignal.timeout(5_000) })
-        const messages = context as unknown as MessageInfo[]
-        if (isSettled(messages) && latestAssistantReply(messages) === STREAM_MARKER) { sdkMarker = true; break }
-        await new Promise((resolve) => setTimeout(resolve, 500))
-      }
-    } catch { /* only the positive bounded SDK proof is recorded */ }
-    if (!sdkMarker) return error(503, "OpenCode SDK did not consume the fixed streamed marker; cleanup is required")
-
     const process = await container.exec(["bun", "-e", PROVIDER_EGRESS_PROBE], {
       cwd: "/workspace",
       user: "1001:1001",
@@ -241,13 +221,44 @@ export class ProviderEgressQualification extends DurableObject<QualificationEnv>
       signal: AbortSignal.timeout(120_000),
     })
     const output = await process.output()
-    if (await process.exitCode !== 0 || output.stdout.byteLength > MAX_PROBE_BYTES) {
+    if (output.stdout.byteLength > MAX_PROBE_BYTES) {
       return error(503, "fixed native egress probe failed; cleanup is required")
     }
     let probe: unknown
     try { probe = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(output.stdout)) as unknown }
     catch { return error(503, "fixed native egress probe returned invalid evidence; cleanup is required") }
-    if (!providerQualificationPassed(probe)) return error(503, "native egress or credential boundary assertions failed; cleanup is required")
+    if (!providerQualificationEvidence(probe)) return error(503, "fixed native egress probe returned invalid evidence; cleanup is required")
+    if (await process.exitCode !== 0 || !providerQualificationPassed(probe)) {
+      return Response.json({ ok: false, error: "native egress or credential boundary assertions failed; cleanup is required", probe },
+        { status: 503, headers: { "cache-control": "no-store" } })
+    }
+
+    let sdkMarker = false
+    let sdkStage: "session_create" | "prompt" | "context" = "session_create"
+    let sdkFailure = "deadline"
+    try {
+      const session = await client.session.create({
+        location: { directory: "/workspace" }, title: "r1-7a-provider-egress-qualification",
+      }, { signal: AbortSignal.timeout(20_000) })
+      sdkStage = "prompt"
+      await client.session.prompt({
+        sessionID: session.id,
+        text: "Return exactly the qualification marker.",
+        delivery: "queue",
+      }, { signal: AbortSignal.timeout(30_000) })
+      sdkStage = "context"
+      const until = Date.now() + 30_000
+      while (Date.now() < until) {
+        const context = await client.session.context({ sessionID: session.id }, { signal: AbortSignal.timeout(5_000) })
+        const messages = context as unknown as MessageInfo[]
+        if (turnFailure(messages)) { sdkFailure = "terminal_error"; break }
+        if (isSettled(messages) && latestAssistantReply(messages) === STREAM_MARKER) { sdkMarker = true; break }
+        if (isSettled(messages)) { sdkFailure = "marker_mismatch"; break }
+        await new Promise((resolve) => setTimeout(resolve, 500))
+      }
+    } catch { sdkFailure = `${sdkStage}_failed` }
+    if (!sdkMarker) return Response.json({ ok: false, error: "OpenCode SDK did not consume the fixed streamed marker; cleanup is required", sdkFailure, probe },
+      { status: 503, headers: { "cache-control": "no-store" } })
 
     const rebindChecks = await this.verifyReboundFailures(grant)
     if (!rebindChecks.expiredGrantRejected || !rebindChecks.scopeTokenMismatchRejected ||

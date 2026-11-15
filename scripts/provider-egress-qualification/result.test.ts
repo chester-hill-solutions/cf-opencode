@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { providerQualificationPassed, type ProviderQualificationResult } from "./result"
+import { providerQualificationEvidence, providerQualificationPassed, type ProviderQualificationResult } from "./result"
 
 const valid: ProviderQualificationResult = {
   agentUID1001: true,
@@ -32,6 +32,27 @@ const valid: ProviderQualificationResult = {
 describe("provider qualification result", () => {
   test("accepts a complete receipt with positive and negative evidence", () => {
     expect(providerQualificationPassed(valid)).toBe(true)
+  })
+
+  test("accepts correctly typed evidence even when a probe failed", () => {
+    expect(providerQualificationEvidence({
+      ...valid,
+      agentUID1001: false,
+      stateHasUpstreamSecret: true,
+      stateScanCompleted: false,
+      stateFilesRead: 0,
+      sameUIDEnvironmentsRead: 0,
+      sseChunks: 0,
+    })).toBe(true)
+  })
+
+  test("rejects unknown fields and values outside the exact typed schema", () => {
+    expect(providerQualificationEvidence("not a receipt")).toBe(false)
+    expect(providerQualificationEvidence({ ...valid, unexpected: true })).toBe(false)
+    expect(providerQualificationEvidence({ ...valid, httpJson: "true" })).toBe(false)
+    expect(providerQualificationEvidence({ ...valid, sse: {} })).toBe(false)
+    expect(providerQualificationEvidence({ ...valid, stateFilesRead: Number.NaN })).toBe(false)
+    expect(providerQualificationEvidence({ ...valid, stateFilesRead: -1 })).toBe(false)
   })
 
   test("rejects every false expected-positive and true expected-negative result", () => {

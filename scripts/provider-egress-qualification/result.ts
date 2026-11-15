@@ -58,12 +58,29 @@ const REQUIRED_KEYS = Object.keys({
   sseChunks: true,
 }).sort()
 
-/** Validate the allowlisted probe receipt, including positive and negative evidence. */
-export function providerQualificationPassed(value: unknown): value is ProviderQualificationResult {
+/** Validate the exact, typed evidence shape without deciding whether it passed. */
+export function providerQualificationEvidence(value: unknown): value is ProviderQualificationResult {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false
   const record = value as Record<string, unknown>
-  const keys = Object.keys(record).sort()
-  if (keys.length !== REQUIRED_KEYS.length || keys.some((key, index) => key !== REQUIRED_KEYS[index])) return false
+  const ownKeys = Reflect.ownKeys(value)
+  if (ownKeys.length !== REQUIRED_KEYS.length || ownKeys.some((key) => typeof key !== "string")) return false
+  const keys = (ownKeys as string[]).sort()
+  if (keys.some((key, index) => key !== REQUIRED_KEYS[index])) return false
+
+  for (const key of Object.keys(BOOLEAN_EXPECTATIONS)) {
+    if (typeof record[key] !== "boolean") return false
+  }
+  for (const key of ["stateFilesRead", "sameUIDEnvironmentsRead", "sseChunks"] as const) {
+    const count = record[key]
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) return false
+  }
+  return true
+}
+
+/** Validate the allowlisted probe receipt, including positive and negative evidence. */
+export function providerQualificationPassed(value: unknown): value is ProviderQualificationResult {
+  if (!providerQualificationEvidence(value)) return false
+  const record = value as unknown as Record<string, unknown>
 
   for (const [key, expected] of Object.entries(BOOLEAN_EXPECTATIONS)) {
     if (record[key] !== expected) return false
