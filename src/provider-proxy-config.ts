@@ -37,7 +37,8 @@ export function providerProxyConfig(model: string, token: string): ProviderProxy
         models: {
           [model]: {
             name: "Scoped provider model",
-            limit: { context: 4096, output: 1024 },
+            // Leave room for OpenCode's installed system and tool definitions.
+            limit: { context: 32768, output: 1024 },
           },
         },
       },

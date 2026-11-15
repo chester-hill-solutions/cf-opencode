@@ -10,6 +10,7 @@ import {
 } from "../../src/provider-egress"
 import { providerProxyConfig } from "../../src/provider-proxy-config"
 import { successfulStartProof } from "./response-proof"
+import { sdkTerminalFailure } from "./sdk-failure"
 import { ProviderEgress } from "../../src/provider-egress-entrypoint"
 import { isSettled, latestAssistantReply, turnFailure, type MessageInfo } from "../../src/messages"
 import { QUALIFICATION_ARTIFACT } from "../native-storage-qualification/artifact"
@@ -251,7 +252,7 @@ export class ProviderEgressQualification extends DurableObject<QualificationEnv>
       while (Date.now() < until) {
         const context = await client.session.context({ sessionID: session.id }, { signal: AbortSignal.timeout(5_000) })
         const messages = context as unknown as MessageInfo[]
-        if (turnFailure(messages)) { sdkFailure = "terminal_error"; break }
+        if (turnFailure(messages)) { sdkFailure = sdkTerminalFailure(messages); break }
         if (isSettled(messages) && latestAssistantReply(messages) === STREAM_MARKER) { sdkMarker = true; break }
         if (isSettled(messages)) { sdkFailure = "marker_mismatch"; break }
         await new Promise((resolve) => setTimeout(resolve, 500))

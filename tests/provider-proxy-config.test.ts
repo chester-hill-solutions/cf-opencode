@@ -22,7 +22,7 @@ describe("providerProxyConfig", () => {
           models: {
             "gpt-4o-mini": {
               name: "Scoped provider model",
-              limit: { context: 4096, output: 1024 },
+              limit: { context: 32768, output: 1024 },
             },
           },
         },
