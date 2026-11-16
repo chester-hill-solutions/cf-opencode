@@ -400,8 +400,10 @@ export class ConversationTurnExecution {
   private async recordTurnOutcome(state: ConversationState, failure?: TurnFailure): Promise<void> {
     await this.options.store.patch({ settlementError: undefined })
     if (!state.turnID) return
+    // A turn stopped by cancel settles as cancelled, not as a failure.
+    const turn = await this.options.store.getTurn(state.turnID)
     await this.options.store.transitionTurn(state.turnID, {
-      state: failure ? "failed" : "completed",
+      state: turn?.cancellation?.requested ? "cancelled" : failure ? "failed" : "completed",
       finishedAt: Date.now(),
     })
   }

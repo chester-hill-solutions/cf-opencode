@@ -98,8 +98,27 @@ export async function questionsRoute(
   return conversationStub(env, key).fetch("https://conversation/questions")
 }
 
-function isAnswerRequest(parts: string[]): boolean {
-  return parts.length === 6 && parts[1] === "api" && parts[2] === "conversations" && parts[4] === "questions"
+interface PostTarget { kind: "answer" | "cancel"; key: string; id: string }
+
+function answerTarget(parts: string[]): PostTarget | undefined {
+  if (parts.length !== 6 || parts[1] !== "api" || parts[2] !== "conversations" || parts[4] !== "questions") {
+    return undefined
+  }
+  const key = safeDecode(parts[3] ?? "")
+  const id = safeDecode(parts[5] ?? "")
+  return key && id ? { kind: "answer", key, id } : undefined
+}
+
+function cancelTarget(parts: string[]): PostTarget | undefined {
+  if (parts.length !== 7 || parts[1] !== "api" || parts[2] !== "conversations" ||
+    parts[4] !== "turns" || parts[6] !== "cancel") return undefined
+  const key = safeDecode(parts[3] ?? "")
+  const id = safeDecode(parts[5] ?? "")
+  return key && id ? { kind: "cancel", key, id } : undefined
+}
+
+function postTarget(parts: string[]): PostTarget | undefined {
+  return answerTarget(parts) ?? cancelTarget(parts)
 }
 
 /**
@@ -107,22 +126,22 @@ function isAnswerRequest(parts: string[]): boolean {
  * or form question. The conversation decides first-answer-wins; this only
  * forwards with the same authentication as the rest of the API.
  */
-export async function answerRoute(
+export async function postRoute(
   request: Request,
   env: Pick<Env, "API_TOKEN" | "CONVERSATION">,
   parts: string[],
   record: () => void,
 ): Promise<Response | undefined> {
-  if (!isAnswerRequest(parts)) return undefined
+  const target = postTarget(parts)
+  if (!target) return undefined
   const denied = authorizeToken(request, env)
   if (denied) return denied
-  const key = safeDecode(parts[3] ?? "")
-  const requestID = safeDecode(parts[5] ?? "")
-  if (!key || !requestID || !KEY_PATTERN.test(key)) {
-    return Response.json({ error: "invalid question request" }, { status: 400 })
-  }
+  if (!KEY_PATTERN.test(target.key)) return Response.json({ error: "invalid conversation key" }, { status: 400 })
   record()
-  return conversationStub(env, key).fetch(`https://conversation/questions/${encodeURIComponent(requestID)}`, {
+  const path = target.kind === "answer"
+    ? `/questions/${encodeURIComponent(target.id)}`
+    : `/turns/${encodeURIComponent(target.id)}/cancel`
+  return conversationStub(env, target.key).fetch(`https://conversation${path}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: await request.text(),

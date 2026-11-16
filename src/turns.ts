@@ -375,3 +375,15 @@ export function dispatchedTurn(
       : turn),
   }
 }
+
+/** Remove one queue entry by id; a newer follow-up is never touched. */
+export function withoutQueueEntry(state: ConversationState, id: string): ConversationState | undefined {
+  const queue = state.queue ?? []
+  const next = queue.filter((entry) => entry.id !== id)
+  if (next.length === queue.length) return undefined
+  return {
+    ...state,
+    queue: next,
+    ...(next.length === 0 && state.phase === "queued" ? { phase: "idle" as const } : {}),
+  }
+}

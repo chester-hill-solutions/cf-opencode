@@ -20,7 +20,7 @@ import { validateOpencodeKey } from "./opencode-key-validation"
 import { handleCheckCollector } from "./workspace-check-collector"
 import { handleSlackCanaryRoute } from "./slack-canary"
 import {
-  alertsRoute, answerRoute, conversationStub, KEY_PATTERN, questionsRoute, safeDecode, settingsDo, turnStatusRoute,
+  alertsRoute, postRoute, conversationStub, KEY_PATTERN, questionsRoute, safeDecode, settingsDo, turnStatusRoute,
 } from "./worker-routes"
 
 export { Conversation } from "./conversation"
@@ -186,7 +186,7 @@ async function apiRoute(request: Request, env: Env, url: URL, ctx: ExecutionCont
     return questionsRoute(request, env, key, record)
   }
   if (request.method === "POST") {
-    const answered = await answerRoute(request, env, parts, record)
+    const answered = await postRoute(request, env, parts, record)
     if (answered) return answered
   }
   return handleApi(request, env, url, ctx)
