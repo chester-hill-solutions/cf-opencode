@@ -14,6 +14,7 @@ import {
 } from "./workspace-repository"
 
 import { parseWorkspaceControlEvent, workspaceControlEventKey, type WorkspaceControlEvent } from "./workspace-profile"
+import { abandonedTurn, admitTurn, dispatchedTurn, transitionedTurn, turnByID, type TurnBeginResult, type TurnKey, type TurnRecord } from "./turns"
 
 export type Transport = "slack" | "http"
 
@@ -53,6 +54,8 @@ export interface QueuedMessage {
   text: string
   /** Optional request id used to return the same pending queue receipt. */
   idempotencyKey?: string
+  /** Turn this entry will become once dispatched. */
+  turnID?: string
   slack?: SlackTarget
   attempts: number
   /** When the next admission attempt is due. */
@@ -128,6 +131,12 @@ export interface ConversationState {
   containerStarts?: number
   /** Last assistant message id before the current prompt; the turn boundary. */
   turnBaseline?: string
+  /** Turn whose run the settle path currently owns. */
+  turnID?: string
+  /** Bounded newest-last caller-facing turn records. */
+  turns?: TurnRecord[]
+  /** Idempotency keys inside their replay window. */
+  turnKeys?: Record<string, TurnKey>
   sessionID?: string
   /** A model choice local to this conversation, preserved across cold starts. */
   modelOverride?: string
@@ -513,6 +522,7 @@ export class ConversationStore {
       }
       if (reservation.dispatched) return { result: false }
       if (queueID !== undefined && state.queue?.[0]?.id !== queueID) return { result: false }
+      const dispatchedAt = Date.now()
       return {
         next: {
           ...state,
@@ -520,8 +530,9 @@ export class ConversationStore {
           admissionID: undefined,
           admissionStartedAt: undefined,
           budgetReservation: { ...reservation, dispatched: true },
-          runStartedAt: Date.now(),
+          runStartedAt: dispatchedAt,
           turnBaseline,
+          ...dispatchedTurn(state, { reservationID: reservation.reservationID, dispatchedAt, queueID }),
           ...(queueID !== undefined ? { queue: (state.queue ?? []).slice(1) } : {}),
         },
         result: true,
@@ -624,6 +635,39 @@ export class ConversationStore {
       return { next: { ...state, queue, phase }, result: { kind: "enqueued", id: entry.id, position: queue.length, depth: queue.length, limit } }
     })
   }
+
+  /**
+   * Record one accepted turn. The idempotency key, the turn record and the
+   * retention sweep share one serialized write so a concurrent retry can only
+   * observe "before" or "after".
+   */
+  async beginTurn(turn: TurnRecord, options: { key?: string; active?: boolean } = {}): Promise<TurnBeginResult> {
+    return this.transact<TurnBeginResult>((state) => {
+      const admitted = admitTurn(state, turn, options)
+      return admitted.next ? { next: admitted.next, result: admitted.result } : { result: admitted.result }
+    })
+  }
+
+  /** Drop a turn whose work never started, and release its key for a retry. */
+  async abandonTurn(id: string, key?: string): Promise<boolean> {
+    return this.transact((state) => {
+      const next = abandonedTurn(state, id, key)
+      return next ? { next, result: true } : { result: false }
+    })
+  }
+
+  /** Move one turn forward; a terminal state releases the active pointer. */
+  async transitionTurn(
+    id: string,
+    patch: Partial<Omit<TurnRecord, "id" | "acceptedAt" | "digest" | "delivery">>,
+  ): Promise<TurnRecord | undefined> {
+    return this.transact((state) => {
+      const moved = transitionedTurn(state, id, patch)
+      return moved ? { next: moved.next, result: moved.turn } : { result: undefined }
+    })
+  }
+
+  async getTurn(id: string): Promise<TurnRecord | undefined> { return turnByID(await this.read(), id) }
 
   async updateQueueHead(id: string, updates: Partial<QueuedMessage>): Promise<boolean> {
     return this.transact((state) => {

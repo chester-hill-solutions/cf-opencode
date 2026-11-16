@@ -5,9 +5,25 @@ import type { HarnessSettings } from "../settings"
 import type { ConversationEvent } from "../events"
 import { nextBudgetReset } from "../budget"
 import { CAPACITY_RETRY_MS, isCapacityRejection, queueCapacity } from "../queue"
+import { waitingKey, type TurnRecord } from "../turns"
 import { emitConversationTelemetry, type ConversationTelemetrySink } from "./telemetry"
 
 const POLL_MS = 2000
+
+/** Everything one queued admission can answer with, including turn identity. */
+export type QueueAdmissionOutcome =
+  | (Extract<QueueEnqueueResult, { kind: "enqueued" }> & { duplicate?: boolean; turn?: TurnRecord })
+  | { kind: "replayed"; turn: TurnRecord }
+  | { kind: "conflict"; turnID: string }
+  | { kind: "expired" }
+  | Extract<QueueEnqueueResult, { kind: "queue_full" | "admission_in_progress" }>
+  | { kind: "unavailable"; message: string }
+
+/** Limits fixed before the transaction so every branch answers the same way. */
+interface EnqueuePlan {
+  nextAttemptAt: number
+  queueLimit: number
+}
 
 export function isBusyPhase(phase: ConversationPhase | undefined): boolean {
   return phase === "admitting" || phase === "running" || phase === "settling" || phase === "queued"
@@ -100,57 +116,115 @@ export class ConversationAdmissions {
     })
   }
 
-  async enqueue(text: string, slack?: SlackTarget, options: { replace?: boolean; idempotencyKey?: string } = {}): Promise<
-    | (Extract<QueueEnqueueResult, { kind: "enqueued" }> & { duplicate?: boolean })
-    | Extract<QueueEnqueueResult, { kind: "queue_full" | "admission_in_progress" }>
-    | { kind: "unavailable"; message: string }
-  > {
+  async enqueue(text: string, slack?: SlackTarget, options: { replace?: boolean; idempotencyKey?: string; turn?: TurnRecord } = {}): Promise<QueueAdmissionOutcome> {
     try {
       if (this.options.recovery.active()) return { kind: "unavailable", message: "conversation recovery is active" }
       if (await this.options.recovery.pendingUpgrade()) return { kind: "unavailable", message: "runtime upgrade is pending" }
     } catch (error) {
       return { kind: "unavailable", message: errorMessage(error) }
     }
-    const nextAttemptAt = Date.now() + 5000
-    const queueLimit = queueCapacity(this.options.queueLimit)
+    const plan = { nextAttemptAt: Date.now() + 5000, queueLimit: queueCapacity(this.options.queueLimit) }
     const entry: QueuedMessage = {
       id: crypto.randomUUID(),
       enqueuedAt: Date.now(),
       source: slack ? "slack" : "http",
       text,
       ...(options.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}),
+      ...(options.turn ? { turnID: options.turn.id } : {}),
       ...(slack ? { slack } : {}),
       attempts: 0,
-      nextAttemptAt,
+      nextAttemptAt: plan.nextAttemptAt,
     }
-    let outcome: (QueueEnqueueResult & { duplicate?: boolean }) | { kind: "unavailable"; message: string } | undefined
+    let outcome: QueueAdmissionOutcome | undefined
     try {
-      outcome = await this.withLock(() => this.options.storage.transaction(async () => {
-        if (await this.options.recovery.pendingMaintenance?.()) return { kind: "unavailable" as const, message: "workspace maintenance is pending" }
-        if (options.idempotencyKey) {
-          const state = await this.options.store.get()
-          const position = state.queue?.findIndex((queued) => queued.idempotencyKey === options.idempotencyKey) ?? -1
-          if (position >= 0) {
-            const existing = state.queue![position]!
-            return { kind: "enqueued", id: existing.id, position: position + 1, depth: state.queue!.length, limit: queueLimit, duplicate: true }
-          }
-        }
-        if (options.replace && this.admitting) {
-          const state = await this.options.store.get()
-          return { kind: "admission_in_progress", depth: state.queue?.length ?? 0, limit: queueLimit }
-        }
-        const result = await this.options.store.enqueue(entry, queueLimit, options.replace)
-        if (result.kind === "enqueued" && result.position === 1) await this.options.jobs.schedule("admission:retry", nextAttemptAt, {
-          queueID: entry.id,
-          reason: options.replace ? "queued-admission-replaced" : "queued-admission",
-        })
-        return result
-      }))
+      outcome = await this.withLock(() =>
+        this.options.storage.transaction(() => this.persistEnqueue(entry, options, plan)))
     } catch (error) {
       console.warn("queue admission was not persisted", { error: errorMessage(error) })
       return { kind: "unavailable", message: errorMessage(error) }
     }
-    if (!outcome || outcome.kind !== "enqueued") return outcome ?? { kind: "unavailable", message: "queue admission was not persisted" }
+    return this.accepted(outcome, slack)
+  }
+
+  /** One admission decision, inside the caller's serialized transaction. */
+  private async persistEnqueue(
+    entry: QueuedMessage,
+    options: { replace?: boolean; idempotencyKey?: string; turn?: TurnRecord },
+    plan: EnqueuePlan,
+  ): Promise<QueueAdmissionOutcome> {
+    const blocked = await this.blocked(options, plan)
+    if (blocked) return blocked
+    const waiting = await this.waiting(options, plan)
+    if (waiting) return waiting
+    return this.beginAndEnqueue(entry, options, plan)
+  }
+
+  /** Refusals that outrank a new entry: maintenance, or a replace mid-admission. */
+  private async blocked(
+    options: { replace?: boolean },
+    plan: EnqueuePlan,
+  ): Promise<QueueAdmissionOutcome | undefined> {
+    if (await this.options.recovery.pendingMaintenance?.()) {
+      return { kind: "unavailable", message: "workspace maintenance is pending" }
+    }
+    if (options.replace && this.admitting) {
+      const state = await this.options.store.get()
+      return { kind: "admission_in_progress", depth: state.queue?.length ?? 0, limit: plan.queueLimit }
+    }
+    return undefined
+  }
+
+  /** A key that already names a waiting entry replays, conflicts, or repeats. */
+  private async waiting(
+    options: { idempotencyKey?: string; turn?: TurnRecord },
+    plan: EnqueuePlan,
+  ): Promise<QueueAdmissionOutcome | undefined> {
+    if (!options.idempotencyKey) return undefined
+    return waitingKey(await this.options.store.get(), options.idempotencyKey, plan.queueLimit, options.turn?.digest)
+  }
+
+  private async beginAndEnqueue(
+    entry: QueuedMessage,
+    options: { replace?: boolean; idempotencyKey?: string; turn?: TurnRecord },
+    plan: EnqueuePlan,
+  ): Promise<QueueAdmissionOutcome> {
+    if (!options.turn) return this.storeEntry(entry, options, plan)
+    const begun = await this.options.store.beginTurn(
+      { ...options.turn, queueID: entry.id },
+      { key: options.idempotencyKey },
+    )
+    if (begun.kind !== "created") return begun
+    const result = await this.storeEntry(entry, options, plan)
+    if (result.kind !== "enqueued") {
+      // Nothing was queued, so the turn and its key must stay reusable.
+      await this.options.store.abandonTurn(options.turn.id, options.idempotencyKey)
+      return result
+    }
+    return { ...result, turn: begun.turn }
+  }
+
+  private async storeEntry(
+    entry: QueuedMessage,
+    options: { replace?: boolean },
+    plan: EnqueuePlan,
+  ): Promise<QueueAdmissionOutcome> {
+    const result = await this.options.store.enqueue(entry, plan.queueLimit, options.replace)
+    if (result.kind !== "enqueued" || result.position !== 1) return result
+    await this.options.jobs.schedule("admission:retry", plan.nextAttemptAt, {
+      queueID: entry.id,
+      reason: options.replace ? "queued-admission-replaced" : "queued-admission",
+    })
+    return result
+  }
+
+  /** Announce a queued entry once, and answer with the persisted receipt. */
+  private async accepted(
+    outcome: QueueAdmissionOutcome | undefined,
+    slack?: SlackTarget,
+  ): Promise<QueueAdmissionOutcome> {
+    if (!outcome || outcome.kind !== "enqueued") {
+      return outcome ?? { kind: "unavailable", message: "queue admission was not persisted" }
+    }
     if (outcome.duplicate) return outcome
     void this.options.delivery.count("queue.enqueued")
     this.emitLifecycle({ event: "queue.enqueued", result: "scheduled", reasonCode: "queued" })
@@ -405,6 +479,13 @@ export class ConversationAdmissions {
       })
       if (!(await this.options.store.advance("running"))) {
         await this.options.store.patch({ phase: "running" })
+      }
+      if (current.turnID) {
+        await this.options.store.transitionTurn(current.turnID, {
+          state: "running",
+          startedAt: current.runStartedAt ?? dispatchedAt,
+          ...(current.sessionID ? { sessionID: current.sessionID } : {}),
+        })
       }
       await this.options.jobs.schedule("turn:observe", Date.now() + POLL_MS, {
         sessionID: (await this.options.store.get()).sessionID,

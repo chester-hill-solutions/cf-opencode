@@ -351,7 +351,7 @@ export class ConversationTurnExecution {
         return
       }
     }
-    await this.options.store.patch({ settlementError: undefined })
+    await this.recordTurnOutcome(state, failure)
     if (failure) {
       const key = failureKey(failure)
       if (key !== state.reportedError) {
@@ -392,8 +392,21 @@ export class ConversationTurnExecution {
     else emitConversationTelemetry(telemetry, undefined, traceId)
   }
 
-  private async pollPermissions(sessionID: string, pending: PermissionSummary[]): Promise<void> {
-    await this.options.store.syncPermissions(sessionID, pending.map((request) => request.id))
+  /**
+   * Close the settled turn: clear the settlement marker and record the terminal
+   * state. Terminal only after settlement succeeded, so a paused settlement
+   * keeps the turn running and the hold held.
+   */
+  private async recordTurnOutcome(state: ConversationState, failure?: TurnFailure): Promise<void> {
+    await this.options.store.patch({ settlementError: undefined })
+    if (!state.turnID) return
+    await this.options.store.transitionTurn(state.turnID, {
+      state: failure ? "failed" : "completed",
+      finishedAt: Date.now(),
+    })
+  }
+
+  private async pollPermissions(sessionID: string, pending: PermissionSummary[]): Promise<void> {    await this.options.store.syncPermissions(sessionID, pending.map((request) => request.id))
     for (const request of pending) {
       try {
         const state = await this.options.store.get()

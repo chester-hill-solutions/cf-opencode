@@ -4,10 +4,31 @@ import type { ConversationRuntime } from "./runtime"
 import { LEGACY_ALARM_MIGRATION_KEY, isFreshLegacyAlarmMigration } from "./job-state"
 import type { ConversationState } from "../state"
 import { hasBenignSlackControlHistory } from "../state"
+import { isFreshTurnState } from "../turns"
 import { isWorkspaceLifecycleMetadata } from "../workspace-profile"
 import { parseWorkspaceRepositoryBinding } from "../workspace-repository"
 
 type RuntimeContainer = NonNullable<DurableObjectState["container"]>
+
+/** Fields a conversation may carry before its first turn has been dispatched. */
+const FRESH_STATE_FIELDS = new Set([
+  "phase", "seen", "pending", "slackEngaged", "modelOverride",
+  "transport", "slack", "announcedForms", "admissionID", "admissionStartedAt",
+  "queue", "permissionNotifications",
+  "workspaceRepository",
+  "slackControlHistory",
+  "turnID", "turns", "turnKeys",
+])
+
+/**
+ * Freshness means no history: only the admitting turn, unstarted, may be
+ * recorded. Unknown fields are history, and so is a dispatched turn.
+ */
+function isFreshConversationState(state: object): boolean {
+  const known = Object.entries(state).every(([key, field]) => field === undefined || FRESH_STATE_FIELDS.has(key))
+  if (!known) return false
+  return isFreshTurnState(state as Pick<ConversationState, "turnID" | "turns" | "turnKeys">)
+}
 
 /**
  * OpenCode's boot is single-threaded. On the previous `standard-1` shape
@@ -115,14 +136,7 @@ export class ConversationImages {
     if (value === undefined) return true
     if (!value || typeof value !== "object" || Array.isArray(value)) return false
     const state = value as Record<string, unknown>
-    const allowed = new Set([
-      "phase", "seen", "pending", "slackEngaged", "modelOverride",
-      "transport", "slack", "announcedForms", "admissionID", "admissionStartedAt",
-      "queue", "permissionNotifications",
-      "workspaceRepository",
-      "slackControlHistory",
-    ])
-    if (Object.entries(state).some(([key, field]) => field !== undefined && !allowed.has(key))) return false
+    if (!isFreshConversationState(state)) return false
     if (state.slackControlHistory !== undefined && (!Array.isArray(state.seen) || !hasBenignSlackControlHistory(state as unknown as ConversationState))) return false
     if (state.workspaceRepository !== undefined) {
       try { if (parseWorkspaceRepositoryBinding(state.workspaceRepository).status !== "pending") return false }
@@ -198,12 +212,6 @@ export class ConversationImages {
     }
     const state = await this.options.storage.get<ConversationState>("state")
     if (!state) return
-    const allowedKeys = new Set([
-      "phase", "seen", "pending", "slackEngaged", "modelOverride", "transport", "slack",
-      "announcedForms", "admissionID", "admissionStartedAt", "queue", "permissionNotifications",
-      "workspaceRepository",
-      "slackControlHistory",
-    ])
     if (state.slackControlHistory !== undefined && (!Array.isArray(state.seen) || !hasBenignSlackControlHistory(state))) {
       throw new Error("evented canary requires trusted benign control history")
     }
@@ -212,7 +220,7 @@ export class ConversationImages {
         if (parseWorkspaceRepositoryBinding(state.workspaceRepository).status !== "pending") throw new Error()
       } catch { throw new Error("evented canary requires a fresh pending repository binding") }
     }
-    if (Object.keys(state).some((key) => !allowedKeys.has(key)) ||
+    if (!isFreshConversationState(state) ||
       state.phase !== "admitting" ||
       (state.seen?.length ?? 0) > 1 ||
       (state.seen !== undefined && (!Array.isArray(state.seen) || !state.seen.every((id) => typeof id === "string"))) ||
