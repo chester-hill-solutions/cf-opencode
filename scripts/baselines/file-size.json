@@ -4,7 +4,7 @@
     "scripts/stow-s3-probe.ts": 6,
     "src/conversation.ts": 645,
     "src/index.ts": 50,
-    "src/settings-do.ts": 830,
+    "src/settings-do.ts": 828,
     "test/container-image.test.ts": 79
   }
 }

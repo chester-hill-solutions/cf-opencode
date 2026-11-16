@@ -8,7 +8,7 @@ import {
 } from "./settings"
 import { workspaceID } from "./vault"
 import { vaultOrErrorResponse } from "./vault-access"
-import { assertNoStaleVaultRecords } from "./vault-records"
+import { prepareVaultRecords } from "./vault-records"
 import { decideSecretRead } from "./secret-read-policy"
 import { evaluateAlerts } from "./alerts"
 import { decideContainerLease } from "./leases"
@@ -49,10 +49,8 @@ export class Settings extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
-    ctx.blockConcurrencyWhile(async () => {
-      const records = await ctx.storage.list({ prefix: "vault:" })
-      assertNoStaleVaultRecords(records.keys())
-    })
+    // Convert pre-package-swap records, then fail closed on anything unreadable.
+    ctx.blockConcurrencyWhile(() => prepareVaultRecords(ctx.storage))
   }
 
   async fetch(request: Request): Promise<Response> {
