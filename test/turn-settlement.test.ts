@@ -3,6 +3,8 @@ import { env, runInDurableObject } from "cloudflare:test"
 import { usageLogResponse, type UsageLogOptions } from "./helpers/usage-log"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
 import { driveConversationJobs } from "./helpers/conversation-jobs"
+import { ConversationMemoryShadow } from "../src/conversation/memory-shadow"
+import { rulesDecision } from "../src/decision"
 
 /**
  * Turn settlement: a new user message must not be considered finished just
@@ -318,6 +320,77 @@ describe("turn settlement", () => {
     expect(usage.input).toBe(100)
     expect(usage.output).toBe(20)
   })
+
+  it("records a shadow memory decision after settlement and keeps the turn unaffected", async () => {
+    const settings = env.SETTINGS.getByName("global")
+    await runInDurableObject(settings, async (_instance, storage) => {
+      await storage.storage.deleteAll()
+    })
+    const configured = await settings.fetch("https://settings/put", {
+      method: "POST",
+      body: JSON.stringify({ streaming: false }),
+    })
+    expect(configured.ok).toBe(true)
+
+    const stub = env.CONVERSATION.getByName("C1:memory-shadow")
+    const phase = await runInDurableObject(stub, async (instance, runtime) => {
+      const now = Date.now()
+      const messages: Message[] = [user("u1", "I prefer terse replies")]
+      const answers: Message[] = [
+        ...messages,
+        {
+          id: "a1",
+          type: "assistant",
+          content: [{ type: "text", text: "understood" }],
+          time: { created: now, completed: now },
+          finish: "stop",
+          cost: 0.01,
+          tokens: { input: 10, output: 2 },
+        },
+      ]
+      instance.transport = fakeContainer({ beforePrompt: messages, afterPrompt: () => answers })
+      // The provider call is covered by its own tests; here the turn must reach
+      // the review hook and store what it decided, with no transport involved.
+      const internal = instance as unknown as { memoryShadow: ConversationMemoryShadow }
+      internal.memoryShadow = new ConversationMemoryShadow({
+        storage: runtime.storage,
+        model: () => ({
+          async decide() {
+            return {
+              model: "jev-1.13",
+              inputTokens: 640,
+              answers: {
+                memory: { type: "noul", probability: 0.96 },
+                scope: { type: "choice", choice: "user", confidence: 0.4, probabilities: {} },
+              },
+            }
+          },
+        }),
+        rules: rulesDecision,
+      })
+
+      const sent = await instance.fetch(
+        new Request("https://conversation/message", {
+          method: "POST",
+          body: JSON.stringify({ text: "I prefer terse replies" }),
+        }),
+      )
+      await sent.text()
+      await driveConversationJobs(instance, runtime.storage, ["turn:observe"])
+
+      let shadow: unknown
+      for (let attempt = 0; attempt < 40 && !shadow; attempt++) {
+        shadow = await runtime.storage.get("memoryShadow")
+        if (!shadow) await new Promise((resolve) => setTimeout(resolve, 25))
+      }
+      expect(shadow).toMatchObject([
+        { source: "model", decision: "accept", probability: 0.96, scope: "user", model: "jev-1.13", inputTokens: 640 },
+      ])
+      return (await state(instance)).phase
+    })
+
+    expect(phase).toBe("idle")
+  }, 12000)
 
   it("keeps the hold and settling state when the terminal usage report is rejected", async () => {
     const settings = env.SETTINGS.getByName("global")

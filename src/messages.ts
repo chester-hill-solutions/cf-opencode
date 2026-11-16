@@ -55,6 +55,30 @@ export function latestAssistantReply(messages: MessageInfo[], afterID?: string):
     .trim()
 }
 
+/** The user prompt and the assistant reply that belong to the latest turn. */
+export function lastTurnPair(messages: MessageInfo[]): { user: string; assistant: string } | undefined {
+  let lastUser = -1
+  for (let i = 0; i < messages.length; i++) if (messages[i]?.type === "user") lastUser = i
+  if (lastUser < 0) return undefined
+  const user = textOf(messages[lastUser])
+  const assistant = messages.slice(lastUser + 1)
+    .filter((message) => message.type === "assistant")
+    .map((message) => textOf(message))
+    .filter((text) => text.length > 0)
+    .join("\n\n")
+    .trim()
+  return user && assistant ? { user, assistant } : undefined
+}
+
+function textOf(message: MessageInfo | undefined): string {
+  const parts = Array.isArray(message?.content) ? message.content : []
+  return parts
+    .filter((part): part is { type?: string; text: string } => part?.type === "text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("\n")
+    .trim()
+}
+
 /** A run is settled once the current turn's latest assistant step completed. */
 export function isSettled(messages: MessageInfo[], afterID?: string): boolean {
   const assistant = turnMessages(messages, afterID)

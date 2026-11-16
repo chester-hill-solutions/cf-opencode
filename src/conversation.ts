@@ -32,6 +32,7 @@ import { ConversationReconciliation } from "./conversation/reconciliation"
 import { ConversationAccountingCutover } from "./conversation/accounting-cutover"
 import { ConversationDeliveryControls, stopMessage } from "./conversation/delivery-controls"
 import { ConversationMessagePipeline } from "./conversation/message-pipeline"
+import { ConversationMemoryShadow, memoryShadowFor } from "./conversation/memory-shadow"
 import { cancelTurn, passiveReadRoute } from "./conversation/turn-replies"
 import { queueCapacity, queueRetryDelay } from "./queue"
 import { projectTurnObservation, type PersistedTurnTimeout } from "./turn-observation"
@@ -94,6 +95,7 @@ export class Conversation extends DurableObject<Env> {
   private readonly runtime: ConversationRuntime
   private readonly idleClose: ConversationIdleClose
   private readonly runtimeAccess: ConversationRuntimeAccess
+  private readonly memoryShadow: ConversationMemoryShadow
   private readonly scheduler: ConversationScheduler
   private readonly store: ConversationStore
   private readonly eventStream: ConversationEventStream
@@ -310,6 +312,7 @@ export class Conversation extends DurableObject<Env> {
       releaseBudgetReservation: (reservation) => this.releaseBudgetReservation(reservation),
       finalReply: (state, text, assistantID) => this.finalReplies.prepare(state, text, assistantID),
       waitUntil: (promise) => this.ctx.waitUntil(promise),
+      memoryReview: (turn) => { void this.memoryShadow.review(turn).catch(() => {}) },
     })
     this.readiness = new ConversationReadiness({
       storage: ctx.storage,
@@ -452,6 +455,7 @@ export class Conversation extends DurableObject<Env> {
       },
       event: (event) => this.deliver(event, { slack: false }),
     })
+    this.memoryShadow = memoryShadowFor(ctx.storage, env)
     this.slackAdapter = new ConversationSlackAdapter({
       workspaceCommands: {
         enabled: target => Boolean(env.CHECK_SLACK_CHANNEL_ID && target.channel === env.CHECK_SLACK_CHANNEL_ID),
@@ -498,10 +502,7 @@ export class Conversation extends DurableObject<Env> {
       usageToday: async () => {
         const response = await this.env.SETTINGS.getByName("global").fetch("https://settings/usage/today")
         if (!response.ok) throw new Error("Usage is temporarily unavailable")
-        return await response.json() as {
-          date: string; costUSD: number; reservedUSD: number; input: number; output: number
-          historicalUsageUnreconciled?: boolean; unknownReconciliationCount?: number
-        }
+        return await response.json() as { date: string; costUSD: number; reservedUSD: number; input: number; output: number; historicalUsageUnreconciled?: boolean; unknownReconciliationCount?: number }
       },
       deliver: (event, options) => this.deliver(event, options),
       waitUntil: (promise) => this.ctx.waitUntil(promise),
@@ -757,13 +758,12 @@ export class Conversation extends DurableObject<Env> {
         streamState: this.turnExecution.currentStreamState,
         streaming: this.turnExecution.isStreaming,
         ready: this.runtime.ready,
-        containerRunning: this.transport || this.env.CONTAINER_URL || !this.ctx.container
-          ? undefined
-          : this.ctx.container.running,
+        containerRunning: this.transport || this.env.CONTAINER_URL || !this.ctx.container ? undefined : this.ctx.container.running,
         runtimeGeneration: this.runtime.generation,
         startMode: this.runtime.startMode,
         snapshot: Boolean(await this.images.snapshotHandle()),
         events: Object.fromEntries(this.turnExecution.observedEvents),
+        memoryShadow: await this.memoryShadow.list(),
       })
     }
     if (url.pathname === "/debug/messages" && request.method === "GET") {

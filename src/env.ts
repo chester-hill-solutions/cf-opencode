@@ -3,6 +3,10 @@ export interface Env {
   PROVIDER_PROXY_API_KEY?: string
   /** Durable pending-message capacity, integer 1..100; default 10. */
   QUEUE_LIMIT?: string
+  /** Decision model for the post-turn memory filter. All three or none; no host in code. */
+  DECISION_URL?: string
+  DECISION_API_KEY?: string
+  DECISION_MODEL?: string
   /** Slack adapter is optional; without these the Slack routes return 503. */
   SLACK_SIGNING_SECRET?: string
   SLACK_BOT_TOKEN?: string
