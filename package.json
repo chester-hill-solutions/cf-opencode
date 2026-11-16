@@ -20,6 +20,7 @@
     "check:config": "bun scripts/check-config.mjs",
     "test": "bun scripts/native-storage-qualification/build-probe.ts && bun scripts/provider-egress-qualification/build-probe.ts && bun test tests scripts/native-storage-qualification/*.test.ts scripts/provider-egress-qualification/*.test.ts && bun run --cwd runtime/opencode test",
     "test:workers": "vitest run",
+    "cli": "bun tools/cli/main.ts",
     "qualification:preflight": "bun scripts/native-storage-qualification/build-probe.ts && tsc -p scripts/native-storage-qualification/tsconfig.json && bun test scripts/native-storage-qualification/*.test.ts && bun scripts/native-storage-qualification/preflight.ts",
     "qualification:local": "bun scripts/native-storage-qualification/build-probe.ts && bun scripts/native-storage-qualification/local-matrix.ts",
     "smoke:container": "bash scripts/smoke-container.sh",
