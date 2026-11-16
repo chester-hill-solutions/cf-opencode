@@ -16,7 +16,7 @@
         "zod": "^4.6.7",
       },
       "devDependencies": {
-        "@chester-hill-solutions/ratchet-strap": "./tools/vendor/chester-hill-solutions-ratchet-strap-0.6.0.tgz",
+        "@chester-hill-solutions/ratchet-strap": "0.6.2",
         "@cloudflare/vitest-plugin": "^1.6.0",
         "@cloudflare/workers-types": "^5.20261107.1",
         "@eslint/js": "9",
@@ -65,9 +65,6 @@
         "react-dom": "^19.0.0",
       },
     },
-  },
-  "overrides": {
-    "@chester-hill-solutions/dev-guards": "./tools/vendor/chester-hill-solutions-dev-guards-0.1.0.tgz",
   },
   "packages": {
     "@aboiteau/ui": ["@aboiteau/ui@workspace:packages/ui"],
@@ -132,9 +129,9 @@
 
     "@cfworker/json-schema": ["@cfworker/json-schema@4.1.6", "", {}, "sha512-YzVGTHXf4bzlyAL5KAvHYCdNbbt6zM5cYkAgxqxQPDQM6aZ4ShIIN5yJ+6q7YeonnevxT8k/LmD2tJi/jOiKkg=="],
 
-    "@chester-hill-solutions/dev-guards": ["@chester-hill-solutions/dev-guards@./tools/vendor/chester-hill-solutions-dev-guards-0.1.0.tgz", {}],
+    "@chester-hill-solutions/dev-guards": ["@chester-hill-solutions/dev-guards@0.1.0", "https://npm.pkg.github.com/download/@chester-hill-solutions/dev-guards/0.1.0/d4a1657ef5e5e14a6f76452f2a89778570e55372", {}, "sha512-OIALOsUDs1XtkgrasFIEY/+XkER355C11zL1eByunzJs9B4i9+mVH78CSzYfpeoxT2uQG/gClVlIW1qsoza/aA=="],
 
-    "@chester-hill-solutions/ratchet-strap": ["@chester-hill-solutions/ratchet-strap@./tools/vendor/chester-hill-solutions-ratchet-strap-0.6.0.tgz", { "dependencies": { "@chester-hill-solutions/dev-guards": "0.1.0", "@opentelemetry/api": "1.9.0" }, "bin": { "ratchet-strap": "./dist/cli.js" } }],
+    "@chester-hill-solutions/ratchet-strap": ["@chester-hill-solutions/ratchet-strap@0.6.2", "https://npm.pkg.github.com/download/@chester-hill-solutions/ratchet-strap/0.6.2/52dc55ca59c440b386400008ae62a2f8cf915355", { "dependencies": { "@chester-hill-solutions/dev-guards": "0.1.0", "@opentelemetry/api": "1.9.0" }, "bin": { "ratchet-strap": "dist/cli.js" } }, "sha512-zn5+HEloRMvPm5uY7zY+mPAC7MqRA+AKoj6bEi5uuyQnjSYOssryNhjE2mGwad89htPUZSk1T4jxUU6NTrfVUw=="],
 
     "@chester-hill-solutions/vault": ["@chester-hill-solutions/vault@file:vendor/chester-hill-solutions/vault", {}],
 
