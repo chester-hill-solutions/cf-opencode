@@ -41,6 +41,26 @@ export interface ControlPlaneOptions {
   }): Promise<void>
 }
 
+/** The two answer shapes the public question route accepts. */
+function answerInput(body: unknown):
+  | { kind: "permission"; decision: "once" | "always" | "reject" }
+  | { kind: "question"; answer: FormAnswer }
+  | undefined {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return undefined
+  const input = body as { decision?: unknown; answer?: unknown }
+  if (input.decision === "once" || input.decision === "always" || input.decision === "reject") {
+    return { kind: "permission", decision: input.decision }
+  }
+  if (input.answer && typeof input.answer === "object" && !Array.isArray(input.answer)) {
+    return { kind: "question", answer: input.answer as FormAnswer }
+  }
+  return undefined
+}
+
+function questionConflict(error: "stale" | "not_pending" | "foreign_turn"): Response {
+  return Response.json({ error }, { status: 409 })
+}
+
 /** Phases in which a turn can be blocked waiting for an answer. */
 function isBlockingPhase(phase: ConversationState["phase"]): boolean {
   return phase === "running" || phase === "settling" || phase === "admitting"
@@ -122,6 +142,46 @@ export class ConversationControlPlane {
       })
       return Response.json({ questions })
     } catch {
+      return Response.json({ error: "questions_unavailable" }, { status: 503 })
+    }
+  }
+
+  /**
+   * Answer one pending interaction. The first answer wins: the runtime's own
+   * pending check decides, so a second answer from HTTP or Slack is
+   * `409 not_pending` rather than a second reply.
+   */
+  async answerQuestion(requestID: string, body: unknown): Promise<Response> {
+    const state = await this.options.store.get()
+    if (!state.sessionID) return questionConflict("stale")
+    const input = answerInput(body)
+    if (!input) return Response.json({ error: "answer or decision is required" }, { status: 400 })
+    return input.kind === "permission"
+      ? this.answerPermission(state.sessionID, requestID, input.decision)
+      : this.answerForm(state.sessionID, requestID, input.answer)
+  }
+
+  private async answerPermission(
+    sessionID: string,
+    requestID: string,
+    decision: "once" | "always" | "reject",
+  ): Promise<Response> {
+    const owner = (await this.options.store.get()).pending[requestID]
+    if (owner !== undefined && owner !== sessionID) return questionConflict("foreign_turn")
+    if (owner === undefined) return questionConflict("not_pending")
+    const response = await this.onPermission({ requestID, decision })
+    if (response.status === 404) return questionConflict("not_pending")
+    return response.ok ? new Response(null, { status: 204 }) : response
+  }
+
+  private async answerForm(sessionID: string, formID: string, answer: FormAnswer): Promise<Response> {
+    try {
+      await this.replyToForm(sessionID, formID, answer)
+      return new Response(null, { status: 204 })
+    } catch (error) {
+      const message = errorMessage(error)
+      if (message.includes("older session")) return questionConflict("stale")
+      if (message.includes("no longer waiting")) return questionConflict("not_pending")
       return Response.json({ error: "questions_unavailable" }, { status: 503 })
     }
   }

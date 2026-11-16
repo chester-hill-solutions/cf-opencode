@@ -627,7 +627,7 @@ export class Conversation extends DurableObject<Env> {
     if (/^\/workspace\/check-collector(?:\/|$)/.test(new URL(request.url).pathname)) return this.checkDispatcher.fetch(request)
     if (/^\/workspace\/checks(?:\/|$)/.test(new URL(request.url).pathname)) return this.workspaceCheckRequest(request)
     // Status and questions are passive reads: neither starts lifecycle recovery or jobs.
-    const passive = await passiveReadRoute(request, this.store, () => this.controlPlane.onQuestions())
+    const passive = await passiveReadRoute(request, this.store, () => this.controlPlane.onQuestions(), (id, body) => this.controlPlane.answerQuestion(id, body))
     if (passive) return passive
     await this.scheduler.captureLegacyAlarmMigration(false)
     return this.lifecycle.fetch(request)

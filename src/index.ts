@@ -19,7 +19,9 @@ import { parseObjectJson } from "./http-json"
 import { validateOpencodeKey } from "./opencode-key-validation"
 import { handleCheckCollector } from "./workspace-check-collector"
 import { handleSlackCanaryRoute } from "./slack-canary"
-import { alertsRoute, conversationStub, KEY_PATTERN, questionsRoute, safeDecode, turnStatusRoute } from "./worker-routes"
+import {
+  alertsRoute, answerRoute, conversationStub, KEY_PATTERN, questionsRoute, safeDecode, settingsDo, turnStatusRoute,
+} from "./worker-routes"
 
 export { Conversation } from "./conversation"
 export { Settings } from "./settings-do"
@@ -177,10 +179,17 @@ export default {
  */
 async function apiRoute(request: Request, env: Env, url: URL, ctx: ExecutionContext): Promise<Response> {
   const parts = url.pathname.split("/")
-  if (request.method !== "GET" || parts.length !== 5 || parts[1] !== "api" ||
-    parts[2] !== "conversations" || parts[4] !== "questions") return handleApi(request, env, url, ctx)
   const key = parts[3] ?? ""
-  return questionsRoute(request, env, key, () => ctx.waitUntil(settingsDo(env, "/conversations", { key }).catch(() => undefined)))
+  const record = () => ctx.waitUntil(settingsDo(env, "/conversations", { key }).catch(() => undefined))
+  if (request.method === "GET" && parts.length === 5 && parts[1] === "api" &&
+    parts[2] === "conversations" && parts[4] === "questions") {
+    return questionsRoute(request, env, key, record)
+  }
+  if (request.method === "POST") {
+    const answered = await answerRoute(request, env, parts, record)
+    if (answered) return answered
+  }
+  return handleApi(request, env, url, ctx)
 }
 
 /** HTTP/SSE adapter: any client can drive a conversation. */
@@ -525,18 +534,6 @@ const GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
 const GITHUB_USER_URL = "https://api.github.com/user"
 /** The conversation DO whose container performs provider onboarding. */
 const ONBOARDING_KEY = "onboarding"
-
-async function settingsDo(
-  env: Env,
-  path: string,
-  body?: unknown,
-  method?: string,
-): Promise<Response> {
-  return env.SETTINGS.getByName("global").fetch(`https://settings${path}`, {
-    method: method ?? (body === undefined ? "GET" : "POST"),
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-  })
-}
 
 async function handleOnboarding(
   request: Request,
