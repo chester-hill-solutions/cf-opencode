@@ -27,6 +27,11 @@ export class ConversationRuntimeAccess {
   get exclusivePending(): number { return this.gate.exclusivePending }
   /** Counts user demand at request time, including calls waiting for preparation. */
   get activityEpoch(): number { return this.demandEpoch }
+  /** Whether a runtime can be borrowed without preparing one. */
+  get warm(): boolean {
+    const identity = this.options.identity()
+    return identity.ready && identity.running && Boolean(identity.port && identity.generation)
+  }
 
   prepare(): Promise<ContainerPort> {
     if (!this.preparing) {

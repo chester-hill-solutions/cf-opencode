@@ -4,6 +4,7 @@ import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/account
 import { usageLogResponse } from "./helpers/usage-log"
 import type { ConversationState } from "../src/state"
 import type { Form } from "../src/slack-forms"
+import { runtimeCache } from "./helpers/runtime-cache"
 
 type Call = { method: string; path: string; body?: unknown }
 
@@ -54,6 +55,14 @@ function fakeContainer(calls: Call[], usageExecution?: "succeeded" | "failed" | 
       return json({ data: {} })
     },
   })
+}
+
+/** Mark the runtime warm so a command test exercises command logic, not coldness. */
+function warm(instance: unknown, calls: Call[], usageExecution?: "succeeded" | "failed" | "interrupted" | "running") {
+  const internals = instance as { transport: (port: number) => { fetch(input: Request | string | URL): Promise<Response> } }
+  const factory = fakeContainer(calls, usageExecution)
+  internals.transport = factory
+  runtimeCache(instance).markVerified(factory(4173), "slack-command-test-generation", true)
 }
 
 async function seed(stub: ReturnType<typeof env.CONVERSATION.getByName>, state: Record<string, unknown>) {
@@ -120,7 +129,7 @@ describe("Slack commands in the Conversation DO", () => {
     await seed(stub, { sessionID: "ses_1", slack: { channel: "C_TEST" } })
     const calls: Call[] = []
     const result = await runInDurableObject(stub, async (instance, runtime) => {
-      instance.transport = fakeContainer(calls)
+      warm(instance, calls)
       const posts: string[] = []
       ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async (_method: string, body: Record<string, unknown>) => { posts.push(String(body.text)); return { ok: true } }
       const make = (eventID: string, text: string) => instance.fetch(new Request("https://conversation/slack", { method: "POST", body: JSON.stringify({ eventID, event: { type: "message", channel: "C_TEST", channel_type: "im", ts: eventID, text } }) }))
@@ -143,7 +152,7 @@ describe("Slack commands in the Conversation DO", () => {
       await runtime.storage.put("usage-source:test", { sourceID: "source-kept", costUSD: 0.25 })
     })
     const result = await runInDurableObject(stub, async (instance, runtime) => {
-      instance.transport = fakeContainer(calls)
+      warm(instance, calls)
       const posts: string[] = []
       ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async (_method: string, body: Record<string, unknown>) => { posts.push(String(body.text)); return { ok: true } }
       const sendCommand = (eventID: string, text: string) => instance.fetch(new Request("https://conversation/slack", { method: "POST", body: JSON.stringify({ eventID, event: { type: "message", channel: "C_TEST", channel_type: "im", ts: eventID, text } }) }))
@@ -167,7 +176,7 @@ describe("Slack commands in the Conversation DO", () => {
     await seed(stub, { sessionID: "ses_1", phase: "running", budgetReservation: { reservationID: "keep-me", dispatched: true }, slack: { channel: "C_TEST" } })
     const calls: Call[] = []
     const result = await runInDurableObject(stub, async (instance, runtime) => {
-      instance.transport = fakeContainer(calls)
+      warm(instance, calls)
       const posts: string[] = []
       ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async (_method: string, body: Record<string, unknown>) => { posts.push(String(body.text)); return { ok: true } }
       for (const [id, text] of [["blocked-model", "!model p/chat-b"], ["blocked-session", "!sessions 1"], ["stop", "!stop"]]) {
@@ -189,7 +198,7 @@ describe("Slack commands in the Conversation DO", () => {
     await seed(stub, { sessionID: "ses_1", phase: "idle", checkpointKey: "archive-key", slack: { channel: "C_TEST" } })
     const calls: Call[] = []
     const result = await runInDurableObject(stub, async (instance, runtime) => {
-      instance.transport = fakeContainer(calls, "running")
+      warm(instance, calls, "running")
       const posts: string[] = []
       ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async (_method: string, body: Record<string, unknown>) => { posts.push(String(body.text)); return { ok: true } }
       await instance.fetch(new Request("https://conversation/slack", { method: "POST", body: JSON.stringify({ event: { type: "message", channel: "C_TEST", channel_type: "im", ts: "new-fenced", text: "!new" } }) }))
@@ -236,7 +245,7 @@ describe("Slack commands in the Conversation DO", () => {
     await seed(stub, {})
     const calls: Call[] = []
     const result = await runInDurableObject(stub, async (instance, runtime) => {
-      instance.transport = fakeContainer(calls)
+      warm(instance, calls)
       ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async () => ({ ok: true })
       const post = (id: string, text: string) => instance.fetch(new Request("https://conversation/slack", { method: "POST", body: JSON.stringify({ eventID: id, event: { type: "message", channel: "D_TEST", channel_type: "im", ts: id, text } }) }))
       await post("pre-model", "!model p/chat-b")
@@ -332,4 +341,44 @@ describe("Slack commands in the Conversation DO", () => {
     ])
     expect(result.state.announcedForms).toContain("form-choice")
   })
+
+  it("answers status, refusals and stop from saved state without touching a runtime", async () => {
+    const stub = env.CONVERSATION.getByName("slack-command-harness-first-test")
+    await seed(stub, {
+      sessionID: "ses_1", phase: "idle",
+      queue: [{ id: "q1", enqueuedAt: Date.now(), source: "slack", text: "queued follow-up", attempts: 0, nextAttemptAt: Date.now() }],
+    })
+    const calls: Call[] = []
+    const result = await runInDurableObject(stub, async (instance, runtime) => {
+      // No prepared runtime and no native container: every command below has to
+      // answer from storage, and any prepare would reach this transport.
+      runtimeCache(instance).invalidate()
+      instance.transport = fakeContainer(calls)
+      const posts: string[] = []
+      ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async (_method: string, body: Record<string, unknown>) => { posts.push(String(body.text)); return { ok: true } }
+      const make = (eventID: string, text: string) => instance.fetch(new Request("https://conversation/slack", { method: "POST", body: JSON.stringify({ eventID, event: { type: "message", channel: "D_TEST", channel_type: "im", ts: eventID, text } }) }))
+      await make("harness-status", "!status")
+      await make("harness-answer", "!answer")
+      await make("harness-sessions", "!sessions")
+      await make("harness-new", "!new")
+      const before = await runtime.storage.get<ConversationState>("state")
+      await make("harness-stop", "!stop")
+      const after = await runtime.storage.get<ConversationState>("state")
+      if (!before || !after) throw new Error("conversation state missing after harness commands")
+      return { posts, before, after, lease: await runtime.storage.get("containerLease") }
+    })
+    const reply = result.posts.join("\n")
+    expect(reply).toContain("Runtime: cold (harness mode)")
+    expect(reply).toContain("1 message queued")
+    expect(reply.match(/needs the code runtime/g)).toHaveLength(3)
+    expect(reply).toContain("Queued follow-ups cleared")
+    // The mapped session survived a refused !new; only the queue moved.
+    expect(result.before.sessionID).toBe("ses_1")
+    expect(result.after.sessionID).toBe("ses_1")
+    expect(result.after.queue ?? []).toEqual([])
+    expect(result.after.checkpointKey).toBeUndefined()
+    // No execution was started, held or checkpointed to answer these.
+    expect(result.lease).toBeUndefined()
+    expect(calls).toHaveLength(0)
+  }, 12000)
 })

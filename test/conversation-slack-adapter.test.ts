@@ -10,6 +10,12 @@ const observation: TurnObservation = {
   timeoutObservedAt: null, settlement: "active",
 }
 
+/** The warm client surface these command tests read. */
+type WarmClient = {
+  session: { get(args: { sessionID: string }): Promise<{ id: string; title: string }>; list(): Promise<{ data: unknown[] }> }
+  model: { list(): Promise<{ data: unknown[] }> }
+}
+
 function fixture(overrides: Record<string, unknown> = {}) {
   const calls: Array<[string, ...unknown[]]> = []
   const replies: string[] = []
@@ -33,7 +39,7 @@ function fixture(overrides: Record<string, unknown> = {}) {
       acquire: async () => ({ kind: "granted", reservation: { reservationID: "r1", date: "2026-11-14" } }),
       markDispatched: async () => true,
     },
-    controlPlane: { pendingForms: async () => [], replyToForm: async () => {} },
+    controlPlane: { pendingForms: async () => [], pendingFormsWarm: async () => [], replyToForm: async () => {} },
     upgrades: { hasPending: async () => false }, turnExecution: { isPumping: false, startStream: async () => {} },
     controls: {
       steer: async (text: string) => { calls.push(["steer", text]); return "Guidance added." },
@@ -42,6 +48,14 @@ function fixture(overrides: Record<string, unknown> = {}) {
     observation: async () => observation,
     scheduler: { schedule: async () => {} }, recovery: { active: false },
     withClient: async (fn: (client: any) => Promise<unknown>) => fn({ session: { prompt: async (args: unknown) => { calls.push(["prompt", args]) } } }),
+    runtimeWarm: () => true,
+    withWarmClient: async (fn: (client: WarmClient) => Promise<unknown>) => fn({
+      session: {
+        get: async ({ sessionID }: { sessionID: string }) => ({ id: sessionID, title: "Warm", location: { directory: "/workspace" } }),
+        list: async () => ({ data: [] }),
+      },
+      model: { list: async () => ({ data: [] }) },
+    }),
     withUsageLifecycle: async (fn: () => Promise<Response>) => fn(),
     settings: async () => ({ model: "provider/model", streaming: false }),
     usageToday: async () => ({ date: "2026-11-14", costUSD: 0, reservedUSD: 0, input: 0, output: 0 }),

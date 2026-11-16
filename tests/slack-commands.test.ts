@@ -20,6 +20,7 @@ function fake(overrides: Partial<SlackCommandServices> = {}) {
   const calls: Array<[string, ...unknown[]]> = []
   const service: SlackCommandServices = {
     getState: async () => ({ sessionID: "ses_current", phase: "running" }),
+    runtime: () => ({ warm: true }),
     getDefaultModel: async () => "opencode/deepseek-v4.1-flash",
     getModels: async () => [model],
     getSession: async (id) => session(id),
@@ -287,4 +288,75 @@ test("ordinary descriptions of temporary work never become retention changes or 
   expect(await handleSlackCommand("temporary disposable analysis", f.service)).toBe(false)
   expect(f.calls).toEqual([])
   expect(f.replies).toEqual([])
+})
+
+describe("harness-first commands with no execution", () => {
+  // Every runtime-backed reader throws: a command that reaches for one fails
+  // loudly here, which is how "never start a runtime to answer" is asserted.
+  const cold = (overrides: Partial<SlackCommandServices> = {}) => fake({
+    runtime: () => ({ warm: false }),
+    getModels: async () => { throw new Error("cold: model catalogue") },
+    getSession: async () => { throw new Error("cold: session") },
+    listSessions: async () => { throw new Error("cold: sessions") },
+    listForms: async () => { throw new Error("cold: forms") },
+    ...overrides,
+  })
+
+  test("!status answers from durable state and reports the runtime as cold", async () => {
+    const f = cold({
+      getState: async () => ({
+        sessionID: "ses_current", phase: "idle", modelOverride: "p/chat-b",
+        queue: [{ id: "q1", text: "queued follow-up" }],
+      }),
+    })
+    expect(await handleSlackCommand("!status", f.service)).toBe(true)
+    expect(f.replies[0]).toContain("Runtime: cold (harness mode)")
+    expect(f.replies[0]).toContain("Session `ses_current`")
+    expect(f.replies[0]).toContain("Phase: idle")
+    expect(f.replies[0]).toContain("Model: `p/chat-b`")
+    expect(f.replies[0]).toContain("1 message queued")
+    expect(f.replies[0]).toContain("not shown while it is cold")
+    expect(f.replies).toHaveLength(1)
+  })
+
+  test("harness-only commands answer in one reply each", async () => {
+    const f = cold({
+      usageText: async () => "Usage information",
+      workspace: {
+        repository: async () => Response.json({ workspaceRepository: null }),
+        check: async () => "Check not queued: the workspace is not warm.",
+        checks: async () => "No checks requested here.",
+      },
+    })
+    for (const text of ["!help", "!usage", "!workspace", "!repo", "!checks"]) {
+      expect(await handleSlackCommand(text, f.service)).toBe(true)
+    }
+    expect(f.replies).toHaveLength(5)
+    expect(f.calls).toEqual([])
+    expect(f.replies.join("\n")).toContain("!status")
+  })
+
+  test("session-dependent commands say they need an execution instead of starting one", async () => {
+    const f = cold()
+    for (const text of ["!sessions", "!session 1", "!model", "!answer", "!cancel", "!steer keep going", "!new"]) {
+      expect(await handleSlackCommand(text, f.service)).toBe(true)
+    }
+    expect(f.replies).toHaveLength(7)
+    for (const reply of f.replies) expect(reply).toContain("needs the code runtime")
+    expect(f.calls).toEqual([])
+  })
+
+  test("!model still reports the saved model while the catalogue is unavailable", async () => {
+    const f = cold({ getState: async () => ({ modelOverride: "p/chat-a" }) })
+    await handleSlackCommand("!model", f.service)
+    expect(f.replies[0]).toContain("Current model: `p/chat-a`")
+    expect(f.replies[0]).toContain("needs the code runtime")
+  })
+
+  test("!new without a mapped session needs no runtime", async () => {
+    const f = cold({ getState: async () => ({}) })
+    expect(await handleSlackCommand("!new", f.service)).toBe(true)
+    expect(f.replies[0]).toContain("fresh session")
+    expect(f.calls).toContainEqual(["newSession"])
+  })
 })

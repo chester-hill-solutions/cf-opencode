@@ -1,5 +1,5 @@
 import type { ConversationEvent } from "../events"
-import { ConversationStore, type QueuedMessage, type SlackTarget } from "../state"
+import { ConversationStore, type ConversationState, type QueuedMessage, type SlackTarget } from "../state"
 
 export interface DeliveryControlResult {
   ok: boolean
@@ -9,6 +9,8 @@ export interface DeliveryControlResult {
   outcome?: "acknowledged" | "ambiguous"
   queue?: { id: string; position: number; depth: number }
   stopRequested?: boolean
+  /** An active phase with no runtime: the queue was handled, nothing was interrupted. */
+  runtimeAbsent?: boolean
   consumed?: null
   observedStop?: null
   settled?: boolean
@@ -19,6 +21,8 @@ export interface ConversationDeliveryControlsOptions {
   store: ConversationStore
   withLock<T>(task: () => Promise<T>): Promise<T>
   unavailable(): Promise<boolean>
+  /** Whether an interrupt could reach a running execution right now. */
+  runtimeAvailable(): boolean
   admitting(): boolean
   queueLimit: number
   steer(sessionID: string, text: string): Promise<void>
@@ -41,6 +45,14 @@ export interface InterruptOptions {
   preserveQueue?: boolean
   slack?: SlackTarget
   idempotencyKey?: string
+}
+
+/** The turn a stop was prepared against. */
+interface InterruptTarget {
+  sessionID: string
+  runStartedAt: number | null
+  reservationID: string | null
+  requestedAt: number
 }
 
 interface InterruptIntent {
@@ -100,98 +112,126 @@ export class ConversationDeliveryControls {
     options: InterruptOptions = {},
   ): Promise<DeliveryControlResult> {
     const text = followUp?.trim() || undefined
-    return this.options.withLock(async () => {
-      try {
-        if (await this.options.unavailable()) return failure("interrupt", 503, "conversation_unavailable")
-      } catch {
-        return failure("interrupt", 503, "conversation_unavailable")
-      }
-      if (this.options.admitting()) return failure("interrupt", 409, "admission_in_progress")
+    return this.options.withLock(() => this.stopLocked(text, options))
+  }
 
-      const before = await this.options.store.get()
-      const phase = before.phase ?? "idle"
-      if (phase === "admitting") return failure("interrupt", 409, "admission_in_progress")
-      const active = (phase === "running" || phase === "settling") && Boolean(before.sessionID)
-      if (options.requireActive && !active) return failure("interrupt", 409, "no_active_turn")
+  /** A stop is either a queue action or an interrupt; both run under the lock. */
+  private async stopLocked(text: string | undefined, options: InterruptOptions): Promise<DeliveryControlResult> {
+    const external = await this.unavailableRefusal()
+    if (external) return external
+    const before = await this.options.store.get()
+    const refused = this.phaseRefusal(before, options)
+    if (refused) return refused
+    if (!isActive(before)) return this.stopQueue(text, options, { active: false, runtimeAbsent: false })
+    // An active phase with no execution: nothing to interrupt, but the queue is
+    // the harness's own. Never start a runtime just to stop one.
+    if (!this.options.runtimeAvailable()) return this.stopQueue(text, options, { active: true, runtimeAbsent: true })
+    return this.interruptTurn(text, before, options)
+  }
 
-      if (!active && phase !== "idle" && phase !== "queued") {
-        return failure("interrupt", 409, "no_active_turn")
-      }
-      if (!active) {
-        let queueWrite!: QueueWrite
-        try {
-          await this.options.storage.transaction(async () => {
-            queueWrite = await this.writeQueue(text, options, false)
-            if (queueWrite.kind === "queued") await this.options.schedule()
-          })
-        } catch {
-          return failure("interrupt", 503, "conversation_unavailable")
-        }
-        if (queueWrite.kind === "full") return failure("interrupt", 429, "queue_full")
-        if (!text) return { ok: true, status: 200, delivery: "interrupt", stopRequested: false }
-        if (queueWrite.kind === "queued") {
-          return { ok: true, status: 202, delivery: "interrupt", queue: queueWrite.queue, stopRequested: false }
-        }
-        return { ok: true, status: 200, delivery: "interrupt", stopRequested: false }
-      }
+  /** Unavailable authority or an admission in flight cannot be stopped. */
+  private async unavailableRefusal(): Promise<DeliveryControlResult | undefined> {
+    try {
+      if (await this.options.unavailable()) return failure("interrupt", 503, "conversation_unavailable")
+    } catch {
+      return failure("interrupt", 503, "conversation_unavailable")
+    }
+    if (this.options.admitting()) return failure("interrupt", 409, "admission_in_progress")
+    return undefined
+  }
 
-      const sessionID = before.sessionID!
-      const runStartedAt = validTime(before.runStartedAt) ? before.runStartedAt : null
-      const reservationID = before.budgetReservation?.reservationID ?? null
-      const requestedAt = Date.now()
-      const preparation = await this.options.storage.transaction(async (): Promise<StopPreparation> => {
-        const state = await this.options.store.get()
-        if (this.options.admitting() || (state.phase ?? "idle") === "admitting") {
-          return { ok: false, result: failure("interrupt", 409, "admission_in_progress") }
-        }
-        const currentPhase = state.phase ?? "idle"
-        if ((currentPhase !== "running" && currentPhase !== "settling") || state.sessionID !== sessionID ||
-          (validTime(state.runStartedAt) ? state.runStartedAt : null) !== runStartedAt ||
-          (state.budgetReservation?.reservationID ?? null) !== reservationID) {
-          return { ok: false, result: failure("interrupt", 409, "active turn changed; retry status") }
-        }
-        const existing = await this.options.storage.get<InterruptIntent>(INTERRUPT_INTENT_KEY)
-        if (sameTurn(existing, sessionID, runStartedAt, reservationID)) {
-          return { ok: false, result: failure("interrupt", 409, "interrupt_pending") }
-        }
-        const queueResult = await this.queueForInterrupt(text, options)
-        if (queueResult.kind === "full") {
-          return { ok: false, result: failure("interrupt", 429, "queue_full") }
-        }
-        await this.options.storage.put(INTERRUPT_INTENT_KEY, {
-          sessionID, runStartedAt, reservationID, status: "requested", requestedAt,
-        } satisfies InterruptIntent)
-        return { ok: true, queueWrite: queueResult }
-      })
-      if (!preparation.ok) return preparation.result
-      const { queueWrite } = preparation
+  /** Phases a stop cannot act on, refused before any queue or runtime work. */
+  private phaseRefusal(before: ConversationState, options: InterruptOptions): DeliveryControlResult | undefined {
+    const phase = before.phase ?? "idle"
+    if (phase === "admitting") return failure("interrupt", 409, "admission_in_progress")
+    if (options.requireActive && !isActive(before)) return failure("interrupt", 409, "no_active_turn")
+    if (!isActive(before) && phase !== "idle" && phase !== "queued") {
+      return failure("interrupt", 409, "no_active_turn")
+    }
+    return undefined
+  }
 
-      let outcome: "acknowledged" | "ambiguous" = "acknowledged"
-      try {
-        await this.options.interrupt(sessionID)
-      } catch {
-        outcome = "ambiguous"
+  /** Interrupt the turn this stop was prepared against, behind a durable intent fence. */
+  private async interruptTurn(
+    text: string | undefined,
+    before: ConversationState,
+    options: InterruptOptions,
+  ): Promise<DeliveryControlResult> {
+    const sessionID = before.sessionID
+    if (!sessionID) return failure("interrupt", 409, "no_active_turn")
+    const target: InterruptTarget = {
+      sessionID,
+      runStartedAt: validTime(before.runStartedAt) ? before.runStartedAt : null,
+      reservationID: before.budgetReservation?.reservationID ?? null,
+      requestedAt: Date.now(),
+    }
+    const preparation = await this.prepareInterrupt(text, options, target)
+    if (!preparation.ok) return preparation.result
+    const outcome = await this.sendInterrupt(sessionID)
+    await this.recordInterrupt(target, outcome)
+    await this.options.schedule().catch(() => {})
+    return {
+      ok: outcome === "acknowledged",
+      status: outcome === "acknowledged" ? 200 : 502,
+      ...(outcome === "ambiguous" ? { error: "interrupt outcome is unknown" } : {}),
+      delivery: "interrupt",
+      outcome,
+      ...(preparation.queueWrite.kind === "queued" ? { queue: preparation.queueWrite.queue } : {}),
+      stopRequested: true,
+      observedStop: null,
+      settled: false,
+    }
+  }
+
+  /** Re-read the turn under the storage transaction and record the intent before interrupting. */
+  private async prepareInterrupt(
+    text: string | undefined,
+    options: InterruptOptions,
+    target: InterruptTarget,
+  ): Promise<StopPreparation> {
+    return this.options.storage.transaction(async (): Promise<StopPreparation> => {
+      const state = await this.options.store.get()
+      if (this.options.admitting() || (state.phase ?? "idle") === "admitting") {
+        return { ok: false, result: failure("interrupt", 409, "admission_in_progress") }
       }
-      await this.options.storage.transaction(async () => {
-        const current = await this.options.storage.get<InterruptIntent>(INTERRUPT_INTENT_KEY)
-        if (current && current.sessionID === sessionID && current.runStartedAt === runStartedAt &&
-          current.reservationID === reservationID && current.requestedAt === requestedAt) {
-          await this.options.storage.put(INTERRUPT_INTENT_KEY, { ...current, status: outcome })
-        }
-      }).catch(() => {})
-      await this.options.schedule().catch(() => {})
-      return {
-        ok: outcome === "acknowledged",
-        status: outcome === "acknowledged" ? 200 : 502,
-        ...(outcome === "ambiguous" ? { error: "interrupt outcome is unknown" } : {}),
-        delivery: "interrupt",
-        outcome,
-        ...(queueWrite.kind === "queued" ? { queue: queueWrite.queue } : {}),
-        stopRequested: true,
-        observedStop: null,
-        settled: false,
+      const currentPhase = state.phase ?? "idle"
+      if ((currentPhase !== "running" && currentPhase !== "settling") || state.sessionID !== target.sessionID ||
+        (validTime(state.runStartedAt) ? state.runStartedAt : null) !== target.runStartedAt ||
+        (state.budgetReservation?.reservationID ?? null) !== target.reservationID) {
+        return { ok: false, result: failure("interrupt", 409, "active turn changed; retry status") }
       }
+      const existing = await this.options.storage.get<InterruptIntent>(INTERRUPT_INTENT_KEY)
+      if (sameTurn(existing, target.sessionID, target.runStartedAt, target.reservationID)) {
+        return { ok: false, result: failure("interrupt", 409, "interrupt_pending") }
+      }
+      const queueWrite = await this.queueForInterrupt(text, options)
+      if (queueWrite.kind === "full") return { ok: false, result: failure("interrupt", 429, "queue_full") }
+      await this.options.storage.put(INTERRUPT_INTENT_KEY, {
+        sessionID: target.sessionID, runStartedAt: target.runStartedAt, reservationID: target.reservationID,
+        status: "requested", requestedAt: target.requestedAt,
+      } satisfies InterruptIntent)
+      return { ok: true, queueWrite }
     })
+  }
+
+  private async sendInterrupt(sessionID: string): Promise<"acknowledged" | "ambiguous"> {
+    try {
+      await this.options.interrupt(sessionID)
+      return "acknowledged"
+    } catch {
+      return "ambiguous"
+    }
+  }
+
+  /** Record the outcome only for the intent this stop wrote, never a newer one. */
+  private async recordInterrupt(target: InterruptTarget, status: "acknowledged" | "ambiguous"): Promise<void> {
+    await this.options.storage.transaction(async () => {
+      const current = await this.options.storage.get<InterruptIntent>(INTERRUPT_INTENT_KEY)
+      if (current && current.sessionID === target.sessionID && current.runStartedAt === target.runStartedAt &&
+        current.reservationID === target.reservationID && current.requestedAt === target.requestedAt) {
+        await this.options.storage.put(INTERRUPT_INTENT_KEY, { ...current, status })
+      }
+    }).catch(() => {})
   }
 
   /** An interrupt may queue or replace; a cancel leaves the queue untouched. */
@@ -201,6 +241,44 @@ export class ConversationDeliveryControls {
   ): Promise<QueueWrite> {
     if (!text && options.preserveQueue) return { kind: "unchanged" }
     return this.writeQueue(text, options, true)
+  }
+
+  /** Queue handling for a stop that has no interrupt to send. */
+  private async stopQueue(
+    text: string | undefined,
+    options: InterruptOptions,
+    context: { active: boolean; runtimeAbsent: boolean },
+  ): Promise<DeliveryControlResult> {
+    const prepared = await this.withQueueWrite(text, options, context.active)
+    if (!prepared.ok) return prepared.result
+    const queued = prepared.queueWrite.kind === "queued" ? prepared.queueWrite : undefined
+    return {
+      ok: true,
+      status: queued ? 202 : 200,
+      delivery: "interrupt",
+      stopRequested: false,
+      ...(context.runtimeAbsent ? { runtimeAbsent: true } : {}),
+      ...(queued ? { queue: queued.queue } : {}),
+    }
+  }
+
+  /** Write the stop's queue intent and schedule its drain in one transaction. */
+  private async withQueueWrite(
+    text: string | undefined,
+    options: { replaceQueue?: boolean; slack?: SlackTarget; idempotencyKey?: string },
+    active: boolean,
+  ): Promise<StopPreparation> {
+    let queueWrite!: QueueWrite
+    try {
+      await this.options.storage.transaction(async () => {
+        queueWrite = await this.writeQueue(text, options, active)
+        if (queueWrite.kind === "queued") await this.options.schedule()
+      })
+    } catch {
+      return { ok: false, result: failure("interrupt", 503, "conversation_unavailable") }
+    }
+    if (queueWrite.kind === "full") return { ok: false, result: failure("interrupt", 429, "queue_full") }
+    return { ok: true, queueWrite }
   }
 
   private async writeQueue(
@@ -231,6 +309,27 @@ export class ConversationDeliveryControls {
     if (result.kind !== "enqueued") return { kind: "full", depth: result.depth }
     return { kind: "queued", queue: { id: result.id, position: result.position, depth: result.depth } }
   }
+}
+
+/** What a stop result means to the person who asked for it. */
+export function stopMessage(result: DeliveryControlResult, followUp: string | undefined): string {
+  if (!result.ok) {
+    const outcome = result.outcome === "ambiguous" ? "outcome is unknown; the hold and follow-up are retained" : "was refused"
+    return `Stop ${outcome}: ${result.error}`
+  }
+  if (result.runtimeAbsent) {
+    return followUp
+      ? "No code runtime is running, so there was no active turn to interrupt. The follow-up is queued and starts work when it drains."
+      : "No code runtime is running, so there was no active turn to interrupt. Queued follow-ups were cleared."
+  }
+  if (result.stopRequested) {
+    return `Stop requested; runtime stop is unconfirmed. Usage settlement must finish before ${followUp ? "the queued follow-up" : "another turn"}.`
+  }
+  return followUp ? "Follow-up queued; no active turn needed interruption." : "Queued follow-ups cleared; no active turn needed interruption."
+}
+
+function isActive(state: ConversationState): boolean {
+  return (state.phase === "running" || state.phase === "settling") && Boolean(state.sessionID)
 }
 
 function sameTurn(

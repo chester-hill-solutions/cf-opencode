@@ -50,6 +50,10 @@ export interface ConversationSlackAdapterOptions {
   observation(): Promise<TurnObservation>
   scheduler: Pick<ConversationScheduler, "schedule">
   recovery: Pick<ConversationRecoveryActions, "active">
+  /** Whether an execution is already warm; asking must never start one. */
+  runtimeWarm(): boolean
+  /** Read-only client use on a warm runtime. Throws rather than preparing one. */
+  withWarmClient<T>(fn: (client: OpenCodeClient) => Promise<T>): Promise<T>
   withClient<T>(fn: (client: OpenCodeClient) => Promise<T>, recoverOnRejection?: boolean): Promise<T>
   withUsageLifecycle(cleanup: () => Promise<Response>): Promise<Response>
   settings(): Promise<HarnessSettings>
@@ -69,10 +73,11 @@ export class ConversationSlackAdapter {
     const workspaceEnabled = workspace && (!workspace.enabled || workspace.enabled(target))
     await handleSlackCommand(text, {
       getState: async () => ({ ...await this.options.store.get(), turnObservation: await this.options.observation() }),
+      runtime: () => ({ warm: this.options.runtimeWarm() }),
       getDefaultModel: async () => (await this.options.settings()).model,
-      getModels: async () => (await this.options.withClient((client) => client.model.list({ location: { directory: "/workspace" } }), false)).data,
-      getSession: (sessionID) => this.options.withClient((client) => client.session.get({ sessionID }), false),
-      listSessions: async () => (await this.options.withClient((client) => client.session.list({ limit: 100, order: "desc" }), false)).data,
+      getModels: async () => (await this.options.withWarmClient((client) => client.model.list({ location: { directory: "/workspace" } }))).data,
+      getSession: (sessionID) => this.options.withWarmClient((client) => client.session.get({ sessionID })),
+      listSessions: async () => (await this.options.withWarmClient((client) => client.session.list({ limit: 100, order: "desc" }))).data,
       switchModel: (ref) => this.changeModel(ref),
       selectSession: (sessionID) => this.changeSession(sessionID, target),
       newSession: () => this.changeSession(undefined, target),
@@ -83,7 +88,7 @@ export class ConversationSlackAdapter {
         await this.options.store.patch({ slackEngaged: false })
         return "Stopped following this thread. Mention me to re-engage; use `!stop` to interrupt current work."
       },
-      listForms: (sessionID) => this.options.controlPlane.pendingForms(sessionID),
+      listForms: (sessionID) => this.options.controlPlane.pendingForms(sessionID, "warm"),
       answerForm: (sessionID, formID, answer) => this.options.controlPlane.replyToForm(sessionID, formID, answer),
       cancelForm: (sessionID, formID) => this.options.controlPlane.replyToForm(sessionID, formID),
       usageText: () => this.usageText(),

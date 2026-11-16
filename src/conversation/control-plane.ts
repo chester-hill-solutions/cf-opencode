@@ -31,6 +31,11 @@ export interface ControlPlaneOptions {
   storage: DurableObjectStorage
   store: ConversationStore
   withClient<T>(fn: (client: OpenCodeClient) => Promise<T>, recoverOnRejection?: boolean): Promise<T>
+  /**
+   * Same client shape on an already warm runtime; never prepares one. The
+   * rejection flag exists for signature parity and is inert here.
+   */
+  withWarmClient<T>(fn: (client: OpenCodeClient) => Promise<T>, recoverOnRejection?: boolean): Promise<T>
   withAdmissionLock<T>(task: () => Promise<T>): Promise<T>
   hasPendingRuntimeUpgrade(): Promise<boolean>
   scheduleObservation(at: number, payload: {
@@ -186,11 +191,13 @@ export class ConversationControlPlane {
     }
   }
 
-  async pendingForms(sessionID: string): Promise<Form[]> {
-    const rows = await this.options.withClient((client) => client.session.form.list({ sessionID }), false)
+  /** `warm` reads on the runtime that is already running instead of preparing one. */
+  async pendingForms(sessionID: string, access: "prepare" | "warm" = "prepare"): Promise<Form[]> {
+    const read = access === "warm" ? this.options.withWarmClient : this.options.withClient
+    const rows = await read((client) => client.session.form.list({ sessionID }), false)
     const pending: Form[] = []
     for (const row of rows) {
-      const form = await this.options.withClient((client) => client.session.form.get({ sessionID, formID: row.id }), false)
+      const form = await read((client) => client.session.form.get({ sessionID, formID: row.id }), false)
       if (form.sessionID === sessionID && form.state.status === "pending") pending.push(form)
     }
     return pending
