@@ -210,6 +210,49 @@ describe("split checkpoints", () => {
     expect(all).toHaveLength(11 + 1 + 12)
   })
 
+  it("retains both parts of the newest manifest after six split generations", async () => {
+    const stub = env.CONVERSATION.getByName("C1:split-prune-newest-manifest")
+    const result = await runInDurableObject(stub, async (instance, state) => {
+      const prefix = `workspaces/${state.id.toString()}/`
+      const workspaceKey = `${prefix}workspace-1005.tar.gz`
+      const stateKey = `${prefix}state-1005.tar.gz`
+      const workspaces = [
+        ...Array.from({ length: 5 }, (_, i) => `${prefix}workspace-${1000 + i}.tar.gz`),
+        workspaceKey,
+      ]
+      const states = [
+        ...Array.from({ length: 5 }, (_, i) => `${prefix}state-${1000 + i}.tar.gz`),
+        stateKey,
+      ]
+      for (const key of [...workspaces, ...states]) await env.CHECKPOINTS.put(key, "part")
+      await state.storage.put("state", {
+        checkpointManifest: {
+          workspace: { key: workspaceKey, size: 1, encrypted: false },
+          state: { key: stateKey, size: 1, encrypted: false },
+          createdAt: 1005,
+        },
+      })
+      const checkpoints = (instance as unknown as {
+        checkpoints: {
+          prune(): Promise<void>
+          latest(): Promise<{ workspace: { key: string }; state: { key: string } | null; split: boolean } | null>
+        }
+      }).checkpoints
+      await checkpoints.prune()
+      const latest = await checkpoints.latest()
+      const listed = await env.CHECKPOINTS.list({ prefix })
+      return { listed: listed.objects.map(({ key }) => key), latest }
+    })
+
+    // The newest manifest names both parts; pruning must not treat either as legacy.
+    expect(result.latest?.split).toBe(true)
+    expect(result.latest?.workspace.key).toBe(result.listed.find((key) => key.includes("/workspace-1005.")))
+    expect(result.latest?.state?.key).toBe(result.listed.find((key) => key.includes("/state-1005.")))
+    expect(result.listed.some((key) => key.includes("/workspace-1000."))).toBe(false)
+    expect(result.listed.some((key) => key.includes("/state-1000."))).toBe(false)
+    expect(result.listed).toHaveLength(10)
+  })
+
   it("retains the recorded legacy checkpoint alongside the newest five workspaces", async () => {
     const stub = env.CONVERSATION.getByName("C1:legacy-checkpoint-prune")
     const result = await runInDurableObject(stub, async (instance, state) => {
