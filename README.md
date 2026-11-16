@@ -151,7 +151,7 @@ and rollout evidence, and the [runbook](docs/runbook.md) for the live connection
 
 ## Settings UI
 
-`/` serves the Aboiteau settings page, built from the dedicated [`@aboiteau/ui`](packages/ui/README.md) package. `/ui-kit/` is the live component and brand gallery. `/onboarding/` is the first-run wizard.
+`/` is the marketing overview, server-rendered from `web/home.tsx` at build time so it ships without a client bundle. `/workspace/` shows reported usage and known conversations for a connected deployment. `/settings/` is the settings page, `/onboarding/` the first-run wizard, and `/ui-kit/` the live component and brand gallery. The interactive pages are built from the dedicated [`@aboiteau/ui`](packages/ui/README.md) package and share one header and footer.
 
 The kit carries the complete CHS UI set — actions, forms, navigation, overlays, data display and conversation surfaces — plus an accent system that codes settings sections, onboarding steps and gallery sections with the same brand palette. Colour is always paired with a number or written label; see [`packages/ui/README.md`](packages/ui/README.md#brand-accents).
 
@@ -162,6 +162,8 @@ new conversations start connected. Account snapshots omit conversation-specific 
 and initialization state; each new conversation creates its own Workspace. Credentials live in the Settings Durable Object encrypted
 by [`@chester-hill-solutions/vault`](vendor/chester-hill-solutions/vault); see
 [`docs/runbook.md`](docs/runbook.md#onboarding) for the required secrets and callback URL.
+
+Settings (`/settings/`) covers:
 
 - workspace repo + branch, model, poll seconds, streaming toggle
 - **model selector**: a curated catalogue grouped by provider, with a recommended default
@@ -231,6 +233,8 @@ Apple `container` needs macOS 26+ on Apple silicon. `wrangler dev` with containe
   Slack signature/routing, SSE, concurrency and admission-queue regressions, a
   latency guard). Current pass counts and evidence dates live in the roadmap.
 - `bun run check:config` — fails CI when the prod and test Wrangler configs drift on bindings, exports or vars.
+- `bun run check:quality` — [RatchetStrap](https://github.com/chester-hill-solutions/chester-hill-solutions)-ratcheted ESLint identities, strict compiler diagnostics, duplication, telemetry boundaries and file-size ceilings. Baselines live in `scripts/baselines/` and may only tighten; `bun run tools:*:baseline` seeds a first adoption or removes repaired debt.
+- `bun run ci:local` — the same aggregate gate CI runs: config drift, typecheck, provider-egress preflight, UI build, quality ratchets, client-bundle budget, unit tests and Worker tests.
 - `bench/measure.ts` — deployed Worker/SSE/turn latency.
 - `bench/container.sh` — cold start, checkpoint size/time, restore time.
 

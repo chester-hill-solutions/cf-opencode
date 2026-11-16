@@ -1,6 +1,5 @@
 import { useState, type ReactNode } from "react"
 import {
-  BrandLockup,
   Button,
   Checkbox,
   Field,
@@ -16,11 +15,27 @@ import {
   type BrandAccent,
 } from "@aboiteau/ui"
 import { useSettings, ruleLines, type PermissionKind } from "./use-settings"
+import { SiteHeader } from "../shared/site-header"
 
-const sections: ReadonlyArray<{ id: string; number: string; title: string; accent: BrandAccent }> = [
-  { id: "connection", number: "01", title: "Connection", accent: "ultramarine" },
+const sections: ReadonlyArray<{
+  id: string
+  number: string
+  title: string
+  accent: BrandAccent
+}> = [
+  {
+    id: "connection",
+    number: "01",
+    title: "Connection",
+    accent: "ultramarine",
+  },
   { id: "workspace", number: "02", title: "Workspace", accent: "vermilion" },
-  { id: "model-runtime", number: "03", title: "Model & runtime", accent: "yellow" },
+  {
+    id: "model-runtime",
+    number: "03",
+    title: "Model & runtime",
+    accent: "yellow",
+  },
   { id: "permissions", number: "04", title: "Permissions", accent: "pink" },
 ]
 
@@ -67,7 +82,7 @@ export function SettingsApp() {
   const [customSelected, setCustomSelected] = useState(false)
   const knownModel = state.models.some((model) => model.ref === draft.model)
   const custom = customSelected || !knownModel
-  const disabled = !state.authenticated || pending
+  const disabled = !state.authenticated || pending || state.tokenChanged
   const groups = [...new Set(state.models.map((model) => model.providerID))]
   const recommended = state.models.find((model) => model.ref === state.recommended)
   const fieldError = (name: string) =>
@@ -77,20 +92,7 @@ export function SettingsApp() {
 
   return (
     <>
-      <a className="skip-link" href="#main">
-        Skip to settings
-      </a>
-      <header className="app-header">
-        <div className="app-header-inner">
-          <a className="brand-link" href="/" aria-label="Aboiteau settings">
-            <BrandLockup />
-          </a>
-          <div className="header-context">
-            <span className="header-label">Workspace settings</span>
-            <span id="meta">{state.saved ? "v" + state.saved.version : "Not connected"}</span>
-          </div>
-        </div>
-      </header>
+      <SiteHeader page="settings" />
       <div className="app-layout">
         <nav className="section-nav" aria-label="Settings sections">
           <p className="nav-label">Configure</p>
@@ -106,8 +108,8 @@ export function SettingsApp() {
             Get started <span aria-hidden="true">↗</span>
           </a>
           <a className="gallery-link" href="/ui-kit/">
-            Aboiteau UI kit <span aria-hidden="true">↗</span></a
-          >
+            Aboiteau UI kit <span aria-hidden="true">↗</span>
+          </a>
         </nav>
         <main className="settings-main" id="main">
           <div className="page-heading">
@@ -132,34 +134,42 @@ export function SettingsApp() {
             title="Connection"
             description="Load the current settings for your deployment."
           >
-            <div className="connect-row">
+            <form
+              className="connect-row"
+              onSubmit={(event) => {
+                event.preventDefault()
+                void state.load()
+              }}
+            >
               <Field>
                 <FieldLabel htmlFor="token">API token</FieldLabel>
                 <Input
                   id="token"
+                  name="token"
                   type="password"
                   autoComplete="off"
                   spellCheck={false}
                   value={state.token}
                   onChange={(event) => state.setToken(event.target.value)}
-                  disabled={pending}
+                  disabled={pending || state.dirty}
                   aria-describedby="token-description"
                 />
               </Field>
               <Button
                 id="load"
+                type="submit"
                 variant="outline"
-                onPress={() => void state.load()}
                 pending={state.status === "loading"}
                 pendingLabel="Loading…"
                 isDisabled={pending || state.dirty || !state.token.trim()}
               >
                 Load settings
               </Button>
-            </div>
+            </form>
             <p className="connection-note" id="token-description">
               Your token is remembered in this browser after a successful connection. Use a trusted
-              device.{state.dirty ? " Save your changes before loading settings again." : ""}
+              device.
+              {state.dirty ? " Save your changes before loading settings again." : ""}
             </p>
             {!state.storageAvailable && (
               <p className="connection-note">
@@ -186,6 +196,7 @@ export function SettingsApp() {
               aria-label="Agent settings"
               aria-busy={state.status === "loading"}
             >
+              <legend className="sr-only">Agent settings</legend>
               <Section
                 id="workspace"
                 accent="vermilion"
@@ -340,7 +351,8 @@ export function SettingsApp() {
                       aria-describedby="budget-hint"
                     />
                     <FieldDescription id="budget-hint">
-                      USD per day. 0 disables the cap. New turns are rejected once it is reached.
+                      USD per day. 0 disables the admission limit. Running turns can exceed this
+                      budget.
                     </FieldDescription>
                   </Field>
                   <Field>
@@ -357,7 +369,7 @@ export function SettingsApp() {
                       aria-describedby="containers-hint"
                     />
                     <FieldDescription id="containers-hint">
-                      Conversations running at once. Extra messages queue.
+                      Maximum concurrent containers. New work can be refused when capacity is full.
                     </FieldDescription>
                   </Field>
                   <div className="streaming-field">
@@ -446,7 +458,7 @@ export function SettingsApp() {
             form="settings"
             pending={state.status === "saving"}
             pendingLabel="Saving…"
-            isDisabled={disabled}
+            isDisabled={disabled || state.tokenChanged || !state.dirty}
           >
             Save settings
           </Button>

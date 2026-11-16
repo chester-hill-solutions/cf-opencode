@@ -12,7 +12,8 @@ export function staticAsset(request: Request): Response | Promise<Response> {
     return new Response("Bad path", { status: 400 })
   }
   if (pathname.endsWith("/")) pathname += "index.html"
-  if (pathname === "/ui-kit") pathname = "/ui-kit/index.html"
+  if (["/ui-kit", "/settings", "/onboarding", "/workspace"].includes(pathname))
+    pathname += "/index.html"
   const path = resolve(publicRoot, "." + pathname)
   if (!path.startsWith(publicRoot + sep)) return new Response("Not found", { status: 404 })
   const file = Bun.file(path)

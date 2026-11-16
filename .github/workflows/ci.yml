@@ -11,17 +11,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - run: bun install --cwd runtime/opencode --frozen-lockfile
-      - run: bun run check:config
-      - run: bun run typecheck
-      - run: bun scripts/provider-egress-qualification/preflight.ts
-      - run: bun run build:ui
-      - run: bun run test
-      - run: bun run test:workers
+      - name: Run the local CI gate
+        env:
+          QUALITY_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
+        run: bun run ci:local
 
   container-smoke:
     runs-on: ubuntu-latest

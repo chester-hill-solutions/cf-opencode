@@ -1,6 +1,9 @@
 import { copyFile, mkdir, readdir, rm } from "node:fs/promises"
 import { resolve } from "node:path"
 import { logoPaths, logoViewBox } from "../packages/ui/src/brand"
+import { createElement } from "react"
+import { renderToStaticMarkup } from "react-dom/server"
+import { MarketingPage } from "../web/home"
 
 const root = resolve(import.meta.dir, "..")
 const output = resolve(root, "public")
@@ -10,11 +13,14 @@ await mkdir(resolve(output, "assets"), { recursive: true })
 await mkdir(resolve(output, "brand"), { recursive: true })
 await mkdir(resolve(output, "onboarding"), { recursive: true })
 await mkdir(resolve(output, "ui-kit"), { recursive: true })
+await mkdir(resolve(output, "settings"), { recursive: true })
+await mkdir(resolve(output, "workspace"), { recursive: true })
 
 const entries = [
   resolve(root, "web/settings.tsx"),
   resolve(root, "web/ui-kit.tsx"),
   resolve(root, "web/onboarding.tsx"),
+  resolve(root, "web/workspace.tsx"),
 ]
 // One bundle per page: a shared chunk would make the settings page download the
 // gallery's chart, carousel and overlay dependencies.
@@ -50,7 +56,15 @@ const css = Bun.spawnSync(
 if (css.exitCode !== 0) throw new Error("UI CSS build failed")
 
 await Promise.all([
-  copyFile(resolve(root, "web/index.html"), resolve(output, "index.html")),
+  Bun.write(
+    resolve(output, "index.html"),
+    (await Bun.file(resolve(root, "web/home.html")).text()).replace(
+      "<!--marketing-->",
+      renderToStaticMarkup(createElement(MarketingPage))
+    )
+  ),
+  copyFile(resolve(root, "web/index.html"), resolve(output, "settings/index.html")),
+  copyFile(resolve(root, "web/workspace.html"), resolve(output, "workspace/index.html")),
   copyFile(resolve(root, "web/ui-kit.html"), resolve(output, "ui-kit/index.html")),
   copyFile(resolve(root, "web/onboarding.html"), resolve(output, "onboarding/index.html")),
   copyFile(
@@ -77,4 +91,6 @@ await Bun.write(
     logoPaths.map((path) => '<path d="' + path + '"/>').join("") +
     "</svg>\n"
 )
-console.log("Built Aboiteau settings, UI kit and brand assets in public/.")
+console.log(
+  "Built Aboiteau marketing, workspace, settings, onboarding, UI kit and brand assets in public/."
+)

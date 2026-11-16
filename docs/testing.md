@@ -5,6 +5,16 @@
 The layers below verify different boundaries. Simulated container/model tests do
 not establish live provider accuracy, availability, latency, cost or task success.
 
+## Local aggregate gate — 2026-11-15
+
+`bun run ci:local` passed on macOS arm64 with Bun 1.3.5 and Node 26.3.1: 643 Bun
+unit/runtime tests, 5 OpenCode runtime tests and 479 workerd Worker tests, plus
+config drift, every TypeScript project, the provider-egress dry preflight, the UI
+build, the RatchetStrap quality ratchets and the client-bundle budget. A Chrome
+smoke of `/`, `/workspace/`, `/settings/`, `/onboarding/` and `/ui-kit/` at 1280 and
+390 px reported no console or page errors and no horizontal overflow. This is local
+only: no deployment, container, provider inference or live Slack call was exercised.
+
 ## Verified snapshot — 2026-11-11
 
 Assessed the current working tree, including existing local edits, on macOS arm64
