@@ -779,8 +779,7 @@ export class Conversation extends DurableObject<Env> {
       return this.providerOnboarding.debugProviders()
     }
     if (url.pathname === "/debug/snapshot/invalidate" && request.method === "POST") {
-      // Ops/test seam: poison the stored handle so the next start must fall
-      // back to the image and the R2 archive.
+      // Ops/test seam: poison the handle so the next start falls back to image + R2.
       const existing = await this.ctx.storage.get<ContainerSnapshot>("snapshot")
       if (!existing) return Response.json({ ok: false, error: "no snapshot" }, { status: 404 })
       await this.ctx.storage.put("snapshot", { id: "invalid-snapshot", size: 0 })
@@ -895,8 +894,7 @@ export class Conversation extends DurableObject<Env> {
           signal: AbortSignal.timeout(10_000),
           redirect: "manual",
         })
-        // Retain the runtime borrow through the bounded response, so a stop or
-        // workspace handoff cannot overlap an inspection still producing output.
+        // Retain the borrow: a stop or handoff must not overlap a live inspection.
         const reader = response.body?.getReader()
         const chunks: Uint8Array[] = []
         let size = 0
@@ -1189,8 +1187,10 @@ export class Conversation extends DurableObject<Env> {
 
   /** Emit to SSE and, when the conversation has a Slack target, post there too. */
   private async deliver(event: ConversationEvent, options: { slack?: boolean } = {}): Promise<void> {
-    const seq = await this.store.appendEvent(event)
-    await this.eventStream.publish(event, seq)
+    const turnID = (await this.store.get()).turnID
+    const stamped = turnID ? { ...event, turnID } : event
+    const seq = await this.store.appendEvent(stamped)
+    await this.eventStream.publish(stamped, seq)
     if (options.slack === false) return
     await this.slackAdapter.deliverToSlack(event)
   }
@@ -1385,8 +1385,7 @@ export class Conversation extends DurableObject<Env> {
       // prove the container is wedged. Never recycle live work for that. Real
       // transport failures keep the existing recovery behavior.
       if (!recoverOnRejection && !(error instanceof ClientError && error.reason === "Transport")) throw error
-      // A cold start that outlasts the wait is slow, not wedged: do not count
-      // it as a failure or recycle the container out from under itself.
+      // A cold start that outlasts the wait is slow, not wedged; never recycle it.
       if (error instanceof Error && error.message.includes("did not become ready")) throw error
       this.consecutiveFailures++
       // Two consecutive failures: assume the container is wedged and recycle it.
