@@ -43,7 +43,7 @@
   },
   "dependencies": {
     "@aboiteau/ui": "workspace:*",
-    "@chester-hill-solutions/vault": "file:vendor/chester-hill-solutions/vault",
+    "@chester-hill-solutions/vault": "./tools/vendor/chester-hill-solutions-vault-0.5.1.tgz",
     "@modelcontextprotocol/sdk": "1.32.2",
     "@modelcontextprotocol/server": "2.4.0",
     "@opencode/client": "latest",

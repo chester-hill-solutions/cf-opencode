@@ -6,7 +6,7 @@
       "name": "opencode-slack-workers",
       "dependencies": {
         "@aboiteau/ui": "workspace:*",
-        "@chester-hill-solutions/vault": "file:vendor/chester-hill-solutions/vault",
+        "@chester-hill-solutions/vault": "./tools/vendor/chester-hill-solutions-vault-0.5.1.tgz",
         "@modelcontextprotocol/sdk": "1.32.2",
         "@modelcontextprotocol/server": "2.4.0",
         "@opencode/client": "latest",
@@ -136,7 +136,7 @@
 
     "@chester-hill-solutions/ratchet-strap": ["@chester-hill-solutions/ratchet-strap@./tools/vendor/chester-hill-solutions-ratchet-strap-0.6.0.tgz", { "dependencies": { "@chester-hill-solutions/dev-guards": "0.1.0", "@opentelemetry/api": "1.9.0" }, "bin": { "ratchet-strap": "./dist/cli.js" } }],
 
-    "@chester-hill-solutions/vault": ["@chester-hill-solutions/vault@file:vendor/chester-hill-solutions/vault", {}],
+    "@chester-hill-solutions/vault": ["@chester-hill-solutions/vault@./tools/vendor/chester-hill-solutions-vault-0.5.1.tgz", { "dependencies": { "@opentelemetry/api": "1.9.0" }, "peerDependencies": { "drizzle-orm": "^0.45.0" }, "optionalPeers": ["drizzle-orm"] }],
 
     "@cloudflare/kv-asset-handler": ["@cloudflare/kv-asset-handler@0.5.0", "", {}, "sha512-jxQYkj8dSIzc0cD6cMMNdOc1UVjqSqu8BZdor5s8cGjW2I8BjODt/kWPVdY+u9zj3ms75Q5qaZgnxUad83+eAg=="],
 

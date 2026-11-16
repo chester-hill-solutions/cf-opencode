@@ -7,6 +7,7 @@ import {
   type OnboardingState,
 } from "./settings"
 import { accountVault, workspaceID } from "./vault"
+import { assertNoStaleVaultRecords } from "./vault-records"
 import { decideSecretRead } from "./secret-read-policy"
 import { evaluateAlerts } from "./alerts"
 import { decideContainerLease } from "./leases"
@@ -44,6 +45,14 @@ export class Settings extends DurableObject<Env> {
    * fetch also makes lease acquisition and OAuth-state consumption atomic.
    */
   private tail: Promise<unknown> = Promise.resolve()
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env)
+    ctx.blockConcurrencyWhile(async () => {
+      const records = await ctx.storage.list({ prefix: "vault:" })
+      assertNoStaleVaultRecords(records.keys())
+    })
+  }
 
   async fetch(request: Request): Promise<Response> {
     const run = this.tail.then(

@@ -179,7 +179,7 @@ provider offers it, API key otherwise), connects GitHub through an OAuth App, an
 workspace repository, branch and model. Completing it snapshots the OpenCode state to R2 so
 new conversations start connected. Account snapshots omit conversation-specific Stow identity
 and initialization state; each new conversation creates its own Workspace. Credentials live in the Settings Durable Object encrypted
-by [`@chester-hill-solutions/vault`](vendor/chester-hill-solutions/vault); see
+by `@chester-hill-solutions/vault`'s Worker-safe `/core` entry; see
 [`docs/runbook.md`](docs/runbook.md#onboarding) for the required secrets and callback URL.
 
 Settings (`/settings/`) covers:
