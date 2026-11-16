@@ -1705,6 +1705,53 @@ must be qualified against our pinned integration:
 Iterative research/plan/diff/revision is also a peer capability, not a unique
 feature claim: [GitHub workflow](https://docs.github.com/en/copilot/how-tos/copilot-on-github/use-copilot-agents/research-plan-iterate).
 
+### 5.8 Memory — soul, team, user, and a decision filter
+
+**Authority and status.** User-directed, 2026-11-16. Design settled; implementation
+not started. Not a general memory platform, transcript search or context engine:
+the session already owns compaction, and nothing here replaces it. Provider research
+and API shapes: [decision-model providers](evidence/decision-model-providers-2026-11-16.md).
+
+**Three layers, ordered by stability.** `soul` is who we are — voice, values and
+boundaries — and lives in the repo as a reviewed constant, not in storage, because
+character is a product decision and the agent may never rewrite it. `team` memory is
+what is true about this place (environment, conventions, deploy traps). `user` memory
+is who the harness is talking to (preferences, standing instructions). Team and user
+memory are bounded records in the harness, injected by `buildPrompt` ahead of the
+existing Slack and workspace context, so they answer while cold. Soul carries
+instructions; memory carries statements, quoted as data. A remembered sentence never
+gains authority over the soul.
+
+**The filter is a decision model, not judgement prose.** After a turn, one typed
+`Noul` question answers whether the turn states something worth keeping; a second
+typed question picks the scope. The stored sentence is verbatim from the turn — the
+model never authors memory — so a wrong accept is visible noise rather than an
+invented fact. Provider: OpenCode Console System One (`jev-1.13`), through the
+provider already configured; the neutral `DecisionPort` keeps OpenAI Decisions,
+Cloudflare Clef and OpenRouter behind the same contract, and `rules` is the offline
+fallback. Confirmed defaults: threshold `P(yes) ≥ 0.9` for unattended writes,
+shadow mode first, no provider swappable without measurement.
+
+**Constraints carried from this repo.** Writes are hard-capped with an error rather
+than silent eviction; duplicates are rejected; entries are scanned for injection and
+invisible characters; team writes require approval; each decision call is a spend and
+therefore takes an auxiliary reservation with a per-turn token cap, recorded in the
+ledger. Failure at any hop means no write and no turn impact. The call runs in the
+harness, not through `src/provider-egress.ts`, which is chat-only by design.
+
+| Slice | Depends | Work | Done when |
+|---|---|---|---|
+| **MEM-1 / M — decision port** | — | `DecisionPort` (`decide({state, questions})` → typed answers) with the System One adapter on OpenCode Console, `rules` fallback, and shadow recording. No host is hardcoded; the credential comes from the vault. | One real turn produces a `Noul` answer with probability and latency recorded; provider failure yields no decision and no turn impact; adapters pass shared fixtures. |
+| **MEM-2 / M — memory + soul** | MEM-1 | Soul constant; bounded team and user records in the Settings DO with provenance, caps, dedupe and injection scan; `!remember`/`!memory`/`!forget` (cold-capable, harness-only); `buildPrompt` injection in fixed order. | `!memory` answers with no execution running; soul/team/user appear in prompt order; cap overflow errors instead of evicting; no memory reaches the prompt as an instruction. |
+| **MEM-3 / S — gated writes** | MEM-2 + shadow evidence | Candidate queue with `!memory pending`/`approve`/`reject`; unattended user-scope writes only after a shadow review shows acceptable precision. | Shadow decisions are reviewed against hand labels; auto-write stays off until that review is recorded. |
+
+**Open questions.** Whether the existing Console key authorises `/systemone`;
+whether gateway-served `gpt-6-luna-decision` and `gemini-decision-1` share Jev's
+calibration; the retention of `jev-1.13-free`; and every request and response shape,
+which is documentary only because research made no authenticated call. The first
+adapter call settles the key question; the rest bind only the writes that rely on
+them.
+
 ## 6. Gate definitions and exit criteria
 
 ### G0 — dependable task completion
