@@ -353,7 +353,7 @@ independent design, fixtures and security checks can proceed.
 
 | Wave | ID | Work | Size | Depends | Done when |
 |---|---|---|---|---|---|
-| **PORT** | **PORT-0…PORT-12** | **PLANNED; implementation not started** — replace Cloudflare while owning supervision/workspace | L, sliced below | §5.6 dependencies; correctness repairs continue; cutover requires PORT-G | Standalone install, restart/recovery, runtime portability and retained-data cutover qualified; no Cloudflare service required for supported operation |
+| **PORT** | **PORT-0…PORT-12, 5c, 7a** | **PLANNED; implementation not started** — replace Cloudflare while owning supervision/workspace, and keep the harness useful without an execution | L, sliced below | §5.6 dependencies; correctness repairs continue; cutover requires PORT-G | Standalone install, restart/recovery, runtime portability and retained-data cutover qualified; no Cloudflare service required for supported operation |
 | **W0** | **R0-17** | **DONE locally** — Slack question delivery must not block settlement | S | — | Failed question posts are caught, counted, retried with durable 5 s–5 min backoff; acknowledged cards are not repeated; terminal usage still settles. [Receipt](evidence/w0-correctness-2026-11-14.md) |
 | **W0** | **R0-18** | **DONE locally** — Timeout and settlement observability | S | — | Both timeout paths count/log once; first paused episode alerts; successful settlement clears the error with or without a reservation. [Receipt](evidence/w0-correctness-2026-11-14.md) |
 | **W0** | **R0-19** | **RECORDED** — Isolation probe harness (evidence, not a fix) | S | — | Both allowed commands recovered a synthetic state credential as UID 1001 in the current image; exit 2 / **KNOWN_OPEN_G1**. [Raw result](evidence/r0-19-2026-11-14.json); enforcement remains R1-7a/R1-7 |
@@ -1241,7 +1241,21 @@ Internet-enabled proxy and call the boundary enforced.
 deployment has been performed. The clarified decision is: **OpenCode remains the
 coding harness; we own supervision and workspace; execution runtimes stay
 replaceable.** This is not an agent-loop, VM-kernel or general operating-system
-rewrite. Fast lightweight startup is an explicit target. Rivet/agentOS is a
+rewrite. Fast lightweight startup is an explicit target, and so is not starting an
+execution at all: a command the durable state can answer must never warm one.
+
+**Harness-first execution split (2026-11-16).** The Durable Object owns the
+conversation — state, queue, holds, accounting, commands. Linux owns code
+execution — files, repositories, tools, and the model loop that drives them. A box
+is an escalation, not the substrate. Today `!status` warms a container to print a
+session title, and every turn needs one, so a cold or capacity-bound runtime turns
+ordinary conversation into `Container busy`. Two slices close that: PORT-5c
+answers harness-only commands from state, and PORT-7a serves chat-only turns
+through a provider-neutral model port. Provider choice stays configuration, not
+code: OpenAI-compatible is one adapter, and PORT-7 later replaces the transport
+underneath. Neither slice may add a Cloudflare-only dependency to the conversation
+core, and neither may fork the accounting path — a harness turn settles exactly
+like an execution turn. Rivet/agentOS is a
 runtime candidate/design reference, not the durable controller or workspace
 authority. Commodity SQLite, Linux, language runtimes and standard protocols are
 dependencies, not owners of product policy. No provider spend or infrastructure
@@ -1371,8 +1385,10 @@ ownership roles; assignment happens when a slice starts.
 | **PORT-3 / M** | PORT-1, PORT-2 | Extract shared authority from `src/settings-do.ts`; attach portable Vault store and protected key delivery. Reuse usage/accounting/reconciliation/lease decisions. Test concurrent conversations, day rollover, unknown costs, duplicate usage, revoked authority and restarted holds. Serialize key rotation; preserve archive-key recovery separately. | core + security |
 | **PORT-4 / M** | PORT-0, PORT-1 | Retain native Stow Workspace and full split archives; add trusted archive repository satisfying actual `checkpoints.ts`/restore needs, without R2 types. Test metadata/stream faults, partial uploads, corrupted/missing parts, failed keys and full restore on another machine. Qualify independent backup destination; do not expose it to agents. | storage |
 | **PORT-5 / L, split** | PORT-0, PORT-2, PORT-4 | Define execution contract from `runtime.ts`, `readiness.ts`, control server, idle-close and upgrades. **5a:** native Linux adapter reuses existing OpenCode/Stow/control artifacts and proves restart/stop fencing. **5b:** early light-runtime qualification uses the same harness/task and Stow-authority requirements; record supported/unsupported tools and startup measurements. Ship only qualified profiles; no automatic broadening fallback. | runtime + storage |
+| **PORT-5c / S** | PORT-0 | Harness-first commands: `!status`, `!stop`, `!help`, `!usage`, `!workspace*`, `!checks`, `!repo` answer from durable state with no execution running; session-dependent commands (`!sessions`, `!model`, `!answer`, `!cancel`, `!new`) say they need an execution instead of starting one. Acceptance: with no execution available each harness-only command answers in one round trip, `!status` reports `Runtime: cold`, and no lease, container start or checkpoint is observed. | core |
 | **PORT-6 / M** | PORT-2, PORT-3, PORT-5a | Host existing HTTP/SSE and Slack operations through one engine; static assets/TLS via Caddy. Replace `waitUntil` correctness dependencies with persisted work. Test reconnect, approval delivery/retry, queue/steer/interrupt and slow subscribers. Preserve current public contracts; any R1-4 schema changes remain separately versioned/coordinated. | API |
 | **PORT-7 / M** | PORT-3, PORT-5a; 5b for light claims | Replace Worker-specific provider egress with our trusted broker and execution-specific network enforcement. Reuse fixed-scope protocol and credential probes. Fresh secret-free execution; block direct bypass, redirects and cross-workspace access; exercise revocation and descendants. Inventory legacy credential-bearing seeds for explicit migration; never declare them safe by re-encrypting. | security + runtime |
+| **PORT-7a / M** | PORT-0; PORT-7 for transport | Provider-neutral harness model port: base URL, auth style, request/response mapping and streaming are configuration; OpenAI-compatible is one adapter. Chat-only turns run in the harness through the port with the same reservation, accounting and settlement as execution turns; ambiguous turns escalate to execution. No provider host is hardcoded in `src/conversation*` or `src/provider-egress.ts`. Acceptance: two adapters (one synthetic) pass the same turn fixtures, harness and execution turns settle identically, and a misclassified turn escalates without double charging. | core + security |
 | **PORT-8 / M** | PORT-3, PORT-4, PORT-6, PORT-7 | Deliver versioned install/release commands, Caddy/systemd configuration, verified OCI/software artifacts, protected secrets, rate limits, maintenance, local trace inspection/export, redacted logs/metrics/alerts and resource/disk caps. No mandatory registry, SaaS control plane or telemetry endpoint. An operator installs/backs up/upgrades/restores on a fresh Linux host. | ops |
 | **PORT-9 / M** | PORT-1…PORT-8; light profile only after 5b passes | Run shared correctness, API/security and fixed fault matrix on standalone host; qualify startup/idle/memory/operator costs. Exercise real Linux processes, native Stow, archive service and restart boundaries with deterministic provider first. Any live provider test needs a separate recorded budget. Failures remain in denominators. | verification |
 | **PORT-10 / M** | PORT-0 inventory; tooling after PORT-3/4; rehearsal after PORT-9 | Build privileged versioned export/import for conversation state, queue/approvals, ledger sources/holds/unknowns/receipts, settings, identity, checkpoints and key references. Map CF DO names/IDs and R2 keys without breaking reservation ownership or encryption scope. Rehearse on copies, compare counts/digests and prove unsupported/ambiguous records fail visibly. | core + storage + operator |
