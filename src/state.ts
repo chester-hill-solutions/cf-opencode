@@ -14,7 +14,7 @@ import {
 } from "./workspace-repository"
 
 import { parseWorkspaceControlEvent, workspaceControlEventKey, type WorkspaceControlEvent } from "./workspace-profile"
-import { abandonedTurn, admitTurn, dispatchedTurn, transitionedTurn, turnByID, type TurnBeginResult, type TurnKey, type TurnRecord } from "./turns"
+import { abandonedTurn, admitTurn, dispatchedTurn, transitionedTurn, turnByID, withoutQueueEntry, type TurnBeginResult, type TurnKey, type TurnRecord } from "./turns"
 
 export type Transport = "slack" | "http"
 
@@ -636,11 +636,7 @@ export class ConversationStore {
     })
   }
 
-  /**
-   * Record one accepted turn. The idempotency key, the turn record and the
-   * retention sweep share one serialized write so a concurrent retry can only
-   * observe "before" or "after".
-   */
+  /** Record one accepted turn; key, record and retention share one write. */
   async beginTurn(turn: TurnRecord, options: { key?: string; active?: boolean } = {}): Promise<TurnBeginResult> {
     return this.transact<TurnBeginResult>((state) => {
       const admitted = admitTurn(state, turn, options)
@@ -648,7 +644,6 @@ export class ConversationStore {
     })
   }
 
-  /** Drop a turn whose work never started, and release its key for a retry. */
   async abandonTurn(id: string, key?: string): Promise<boolean> {
     return this.transact((state) => {
       const next = abandonedTurn(state, id, key)
@@ -656,7 +651,6 @@ export class ConversationStore {
     })
   }
 
-  /** Move one turn forward; a terminal state releases the active pointer. */
   async transitionTurn(
     id: string,
     patch: Partial<Omit<TurnRecord, "id" | "acceptedAt" | "digest" | "delivery">>,
@@ -669,6 +663,13 @@ export class ConversationStore {
 
   async getTurn(id: string): Promise<TurnRecord | undefined> { return turnByID(await this.read(), id) }
 
+  /** Compare-clear one queued entry; a newer follow-up is never removed. */
+  async removeQueueEntry(id: string): Promise<boolean> {
+    return this.transact((state) => {
+      const next = withoutQueueEntry(state, id)
+      return next ? { next, result: true } : { result: false }
+    })
+  }
   async updateQueueHead(id: string, updates: Partial<QueuedMessage>): Promise<boolean> {
     return this.transact((state) => {
       const currentQueue = state.queue ?? []

@@ -34,6 +34,15 @@ export interface DeliveryControlStorage {
   transaction<T>(task: () => Promise<T>): Promise<T>
 }
 
+/** One interrupt or cancel request; `preserveQueue` is cancel-only. */
+export interface InterruptOptions {
+  replaceQueue?: boolean
+  requireActive?: boolean
+  preserveQueue?: boolean
+  slack?: SlackTarget
+  idempotencyKey?: string
+}
+
 interface InterruptIntent {
   sessionID: string
   runStartedAt: number | null
@@ -50,6 +59,8 @@ type QueueWrite =
   | { kind: "queued"; queue: { id: string; position: number; depth: number } }
   | { kind: "full"; depth: number }
   | { kind: "cleared" }
+  /** Cancel targets one turn; the waiting queue is none of its business. */
+  | { kind: "unchanged" }
 
 const INTERRUPT_INTENT_KEY = "interruptIntent"
 
@@ -86,7 +97,7 @@ export class ConversationDeliveryControls {
 
   async stop(
     followUp?: string,
-    options: { replaceQueue?: boolean; requireActive?: boolean; slack?: SlackTarget; idempotencyKey?: string } = {},
+    options: InterruptOptions = {},
   ): Promise<DeliveryControlResult> {
     const text = followUp?.trim() || undefined
     return this.options.withLock(async () => {
@@ -143,7 +154,7 @@ export class ConversationDeliveryControls {
         if (sameTurn(existing, sessionID, runStartedAt, reservationID)) {
           return { ok: false, result: failure("interrupt", 409, "interrupt_pending") }
         }
-        const queueResult = await this.writeQueue(text, options, true)
+        const queueResult = await this.queueForInterrupt(text, options)
         if (queueResult.kind === "full") {
           return { ok: false, result: failure("interrupt", 429, "queue_full") }
         }
@@ -181,6 +192,15 @@ export class ConversationDeliveryControls {
         settled: false,
       }
     })
+  }
+
+  /** An interrupt may queue or replace; a cancel leaves the queue untouched. */
+  private async queueForInterrupt(
+    text: string | undefined,
+    options: { replaceQueue?: boolean; preserveQueue?: boolean; slack?: SlackTarget; idempotencyKey?: string },
+  ): Promise<QueueWrite> {
+    if (!text && options.preserveQueue) return { kind: "unchanged" }
+    return this.writeQueue(text, options, true)
   }
 
   private async writeQueue(

@@ -1,5 +1,6 @@
 import type { ConversationStore, QueuedMessage } from "../state"
-import { publicTurn, type TurnRecord } from "../turns"
+import { isTerminalTurn, publicTurn, type TurnRecord } from "../turns"
+import type { ConversationDeliveryControls } from "./delivery-controls"
 import type { QueueAdmissionOutcome } from "./admissions"
 
 /**
@@ -100,25 +101,78 @@ export function queueAcceptedReceipt(
 }
 
 /** `GET /turns/:id`: identity, lifecycle and accounting state only. */
+/** Cancel exactly one turn: clear its own queue entry, or stop its run. */
+export async function cancelTurn(
+  store: ConversationStore,
+  delivery: ConversationDeliveryControls,
+  turnID: string,
+): Promise<Response> {
+  const turn = await store.getTurn(turnID)
+  if (!turn) return Response.json({ error: "unknown_turn" }, { status: 404 })
+  if (isTerminalTurn(turn.state)) return Response.json({ ok: false, error: "already_terminal" }, { status: 409 })
+  if (turn.state === "queued" && turn.queueID) {
+    const cleared = await store.removeQueueEntry(turn.queueID)
+    await store.transitionTurn(turnID, {
+      state: "cancelled",
+      finishedAt: Date.now(),
+      cancellation: { requested: true, observedStop: cleared, settled: true },
+    })
+    return cancellationReceipt(cleared, cleared, true)
+  }
+  const state = await store.get()
+  if (state.turnID !== turnID) return Response.json({ ok: false, error: "cannot_target" }, { status: 409 })
+  const result = await delivery.stop(undefined, { requireActive: true, preserveQueue: true })
+  if (!result.ok) return Response.json({ ok: false, error: result.error ?? "cannot_target" }, { status: result.status })
+  const stopped = result.stopRequested === true
+  await store.transitionTurn(turnID, {
+    cancellation: { requested: true, observedStop: stopped, settled: false },
+  })
+  return cancellationReceipt(false, stopped, false)
+}
+
+function cancellationReceipt(queuedCleared: boolean, observedStop: boolean, settled: boolean): Response {
+  return Response.json({
+    ok: true,
+    cancellation: { requested: true, queuedCleared, observedStop, settled },
+  }, { status: 202 })
+}
+
+/** `POST /turns/:id/cancel`, or undefined for any other request. */
+function cancelTarget(request: Request, pathname: string): string | undefined {
+  if (request.method !== "POST" || !pathname.startsWith("/turns/") || !pathname.endsWith("/cancel")) {
+    return undefined
+  }
+  return decodeURIComponent(pathname.slice("/turns/".length, -"/cancel".length))
+}
+
 /**
  * Passive GETs served by the conversation itself. They answer from stored state
  * or the live runtime and must never start lifecycle recovery or jobs.
  */
+export interface TurnControl {
+  questions(): Promise<Response>
+  answer(requestID: string, body: unknown): Promise<Response>
+  cancel(turnID: string): Promise<Response>
+}
+
 export async function passiveReadRoute(
   request: Request,
   store: ConversationStore,
-  questions: () => Promise<Response>,
-  answer: (requestID: string, body: unknown) => Promise<Response>,
+  control: TurnControl,
 ): Promise<Response | undefined> {
   const pathname = new URL(request.url).pathname
+  const cancelID = cancelTarget(request, pathname)
+  if (cancelID !== undefined) {
+    return cancelID ? control.cancel(cancelID) : Response.json({ error: "invalid turn id" }, { status: 400 })
+  }
   if (request.method === "POST" && pathname.startsWith("/questions/")) {
     const requestID = decodeURIComponent(pathname.slice("/questions/".length))
     if (!requestID) return Response.json({ error: "invalid question id" }, { status: 400 })
-    return answer(requestID, await request.json().catch(() => undefined))
+    return control.answer(requestID, await request.json().catch(() => undefined))
   }
   if (request.method !== "GET") return undefined
   if (pathname.startsWith("/turns/")) return turnStatusReceipt(store, pathname.slice("/turns/".length))
-  if (pathname === "/questions") return questions()
+  if (pathname === "/questions") return control.questions()
   return undefined
 }
 

@@ -32,7 +32,7 @@ import { ConversationReconciliation } from "./conversation/reconciliation"
 import { ConversationAccountingCutover } from "./conversation/accounting-cutover"
 import { ConversationDeliveryControls } from "./conversation/delivery-controls"
 import { ConversationMessagePipeline } from "./conversation/message-pipeline"
-import { passiveReadRoute } from "./conversation/turn-replies"
+import { cancelTurn, passiveReadRoute } from "./conversation/turn-replies"
 import { queueCapacity } from "./queue"
 import { projectTurnObservation, type PersistedTurnTimeout } from "./turn-observation"
 import { ConversationAdmissions } from "./conversation/admissions"
@@ -627,7 +627,7 @@ export class Conversation extends DurableObject<Env> {
     if (/^\/workspace\/check-collector(?:\/|$)/.test(new URL(request.url).pathname)) return this.checkDispatcher.fetch(request)
     if (/^\/workspace\/checks(?:\/|$)/.test(new URL(request.url).pathname)) return this.workspaceCheckRequest(request)
     // Status and questions are passive reads: neither starts lifecycle recovery or jobs.
-    const passive = await passiveReadRoute(request, this.store, () => this.controlPlane.onQuestions(), (id, body) => this.controlPlane.answerQuestion(id, body))
+    const passive = await passiveReadRoute(request, this.store, { questions: () => this.controlPlane.onQuestions(), answer: (id, body) => this.controlPlane.answerQuestion(id, body), cancel: (id) => cancelTurn(this.store, this.deliveryControls, id) })
     if (passive) return passive
     await this.scheduler.captureLegacyAlarmMigration(false)
     return this.lifecycle.fetch(request)
