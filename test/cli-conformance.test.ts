@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import { env, runInDurableObject, SELF } from "cloudflare:test"
 import { client, CliError } from "../tools/cli/client"
+import { ConversationStore } from "../src/state"
 
 /**
  * R1-4c conformance: the reference client's own code, unchanged, against the
@@ -89,3 +90,26 @@ describe("CLI against the public API", () => {
     expect((missing as InstanceType<typeof CliError>).status).toBe(404)
   })
 })
+
+  test("a turn survives a fresh handle and reports recovery without internal ids", async () => {
+    // Reconnect-after-reset is covered in test/worker.test.ts; what the client
+    // adds is reading persisted state rather than anything held in memory.
+    await queued("cli:restart")
+    const { turn } = await api().submit("cli:restart", { text: "work" }) as { turn: { id: string } }
+    await runInDurableObject(env.CONVERSATION.getByName("cli:restart"), async (_instance, runtime) => {
+      await new ConversationStore(runtime.storage).transitionTurn(turn.id, {
+        recovery: { available: true, fromTurnID: "turn_prev", verifiedAt: Date.now(), restored: false },
+      })
+    })
+
+    const reread = await api().status("cli:restart", turn.id) as {
+      turn: { id: string; recovery: { available: boolean; fromTurnID: string | null; restored: boolean } }
+    }
+    expect(reread.turn.id).toBe(turn.id)
+    expect(reread.turn.recovery).toMatchObject({ available: true, fromTurnID: "turn_prev", restored: false })
+
+    // The caller sees the pointer, never the storage identity behind it.
+    const text = JSON.stringify(reread)
+    expect(text).not.toContain("snapshotID")
+    expect(text).not.toContain("checkpointKey")
+  })
