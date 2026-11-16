@@ -31,6 +31,8 @@ import { ConversationReadiness } from "./conversation/readiness"
 import { ConversationReconciliation } from "./conversation/reconciliation"
 import { ConversationAccountingCutover } from "./conversation/accounting-cutover"
 import { ConversationDeliveryControls } from "./conversation/delivery-controls"
+import { ConversationMessagePipeline } from "./conversation/message-pipeline"
+import { turnStatusReceipt } from "./conversation/turn-replies"
 import { queueCapacity } from "./queue"
 import { projectTurnObservation, type PersistedTurnTimeout } from "./turn-observation"
 import { ConversationAdmissions } from "./conversation/admissions"
@@ -112,6 +114,7 @@ export class Conversation extends DurableObject<Env> {
   private readonly checkDispatcher: ConversationWorkspaceCheckDispatcher
   private readonly sessions: ConversationSessions
   private readonly deliveryControls: ConversationDeliveryControls
+  private messages?: ConversationMessagePipeline
   private readonly slackAdapter: ConversationSlackAdapter
   private readonly providerOnboarding: ConversationProviderOnboarding
   private readonly providerRepair: ConversationProviderRepair
@@ -623,6 +626,10 @@ export class Conversation extends DurableObject<Env> {
     if (new URL(request.url).pathname === "/providers/repair") return this.providerRepair.fetch(request)
     if (/^\/workspace\/check-collector(?:\/|$)/.test(new URL(request.url).pathname)) return this.checkDispatcher.fetch(request)
     if (/^\/workspace\/checks(?:\/|$)/.test(new URL(request.url).pathname)) return this.workspaceCheckRequest(request)
+    // A turn status read is passive: it must not start lifecycle recovery or jobs.
+    if (request.method === "GET" && new URL(request.url).pathname.startsWith("/turns/")) {
+      return turnStatusReceipt(this.store, new URL(request.url).pathname.slice("/turns/".length))
+    }
     await this.scheduler.captureLegacyAlarmMigration(false)
     return this.lifecycle.fetch(request)
   }
@@ -931,149 +938,33 @@ export class Conversation extends DurableObject<Env> {
   // --------------------------------------------------------------- HTTP adapter
 
   private async onMessage(input: MessageRequest): Promise<Response> {
-    if (await this.providerRepair.hasPending()) return Response.json({ error: "provider repair pending", code: "PROVIDER_REPAIR_PENDING" }, { status: 409 })
-    // Body shape is not guaranteed by the route; reject anything non-string
-    // before calling string methods on it.
-    const text = typeof input.text === "string" ? input.text.trim() : ""
-    if (!text) return Response.json({ ok: false, error: "empty message" }, { status: 400 })
-    const delivery = input.delivery ?? "queue"
-    if (!["queue", "steer", "interrupt"].includes(delivery) ||
-      (input.replaceQueue !== undefined && typeof input.replaceQueue !== "boolean") ||
-      (delivery === "steer" && input.replaceQueue !== undefined)) {
-      return Response.json({ ok: false, error: "invalid delivery options" }, { status: 400 })
-    }
-    // Ordinary queued delivery waits for cleanup's admission lock. It may
-    // enter the successor after success; claim/enqueue refuse a retained fence.
-    if (delivery !== "queue" && await this.workspaceLifecycle.hasPending()) return Response.json({ error: "workspace maintenance pending", code: "WORKSPACE_DISCARD_PENDING" }, { status: 409 })
-    if (await this.runtimeUpgrades.hasPending()) return Response.json({ ok: false, error: "runtime upgrade is pending; no message was queued" }, { status: 409 })
+    return this.messagePipeline.handle(input)
+  }
 
-    const idempotencyKey = typeof input.idempotencyKey === "string" ? input.idempotencyKey : undefined
-    if (input.idempotencyKey !== undefined && idempotencyKey === undefined) {
-      return Response.json({ ok: false, error: "invalid idempotencyKey" }, { status: 400 })
-    }
-    if (idempotencyKey) {
-      if (!/^[A-Za-z0-9:_-]{1,128}$/.test(idempotencyKey)) {
-        return Response.json({ ok: false, error: "invalid idempotencyKey" }, { status: 400 })
-      }
-      if (!(await this.store.claimEvent(`msg:${idempotencyKey}`))) {
-        const current = await this.store.get()
-        const position = current.queue?.findIndex(entry => entry.idempotencyKey === idempotencyKey) ?? -1
-        const entry = position >= 0 ? current.queue?.[position] : undefined
-        return Response.json({ ok: true, duplicate: true, sessionID: current.sessionID,
-          ...(entry ? { queued: true, delivery: "queue", queue: { id: entry.id, position: position + 1, depth: current.queue!.length } } : {}) })
-      }
-    }
-    // Only a message that was accepted (prompted or queued) may consume the
-    // key; otherwise a retry must be able to prompt.
-    const releaseClaim = async (): Promise<void> => {
-      if (!idempotencyKey) return
-      await this.store.releaseEvent(`msg:${idempotencyKey}`).catch(() => {})
-    }
-
-    const prompt = input.user ? `${input.user}: ${text}` : text
-
-    if (delivery !== "queue") {
-      const result = delivery === "steer"
-        ? await this.deliveryControls.steer(prompt)
-        : await this.deliveryControls.stop(prompt, { requireActive: true, replaceQueue: input.replaceQueue, idempotencyKey })
-      if (!result.ok && result.outcome !== "ambiguous") await releaseClaim()
-      else if (idempotencyKey) await this.store.markTombstone(`msg:${idempotencyKey}`).catch(() => {})
-      return Response.json(result, { status: result.status })
-    }
-    const queueResponse = async (): Promise<Response> => {
-      const result = await this.admissions.enqueue(prompt, undefined, { replace: input.replaceQueue, idempotencyKey })
-      if (result.kind !== "enqueued") {
-        await releaseClaim()
-        return Response.json({ ok: false, error: result.kind, ...result }, { status: result.kind === "queue_full" ? 429 : result.kind === "admission_in_progress" ? 409 : 503 })
-      }
-      if (idempotencyKey) await this.store.markTombstone(`msg:${idempotencyKey}`).catch(() => {})
-      return Response.json({ ok: true, queued: true, delivery: "queue", queue: result }, { status: 202 })
-    }
-
-    if (input.replaceQueue || !(await this.admissions.claim())) return queueResponse()
-    let sessionID = ""
-    let baseline: string | undefined
-    try {
-      sessionID = await this.sessions.ensure(text, input.transport ?? "http", input.slack)
-      baseline = await this.sessions.baseline(sessionID)
-    } catch (err) {
-      this.admissions.finishLocal()
-      void this.count("admission.failed")
-      logEvent("admission.failed", { transport: "http" })
-      await this.store.patch({ phase: "idle", admissionID: undefined, admissionStartedAt: undefined })
-      if (err instanceof WorkspaceRepositoryConflictError) {
-        await releaseClaim()
-        return Response.json({ ok: false, error: "workspace repository verification failed; no message was queued", code: "WORKSPACE_REPOSITORY_CONFLICT" }, { status: 409 })
-      }
-      return queueResponse()
-    }
-
-    const reservation = await this.acquireBudgetReservation()
-    if (reservation.kind === "denied") {
-      this.admissions.finishLocal()
-      await this.store.advance("idle")
-      await releaseClaim()
-      return Response.json(
-        {
-          ok: false,
-          error: reservation.message,
-          spentUSD: reservation.spentUSD,
-          reservedUSD: reservation.reservedUSD,
-          budgetUSD: reservation.budgetUSD,
-        },
-        { status: 429 },
-      )
-    }
-    if (reservation.kind === "conflict" || reservation.kind === "unavailable") {
-      this.admissions.finishLocal()
-      await this.store.advance("idle")
-      await releaseClaim()
-      return Response.json(
-        { ok: false, error: reservation.message, reservation: reservation.kind },
-        { status: 503 },
-      )
-    }
-    if (reservation.kind === "already-dispatched") {
-      await this.admissions.resumeDispatched()
-      return Response.json(
-        { ok: false, error: reservation.message, reservation: reservation.kind },
-        { status: 503 },
-      )
-    }
-    if (!(await this.markBudgetReservationDispatched(reservation.reservation, baseline))) {
-      this.admissions.finishLocal()
-      await this.store.advance("idle")
-      await releaseClaim()
-      return Response.json(
-        { ok: false, error: "could not persist budget dispatch state", reservation: "unavailable" },
-        { status: 503 },
-      )
-    }
-    try {
-      // Once the durable dispatched marker is written, any transport error is
-      // ambiguous: keep the hold and never turn it into queueable work.
-      await this.withClient((client) => client.session.prompt({ sessionID, text: prompt, delivery: "queue" }))
-    } catch (err) {
-      await this.admissions.recordAccepted(baseline, "ambiguous")
-      if (idempotencyKey) await this.store.markTombstone(`msg:${idempotencyKey}`).catch(() => {})
-      await this.deliver({
-        type: "error",
-        message: `prompt dispatch outcome is unknown; reservation retained: ${errorMessage(err)}`,
-      }).catch(() => {})
-      return Response.json(
-        { ok: false, error: "prompt dispatch outcome is unknown; reservation retained" },
-        { status: 502 },
-      )
-    }
-    // The prompt is accepted; a bookkeeping or stream failure must not
-    // re-enqueue it, or the model would be charged twice for one message.
-    await this.admissions.recordAccepted(baseline, "acknowledged")
-    if (idempotencyKey) {
-      await this.store.markTombstone(`msg:${idempotencyKey}`).catch(() => {})
-    }
-    const settings = await this.settings().catch(() => undefined)
-    if (settings?.streaming) this.ctx.waitUntil(this.turnExecution.startStream(sessionID))
-    return Response.json({ ok: true, sessionID })
+  /** Built on first use: the constructor only wires collaborators. */
+  private get messagePipeline(): ConversationMessagePipeline {
+    return this.messages ??= new ConversationMessagePipeline({
+      store: this.store,
+      admissions: this.admissions,
+      deliveryControls: this.deliveryControls,
+      sessions: this.sessions,
+      recovery: {
+        providerRepairPending: () => this.providerRepair.hasPending(),
+        workspacePending: () => this.workspaceLifecycle.hasPending(),
+        upgradePending: () => this.runtimeUpgrades.hasPending(),
+      },
+      budget: {
+        acquire: () => this.acquireBudgetReservation(),
+        dispatch: (reservation, baseline) => this.markBudgetReservationDispatched(reservation, baseline),
+      },
+      prompt: async (sessionID, text) => {
+        await this.withClient((client) => client.session.prompt({ sessionID, text, delivery: "queue" }))
+      },
+      deliver: (event) => this.deliver(event),
+      count: (name) => this.count(name),
+      settings: () => this.settings(),
+      startStream: (sessionID) => { this.ctx.waitUntil(this.turnExecution.startStream(sessionID)) },
+    })
   }
 
   private async stopObservation() {

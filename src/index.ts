@@ -19,6 +19,7 @@ import { parseObjectJson } from "./http-json"
 import { validateOpencodeKey } from "./opencode-key-validation"
 import { handleCheckCollector } from "./workspace-check-collector"
 import { handleSlackCanaryRoute } from "./slack-canary"
+import { alertsRoute, safeDecode, turnStatusRoute } from "./worker-routes"
 
 export { Conversation } from "./conversation"
 export { Settings } from "./settings-do"
@@ -28,15 +29,6 @@ export { ProviderEgress } from "./provider-egress-entrypoint"
 // where legacy is a Slack `channel:thread` pair (thread_ts has a dot).
 // Keep the cap generous but finite. `:` separates segments, `.` appears in thread timestamps.
 const KEY_PATTERN = /^[A-Za-z0-9:.\\_-]{1,256}$/
-
-/** Decode a path segment without letting a malformed escape reach the router. */
-function safeDecode(value: string): string | undefined {
-  try {
-    return decodeURIComponent(value)
-  } catch {
-    return undefined
-  }
-}
 
 /** Decode and validate path segments before forwarding them to the container. */
 function decodePathSegments(parts: string[]): string | undefined {
@@ -242,13 +234,8 @@ async function handleApi(
     return checkAlerts(env)
   }
 
-  if (parts[1] === "alerts" && request.method === "GET") {
-    return settingsDo(env, "/alerts")
-  }
-
-  if (parts[1] === "alerts" && request.method === "DELETE") {
-    return settingsDo(env, `/alerts${url.search}`, undefined, "DELETE")
-  }
+  const alerts = alertsRoute(settingsDo.bind(null, env), url, parts, request)
+  if (alerts) return alerts
 
   if (parts[1] === "models" && request.method === "GET") {
     return Response.json({ models: MODEL_CATALOG, recommended: recommendModel().ref })
@@ -464,6 +451,11 @@ async function handleApi(
     return conversation.fetch("https://conversation/events", {
       headers,
     })
+  }
+
+  if (request.method === "GET" && suffix.length === 2 && suffix[0] === "turns") {
+    const rawID = suffix[1]
+    return turnStatusRoute(conversation, rawID, recordConversation)
   }
 
   if (request.method === "GET" && suffix.length === 1 && suffix[0] === "context") {

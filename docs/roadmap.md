@@ -380,6 +380,7 @@ independent design, fixtures and security checks can proceed.
 | **W3** | **R1-4b** | Neutral questions, permissions, cancellation, steer and interrupt | M | R1-4a, R0-22 | `GET/POST /questions`, turn-scoped cancel with optional follow-up, `turnID` on replayable frames; stale/foreign answers rejected; unreadable pending state → 503; cancel/steer/interrupt report requested, observedStop and settled independently and never release accounting; timeout policy and snapshot semantics documented |
 | **W3** | **R1-4c** | Reference CLI and non-Slack conformance | M | R1-4b | CLI uses only public HTTP/SSE, no Slack credentials, passes submit/follow-up/retry/question/permission/cancel/reconnect/restart/recovery cases against shared fixtures |
 | **W3** | **R1-4d** | Re-scope protected extraction | S | R1-4c | Audit-24 extraction is either closed as consumed by the lifecycle refactor or limited to a demonstrated seam; no speculative backend interfaces |
+| **W3** | **R1-4e** | Opt-in MCP connector for agent offload | M | R1-4b | `MCP_ENABLED` (default off) with `MCP_TOKEN ?? API_TOKEN`; Streamable HTTP at `/mcp`; a stateless `createMcpHandler` server with tools `submit`/`status`/`wait`/`read`/`cancel`/`questions`/`answer` reusing the public contract through the client shared with R1-4c; `submit` returns a turn immediately and `wait` is bounded; no credential, digest, queue id, R2 key or reservation id in any tool result; shared conformance fixtures; the route is added outside `handleApi` so the lint ratchet does not grow |
 | **W4** | **SL-1.2/1.5** | Turn, memory and cost evidence; 2 vs 3 GiB decision | M | — | Turn latency and RSS on a representative repo; cost per active hour; OOM alert; chosen default recorded |
 | **W4** | **SL-1.4/SL-3.x/SL-4.x** | Prewarm, measured boot wins, restore path | M | SL-A | No-provider-spend prewarm with capacity respect; each boot/restore change kept only with before/after numbers; security tests unchanged |
 | **W4** | **SL-6.1** | Workspace-authority ADR | S | — | One authoritative writer chosen with recovery story; no dual-writer integration before it |
@@ -630,6 +631,31 @@ operators as unstable, recovery inspection in turn status while the operator
 `/recovery` route stays privileged, and **delivery modes** (default FIFO queue,
 explicit steer, explicit interrupt with follow-up). The §7 acceptance matrix is the
 review target. The record is bounded status, not an exactly-once receipt.
+
+**R1-4e — opt-in MCP connector.**
+Expose the caller contract as a Streamable-HTTP MCP server at `/mcp` so another
+agent (OpenCode, Claude Code, Codex) can offload a turn and read the result.
+`MCP_ENABLED` gates the endpoint and defaults off; `MCP_TOKEN` falls back to
+`API_TOKEN` so the connector can be revoked separately. Tools: `submit` (returns
+`{turn:{id,state,queuePosition}}` immediately — an MCP call cannot hold a coding
+turn), `status`, `wait` (bounded poll ≤45 s), `read` (assistant reply for the
+turn, from its stored baseline), `cancel`, `questions` and `answer` (the R1-4b
+interaction surface). Tool results carry no credential, digest, queue id, R2 key
+or reservation id. The connector is a client, not a second implementation: it
+calls the same Conversation DO routes through the client module shared with the
+R1-4c CLI, and passes the same conformance fixtures. Serve it with the stateless
+`createMcpHandler` from `agents/mcp`; `McpAgent` is feature-frozen and would add
+a Durable Object class and a storage migration for no benefit. The only new
+dependency is `zod` declared directly (already present transitively) for tool
+input schemas. It demonstrates G1-C's "public API or connector" but is not
+required evidence for that gate; a deployment without MCP must still pass it.
+Submit-side rate limiting reuses `enforceRateLimit` and every tool call is logged.
+
+Locked defaults: `conversation` is a required argument on every tool, with no
+environment default, so one connector can drive several conversations without
+hidden routing; `wait` caps at 45 s with 1 s polls; `read` ships in v1 and
+returns the assistant reply produced after the turn's stored baseline, so an
+offloaded turn is readable before §5.5 event correlation lands.
 
 **R0-15 — one storage cutover, on the current artifacts.**
 Re-state provenance: all earlier C1/C2 evidence used Stow 0.3.7 and `standard-1`;

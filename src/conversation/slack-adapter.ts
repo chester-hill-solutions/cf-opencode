@@ -432,7 +432,9 @@ export class ConversationSlackAdapter {
 
   private safeQueueResult(result: Awaited<ReturnType<ConversationAdmissions["enqueue"]>>): Record<string, unknown> {
     if (result.kind === "enqueued") return { kind: result.kind, position: result.position, depth: result.depth, limit: result.limit }
-    if (result.kind === "unavailable") return { kind: result.kind }
+    if (result.kind === "unavailable" || result.kind === "replayed" || result.kind === "conflict" || result.kind === "expired") {
+      return { kind: result.kind }
+    }
     return { kind: result.kind, depth: result.depth, limit: result.limit }
   }
 

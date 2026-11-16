@@ -127,6 +127,9 @@ POST /api/conversations/:key/messages
   `interrupt` with a follow-up creates a new turn after the stop; without a
   follow-up it reports the interrupted turn. `queue` is the only mode that
   creates a `queued` turn.
+- The queued answer is `202` in this slice, not `200`: `202` is the accurate
+  status for work that has not started, and the body carries `state: "queued"`.
+  Every other field above is unchanged.
 - The key window (24 h) and the turn window (50 turns or 72 h) are independent.
   Reusing an expired key starts a new turn; replaying a key whose turn was
   pruned is `410 turn_expired`, never a `500` and never a resurrected turn.
@@ -159,6 +162,13 @@ status read never claims more than the event log holds.
 
 `410 turn_expired` is returned once the turn record is pruned; `404` is only for
 an id that never existed.
+
+**Implementation note (first slice).** Status serves identity, lifecycle,
+configuration, accounting state and cancellation state. `output` and per-turn
+USD amounts are omitted until §5.5 correlates events with `turnID`; `accounting`
+reports `held` / `settled` / `unknown` only, never an invented figure. Steer and
+interrupt still answer with the active turn reference added, and gain their own
+turn records with the delivery-mode follow-up.
 
 ### 5.3 Interactions
 
