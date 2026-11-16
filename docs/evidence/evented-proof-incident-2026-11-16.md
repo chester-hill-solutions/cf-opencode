@@ -54,30 +54,48 @@ names commit `15a916a` as its baseline, which is why the thread still contains
 `Container busy and a message is already queued.` — wording deleted from the
 repo on 2026-11-14 by `c52bd4f`.
 
-**The deployed build has no source of record.** `git log --all --grep` for
-"canary ingress", "arfin canary" and "isolated arfin" finds nothing, and no
-branch matches; nor does anything since 2026-11-14. Production therefore runs a
-hand-assembled working tree, which is why this failure cannot be reproduced from
-the repository.
+The router half of that build has no source of record: `git log --all --grep`
+for "canary ingress", "arfin canary" and "isolated arfin" finds nothing, and no
+branch matches; nor does anything since 2026-11-14. Its behaviour is described in
+[slack-workspace-checks-2026-11-15.md](./slack-workspace-checks-2026-11-15.md)
+("minimal signature-validated service-binding router"), but the source itself was
+never committed. The `15a916a` baseline underneath it *is* a commit, and that
+baseline is where the proof race below lives.
 
 Separately, `wrangler containers list` shows an isolated application
 `cf-opencode-arfin-canary-20261115-conversation` created 2026-11-15T20:47:51Z.
 All of its instances are inactive.
 
-## Why the proof check cannot be satisfied
+## Why the proof check could not be satisfied
 
 `src/conversation/readiness.ts` refuses an evented conversation when
-`/container/start` omits `eventPersistence: true`. Every commit in this
-repository that returns `accountingPolicy: ACCOUNTING_POLICY_ID` also returns
-`eventPersistence: true` on a successful start — verified by scanning every
-revision of `control-server.ts` (`git rev-list --all -- control-server.ts`). Any
-other answer omits `accountingPolicy` too and would have produced
-`container start returned no valid accounting runtime proof` instead.
+`/container/start` omits `eventPersistence: true`. The deployed baseline is
+`15a916a`, whose `control-server.ts` has **no lifecycle gate**: `/start`,
+`/restore`, `/checkpoint` and `/state-checkpoint` all run concurrently.
 
-So this refusal cannot come from any checked-in build. Two candidates remain:
-the custom `f276b83b` build resets its proof flag on the path that answered, or
-the process behind port 4001 is not the image named in `wrangler.jsonc` (the
-`CONTAINER_URL` secret is the other way that happens).
+`startOpencode()` in that baseline begins with `if (opencode && opencode.exitCode
+=== null) return` and only sets `opencodeEventPersistence = true` after
+`/api/info` readiness. So when two `/start` requests overlap:
+
+1. the first spawns OpenCode and sets `opencodeGeneration` synchronously;
+2. the second sees the live child, returns early with `opencodeEventPersistence`
+   still `false`, passes the `!opencodeGeneration` guard and answers
+   `200 {ok, accountingPolicy, opencodeGeneration}` without `eventPersistence`;
+3. the Worker rejects that proof.
+
+That is the only shape in this history that produces `accountingPolicy` without
+`eventPersistence`, and it is intermittent — which matches the 11:16 turn running
+normally on the same conversation between failed admissions.
+
+`0c43bda` (2026-11-12) added `createLifecycleGate()` and wrapped `/start` in
+`enqueueLifecycle(startRuntime)`, which serializes those handlers and removes the
+race. `main` carries it (`control-server.ts:1322`). Production does not, because
+the deployed ingress is frozen at the `15a916a` baseline.
+
+The remaining option was endpoint drift — `CONTAINER_URL` pointing at a
+different control server. The deployed version config pins the same base and
+evented digests as the repository, so the image is not a mis-pin; it is the
+ungated baseline behaviour above.
 
 Neither the recovery `retry` action nor the accounting reconciliation endpoints
 can close the hold without one successful runtime start: `retry` sends no prompt
@@ -86,10 +104,14 @@ quiescence proof.
 
 ## What closes it
 
-1. Reconcile the deployed build with a commit, or deploy `main`.
-2. Confirm the running evented image matches the pinned digest
-   `sha256:826337168d6d3820181d39c69764787da6e934217889370c0a91399adc5da431`,
-   and add an `org.opencontainers.image.revision` label so provenance is
-   answerable next time.
+1. Deploy a build containing `0c43bda` or later. `main` already fixes the race,
+   and PR #24 adds the truthful queue notice plus the slow retry while a
+   dispatched hold blocks draining. The production-only pieces to carry forward
+   are the signature-validated ingress router from
+   [slack-workspace-checks-2026-11-15.md](./slack-workspace-checks-2026-11-15.md)
+   and the pinned digests, which the deployed version already matches.
+2. Add an `org.opencontainers.image.revision` label to the Dockerfile so a
+   running image can be traced to a commit.
 3. Start the container once. Settlement then reads terminal usage and the queued
    follow-up drains; no manual release is needed.
+
