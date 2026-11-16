@@ -1,33 +1,16 @@
 {
   "package": "@chester-hill-solutions/ratchet-strap",
-  "version": "0.5.0",
+  "version": "0.4.0",
   "sourceRepository": "https://github.com/chester-hill-solutions/chester-hill-solutions",
   "sourceDirectory": "packages/ratchet-strap",
-  "sourceCommit": "91266065a3d99f6b9f12ed31d0e8dd42eef25ce5",
-  "sourceState": "Local development snapshot on feat/ratchet-strap-gold-set; not published at adoption time",
-  "sourceTreeSha256": "479aecca2f72b3e2627bf3138b17668c8c0fd42f2d32a8d2044ee56528ffb057",
+  "sourceState": "Local development snapshot; not published at adoption time",
+  "sourceSha256": "4e335442ec20062f7bc2d3206aff09286f6cdeacce21ce0d0784640ec212d011",
   "canonicalPolicySha256": "e89779ea78b9cdc58415105bb46d055a696b1709ec03660edc526d572f889404",
-  "artifactSha256": "dcf6d0640345c45e043c4c4dd98ef3146c24cc8d68630860283e39851bb23c9f",
-  "packedDependencies": {
-    "@chester-hill-solutions/dev-guards": "0.1.0",
-    "@opentelemetry/api": "1.9.0"
-  },
-  "vendoredDependencies": {
-    "@chester-hill-solutions/dev-guards": {
-      "file": "chester-hill-solutions-dev-guards-0.1.0.tgz",
-      "artifactSha256": "f9e7384c231fdc43967b1836aad60c4b9e893cbc8468c8d678e52e012833aa55"
-    }
-  },
-  "adaptation": "bun pm pack rewrites the workspace protocol to the concrete dev-guards version. The consumer pins that dependency with a package.json override to the vendored dev-guards tarball, so the committed artifact stays installable without the source monorepo.",
-  "methods": {
-    "sourceTreeSha256": "git archive --format=tar <sourceCommit> packages/ratchet-strap | shasum -a 256",
-    "canonicalPolicySha256": "shasum -a 256 packages/eslint-config/src/ratchet-rules.ts",
-    "artifactSha256": "shasum -a 256 <packed tarball>"
-  },
+  "artifactSha256": "4c96dffb3effb251b8944554e996dbd23c463c23b1f50b09d02afd8768b1724e",
   "validation": {
-    "testsPassed": 283,
+    "testsPassed": 255,
     "testsFailed": 0,
-    "assertions": 1253,
+    "assertions": 1075,
     "typecheck": "passed",
     "build": "passed"
   }
