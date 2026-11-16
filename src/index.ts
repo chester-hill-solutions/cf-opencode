@@ -9,8 +9,8 @@ import type { Alert } from "./alerts"
 import { annotate, traceId } from "./telemetry"
 import { MODEL_CATALOG, recommendModel } from "./models"
 import { isOnboardingProxyPath } from "./onboarding"
-import { approvalVerdict, fetchChannelMembers } from "./slack-auth"
-import { conversationKey, parseConversationKey, resolveAgentForChannel } from "./tenancy"
+import { handleSlackInteraction } from "./slack-interactivity"
+import { conversationKey, resolveAgentForChannel } from "./tenancy"
 import { encryptionRequired, plaintextArchivesAllowed } from "./archive-policy"
 import { bearerAuthorized } from "./control-auth"
 import { enforceRateLimit } from "./rate-limit"
@@ -23,12 +23,6 @@ import { handleSlackCanaryRoute } from "./slack-canary"
 export { Conversation } from "./conversation"
 export { Settings } from "./settings-do"
 export { ProviderEgress } from "./provider-egress-entrypoint"
-
-const DECISIONS = {
-  oc_perm_once: "once",
-  oc_perm_always: "always",
-  oc_perm_reject: "reject",
-} as const
 
 // Tenancy-namespaced keys can exceed 128 chars: `tenant:{64}:agent:{64}:{legacy}`
 // where legacy is a Slack `channel:thread` pair (thread_ts has a dot).
@@ -164,91 +158,15 @@ export default {
     }
 
     if (url.pathname === "/slack/interactivity") {
-      const payload = parseInteractionBody(body)
-      const action = payload?.actions?.[0]
-      if (!action?.value || !action.action_id) return new Response("ok")
-
-      const decision = DECISIONS[action.action_id as keyof typeof DECISIONS]
-      const formAction = action.action_id === "form_answer" || action.action_id === "form_cancel"
-      if (!decision && !formAction) return new Response("ok")
-
-      let parsed: { key?: string; requestID?: string; channel?: string; sessionID?: string; field?: string; value?: string | number | boolean }
-      try {
-        parsed = JSON.parse(action.value) as typeof parsed
-      } catch {
-        return new Response("ok")
-      }
-      if (!parsed.key || !parsed.requestID) return new Response("ok")
-
-      // A namespaced approval must come from the channel bound to the same
-      // agent. This stops a button from one tenant's channel being replayed
-      // against another tenant's conversation.
-      const sourceAgent = parseConversationKey(parsed.key)
-      if (sourceAgent) {
-        const bound = await resolveAgentForChannel(
-          env,
-          payload?.team?.id,
-          payload?.channel?.id,
-        ).catch((error) => {
-          logEvent("tenancy.resolve_failed", { error: String(error) })
-          return undefined
-        })
-        if (
-          !bound ||
-          bound.tenantID !== sourceAgent.tenantID ||
-          bound.agentID !== sourceAgent.agentID
-        ) {
-          logEvent("permission.tenant_mismatch", { channel: payload?.channel?.id })
-          return Response.json({
-            response_type: "ephemeral",
-            text: "This approval belongs to another agent.",
-          })
-        }
-      }
-
-      // A permission decision is only valid from a member of the channel the
-      // request was posted in. Anyone in the channel may approve.
-      const members = await fetchChannelMembers(
-        payload?.channel?.id ?? "",
-        env.SLACK_BOT_TOKEN ?? "",
-      )
-      const verdict = approvalVerdict({
-        userId: payload?.user?.id,
-        channelId: payload?.channel?.id,
-        buttonChannel: parsed.channel,
-        members,
-      })
-      if (verdict !== "allow") {
-        logEvent("permission.unverified", { verdict })
-        const text =
-          verdict === "wrong_channel"
-            ? "This approval belongs to another channel."
-            : verdict === "deny"
-              ? "Only members of this channel can approve this request."
-              : "Couldn't verify channel membership; check the Slack app scopes."
-        return Response.json({ response_type: "ephemeral", text })
-      }
-
-      if (formAction) {
-        if (typeof parsed.sessionID !== "string" || !parsed.channel) return new Response("invalid question", { status: 400 })
-        ctx.waitUntil(
-          conversationStub(env, parsed.key).fetch("https://conversation/form", {
-            method: "POST",
-            body: JSON.stringify({
-              sessionID: parsed.sessionID, formID: parsed.requestID, channel: payload?.channel?.id,
-              ...(action.action_id === "form_cancel" ? { cancel: true } : { field: parsed.field, value: parsed.value }),
-            }),
-          }),
-        )
-        return new Response("ok")
-      }
-      const dispatch: PermissionRequest = { requestID: parsed.requestID, decision: decision! }
-      ctx.waitUntil(
-        conversationStub(env, parsed.key).fetch("https://conversation/permission", {
-          method: "POST",
-          body: JSON.stringify(dispatch),
+      // Slack requires acknowledgement within three seconds, including when
+      // membership checks or runtime preparation are slow. Keep authorization,
+      // application and visible feedback together in the background operation.
+      ctx.waitUntil(handleSlackInteraction(parseInteractionBody(body), {
+        env,
+        dispatch: (key, path, value) => conversationStub(env, key).fetch(`https://conversation${path}`, {
+          method: "POST", body: JSON.stringify(value),
         }),
-      )
+      }))
       return new Response("ok")
     }
 

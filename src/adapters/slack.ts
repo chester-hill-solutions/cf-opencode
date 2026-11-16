@@ -37,8 +37,9 @@ export interface SlackInteractionPayload {
   team?: { id?: string }
   user?: { id?: string }
   channel?: { id?: string }
-  message?: { ts?: string }
-  actions?: Array<{ action_id?: string; value?: string }>
+  message?: { ts?: string; text?: string; blocks?: Record<string, unknown>[] }
+  container?: { type?: string; channel_id?: string; message_ts?: string }
+  actions?: Array<{ action_id?: string; value?: string; text?: { text?: string } }>
 }
 
 /** Verify Slack's `X-Slack-Signature` over the raw request body. */

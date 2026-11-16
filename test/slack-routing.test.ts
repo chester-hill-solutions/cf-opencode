@@ -104,9 +104,15 @@ function formPayload(actionID: "form_answer" | "form_cancel", opts: {
 }
 
 function membersResponse(result: { ok: boolean; members?: string[] }) {
-  vi.stubGlobal("fetch", async () => new Response(JSON.stringify(result), {
-    headers: { "content-type": "application/json" },
-  }))
+  const feedback: Record<string, unknown>[] = []
+  vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+    if (String(input).endsWith("/chat.postEphemeral")) {
+      feedback.push(JSON.parse(String(init?.body)))
+      return Response.json({ ok: true })
+    }
+    return Response.json(result)
+  })
+  return feedback
 }
 
 afterEach(() => vi.unstubAllGlobals())
@@ -175,12 +181,12 @@ describe("Slack form action routing", () => {
   })
 
   it("blocks a stale button whose conversation key belongs to another tenant", async () => {
-    membersResponse({ ok: true, members: ["U1"] })
+    const feedback = membersResponse({ ok: true, members: ["U1"] })
     const { response, calls } = await sendAction(formPayload("form_answer", {
       user: "U1", key: "tenant:t1:agent:a1:C1:10.0",
     }), { binding: { tenant_id: "t2", agent_id: "a2" } })
     expect(response.status).toBe(200)
     expect(calls).toEqual([])
-    expect(await response.json()).toMatchObject({ response_type: "ephemeral" })
+    expect(feedback).toContainEqual(expect.objectContaining({ user: "U1", text: expect.stringContaining("another agent") }))
   })
 })

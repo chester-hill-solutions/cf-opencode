@@ -37,7 +37,7 @@ function harness() {
               path: new URL(input).pathname,
               body: JSON.parse(String(init?.body)) as Record<string, unknown>,
             })
-            return new Response("ok")
+            return Response.json({ ok: true })
           },
         }
       },
@@ -50,20 +50,25 @@ function harness() {
   return { env, ctx, calls, settle: () => Promise.all(pending) }
 }
 
-function stubMembers(members: string[]): void {
-  vi.stubGlobal("fetch", async () =>
-    new Response(JSON.stringify({ ok: true, members }), {
-      headers: { "content-type": "application/json" },
-    }),
-  )
+function stubMembers(members: string[]): Record<string, unknown>[] {
+  const feedback: Record<string, unknown>[] = []
+  vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+    if (String(input).endsWith("/chat.postEphemeral")) feedback.push(JSON.parse(String(init?.body)))
+    return Response.json({ ok: true, members })
+  })
+  return feedback
 }
 
-function stubMembersFailure(): void {
-  vi.stubGlobal("fetch", async () =>
-    new Response(JSON.stringify({ ok: false, error: "missing_scope" }), {
-      headers: { "content-type": "application/json" },
-    }),
-  )
+function stubMembersFailure(): Record<string, unknown>[] {
+  const feedback: Record<string, unknown>[] = []
+  vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+    if (String(input).endsWith("/chat.postEphemeral")) {
+      feedback.push(JSON.parse(String(init?.body)))
+      return Response.json({ ok: true })
+    }
+    return Response.json({ ok: false, error: "missing_scope" })
+  })
+  return feedback
 }
 
 async function interact(
@@ -129,14 +134,14 @@ describe("Slack interactivity", () => {
   })
 
   it("ignores an approval from someone outside the channel", async () => {
-    stubMembers(["U2"])
+    const feedback = stubMembers(["U2"])
     const { response, calls } = await interact(
       permissionPayload({ userId: "U1", channelId: "C1", buttonChannel: "C1" }),
     )
 
     expect(response.status).toBe(200)
     expect(calls).toEqual([])
-    expect(await response.json()).toMatchObject({ response_type: "ephemeral" })
+    expect(feedback).toContainEqual(expect.objectContaining({ user: "U1", text: expect.stringContaining("Only members") }))
   })
 
   it("ignores a button that belongs to another channel", async () => {
@@ -150,14 +155,14 @@ describe("Slack interactivity", () => {
   })
 
   it("fails closed when channel membership cannot be verified", async () => {
-    stubMembersFailure()
+    const feedback = stubMembersFailure()
     const { response, calls } = await interact(
       permissionPayload({ userId: "U1", channelId: "C1", buttonChannel: "C1" }),
     )
 
     expect(response.status).toBe(200)
     expect(calls).toEqual([])
-    expect(await response.json()).toMatchObject({ response_type: "ephemeral" })
+    expect(feedback).toContainEqual(expect.objectContaining({ user: "U1", text: expect.stringContaining("Couldn't verify") }))
   })
 
   it("rejects a bad signature without dispatching", async () => {

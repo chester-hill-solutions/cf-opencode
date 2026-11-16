@@ -1,0 +1,17 @@
+{
+  "package": "@chester-hill-solutions/ratchet-strap",
+  "version": "0.4.0",
+  "sourceRepository": "https://github.com/chester-hill-solutions/chester-hill-solutions",
+  "sourceDirectory": "packages/ratchet-strap",
+  "sourceState": "Local development snapshot; not published at adoption time",
+  "sourceSha256": "4e335442ec20062f7bc2d3206aff09286f6cdeacce21ce0d0784640ec212d011",
+  "canonicalPolicySha256": "e89779ea78b9cdc58415105bb46d055a696b1709ec03660edc526d572f889404",
+  "artifactSha256": "4c96dffb3effb251b8944554e996dbd23c463c23b1f50b09d02afd8768b1724e",
+  "validation": {
+    "testsPassed": 255,
+    "testsFailed": 0,
+    "assertions": 1075,
+    "typecheck": "passed",
+    "build": "passed"
+  }
+}

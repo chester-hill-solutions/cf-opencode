@@ -1,6 +1,7 @@
 import { useEffect, useReducer, useRef } from "react"
 import { validateSettings, type HarnessSettings } from "../../src/settings"
 import type { ModelOption } from "../../src/models"
+import { readToken } from "../shared/api"
 import {
   DEFAULT_MODEL,
   initialSettingsState,
@@ -24,14 +25,6 @@ export const ruleLines = (value: string) =>
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
-
-function readToken() {
-  try {
-    return localStorage.getItem(TOKEN_KEY) ?? ""
-  } catch {
-    return ""
-  }
-}
 
 class SettingsRequestError extends Error {
   constructor(
@@ -123,7 +116,10 @@ export function useSettings() {
   }
 
   function update<K extends keyof SettingsDraft>(key: K, value: SettingsDraft[K]) {
-    dispatch({ type: "patch-draft", patch: { [key]: value } as Partial<SettingsDraft> })
+    dispatch({
+      type: "patch-draft",
+      patch: { [key]: value } as Partial<SettingsDraft>,
+    })
   }
 
   async function load() {
@@ -175,7 +171,7 @@ export function useSettings() {
   }
 
   async function save() {
-    if (busy.current || !authenticated || !saved) return
+    if (busy.current || !authenticated || !saved || tokenChanged || !dirty) return
     const payload = {
       workspaceRepo: draft.workspaceRepo.trim(),
       workspaceBranch: draft.workspaceBranch.trim(),
@@ -230,6 +226,13 @@ export function useSettings() {
   useEffect(() => {
     if (token) void load()
   }, [])
+
+  useEffect(() => {
+    if (!dirty) return
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault()
+    window.addEventListener("beforeunload", warn)
+    return () => window.removeEventListener("beforeunload", warn)
+  }, [dirty])
 
   return {
     token,

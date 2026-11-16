@@ -1,0 +1,25 @@
+{
+  "repository": "https://github.com/chester-hill-solutions/callcaster",
+  "commit": "0b7f3021b07dce47d53a64a03cd80e47f79f81ff",
+  "sourceDirectory": "scripts/lib",
+  "policy": "docs/lint-ratchet-rules.md",
+  "adaptation": "telemetry-source accepts sourceRoots and skipPaths so Aboiteau can scan src, web, runtime/opencode and packages/ui/src while excluding the upstream UI primitives and dev fixtures; analysis is unchanged. Other files are byte-for-byte snapshots.",
+  "files": {
+    "state-machine-analysis.mjs": {
+      "upstreamSha256": "7346ba6df1bcd4e9b7c122febfad6be592546904ba10383ddd9aa1392bdbb41b",
+      "vendoredSha256": "7346ba6df1bcd4e9b7c122febfad6be592546904ba10383ddd9aa1392bdbb41b"
+    },
+    "async-waterfalls.mjs": {
+      "upstreamSha256": "97a4423f76895a2fb62a21f6271181547f947ceaea00d1dbd5e9eb280b84c6e7",
+      "vendoredSha256": "97a4423f76895a2fb62a21f6271181547f947ceaea00d1dbd5e9eb280b84c6e7"
+    },
+    "telemetry-source.mjs": {
+      "upstreamSha256": "c61b6b17f3553c57f8c114764d24140b34ff622f8f7ef51b4db0efeaa410ac48",
+      "vendoredSha256": "4c64a050d8e3f7f718e6a874cccbd587f7fa8905a94cbbd0eba1b482e281c2e5"
+    },
+    "effects-lib.mjs": {
+      "upstreamSha256": "c14aaeef7a939a43488a3ccc9154299719dfa2d93dc1d1591e06ca25aebcc851",
+      "vendoredSha256": "c14aaeef7a939a43488a3ccc9154299719dfa2d93dc1d1591e06ca25aebcc851"
+    }
+  }
+}

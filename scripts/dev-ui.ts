@@ -30,6 +30,8 @@ const server = Bun.serve({
     return staticAsset(request)
   },
 })
-console.log("Aboiteau settings: " + server.url)
+console.log("Aboiteau: " + server.url)
+console.log("Workspace: " + new URL("workspace/", server.url))
+console.log("Settings: " + new URL("settings/", server.url))
 console.log("UI kit: " + new URL("ui-kit/", server.url))
 console.log(upstream ? "API proxy: " + upstream : "Local UI preview; API not connected.")
