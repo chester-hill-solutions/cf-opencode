@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-15T18:53:50.876964+00:00",
+  "sourceHEAD": "ec5f6b44f1457ab9b8bc7e600b169ac3e9c7d1b2",
+  "workingTreeModified": true,
+  "sourceSHA256": {
+    "Dockerfile": "c94771bd6c81a90f089656c6a8569f0467e5c28e2808c767c591c15b9334d75d",
+    "control-server.ts": "cbba64ed4626f5926a8ef68c0a5f082866e9265e392e1496b8fb328d51a1961f",
+    "workspace-repository.ts": "0f3b1b46895fac6aa2bab35b0e41c2a11528501819456c63455084e8c9255dfe",
+    "src/workspace-repository.ts": "169490d76ebf7ee95b98882e900833eacc93ce7eff419e0da51035ecb5254396",
+    "src/state.ts": "7b8dfe29e6ca23624f16cd24aef18cbcf192cdc316770725ae3498a261bbfd7d",
+    "src/conversation.ts": "bb49366d153dac75d42aeac7371377c33a2e877f1b63a5b1434929096f724d4f",
+    "src/conversation/readiness.ts": "4975f6ff672f465a25ad2c952cec7778748982454cd47a55605720a59db18987",
+    "src/conversation/images.ts": "130fb40f3970bc4312e9d6aa467daf10e4ff204ae0ea90d787f24702e297da5a",
+    "src/index.ts": "8580084f3ba1f1948eb9a76db2b8c25e6054a5006515bb02848082bdf2b02dff",
+    "scripts/workspace-repository.ts": "a6ada90601d0e323ec282a14d50ef7babdbcf65b6b847c68029a69baafdfa037",
+    "scripts/smoke-container.sh": "6de7028978c95f5052ed6c555abdab10fad48ee4c03b4dd1fe7a655742846cea",
+    "scripts/smoke-workspace-repository.sh": "edf39d3fdc6fe2b4125912b0ce6c0be951bb91fd121ccfbe29f19ac3419426e2",
+    "workspace-preflight.ts": "53c82e31486de625ab6c299a9560b55aacfc5d5f4ef9efef3e76e085431b25df",
+    "src/workspace-preflight.ts": "a5af1639e09379a869f7bb4dba92b9dce1033de77c9c1d8145dcd9dfdda7909b",
+    "entrypoint.sh": "3b83aee13df4acf266736da93140baf75472ec6edb549e1d6e66cf288786585f",
+    "control-lifecycle.ts": "3de4676efa9edeec3e5d2cac5aec1a78a9c5c8a81d3dd11a4887c9a7e4c38c93",
+    "stow-workspace.ts": "b3d824995ee1672be49e449bdbd0a24253a734862e5767fe8660e2cf01f69317",
+    "src/permissions.ts": "1b713e1de2cd2d28dc779e21879fab89946ff8ca02cff9f8652df4f998d003a9",
+    "src/control-auth.ts": "6b30d7c78667a72f8886585b6481a0a0d2b65d9a6dd1f81fbd3d3505434d7b2f",
+    "src/tar.ts": "b794d6916315cd81fbace6ccf910d2f271b44e36aa4967a458e58cff2bda6aba",
+    "src/accounting-policy.ts": "efc873596610954c44528db6727cb7dbc19c6b52f29e3d19512adde7c029d21a",
+    "runtime/opencode/package.json": "fe89ba2e21af17d70d53ac69d0570663fe9ee43e559483d2d68831ea01368bf6",
+    "runtime/opencode/bun.lock": "d965226a19c2137d0812434bd9479df68d670565e69a1dde424c949b636ddb54",
+    "runtime/opencode/server.ts": "ea4e282c7cbd9c21552b825abffe0efbb85e356ce0e431887fef05adf22df283",
+    "runtime/opencode/options.ts": "81bd889f50bcfd3fbae2eedf9ac84819329cd7a5f9e9e81f6d6a84cfc4238c07",
+    "patches/stow/metadata-refusal.patch": "054b8b091a052189af1d4e17d2464b9a2a95b5fa55421a8f3b9358c326c7d014",
+    "patches/stow/metadata-refusal_test.go": "d61ed0777098559d94af448196b9f45623f0aadc364c1f6f5e6ef01809188588",
+    ".dockerignore": "6ad7afcb79a9730cbac05116589c434b3eee3ce57e7da0c491742d55ebd39d76"
+  },
+  "verification": "passed locally: final project gate and final-image binding smoke; broader native smoke passed on its separately recorded preceding image",
+  "providerCalls": 0,
+  "deployed": false,
+  "broaderImageSmoke": {
+    "exitCode": 0,
+    "imageID": "sha256:24ed327e705ba5cdd15bc786f9214d6ee419a768190bfb67bf6031d3101a27b2",
+    "imageSizeBytes": 493046417,
+    "architecture": "amd64",
+    "log": "/tmp/aboiteau-repository-container-smoke.log",
+    "logSHA256": "4cbad67fb828341840fe2fb06cf8ae611e51995ad3e4a41f8fbeabba20c1b8fe",
+    "scope": "Sequential Linux image smoke before the additional repeated-.git URL rejection; all other captured image source hashes unchanged.",
+    "simultaneousLoadQualified": false
+  },
+  "testSHA256": {
+    "tests/workspace-repository.test.ts": "4cbfb4fba897e5ef323457d319b0e26099b9dc3ff1b0f6fe345aa88de6896b0b",
+    "tests/workspace-repository-cli.test.ts": "a9eb5531687aed3f412585720f83bf4fec5ca46e3988e3f300057fc27aaa401e",
+    "tests/workspace-repository-control.test.ts": "c07bc883293b9bbbfdb56b477bf37ec812d6de8e62f4cebda864f5b47e72df3b",
+    "test/workspace-repository.test.ts": "270f73222e66134bbce8f013f8e5892e24cb71a37a4bcba70604d5429e6c6e81",
+    "tests/control-preflight.test.ts": "d7ac70962b6872823d2d1e25eaad16e471afaab502c786dd7a9797c542dd3d7d"
+  },
+  "checks": [
+    {
+      "check": "typecheck",
+      "exitCode": 0,
+      "seconds": 16.69,
+      "log": "/tmp/aboiteau-repository-final-gate-2/typecheck.log",
+      "logSHA256": "a16b13054bc70b4f530216fee4dc7e681cc9b4d1fa2945b057a93f8f8b27f5ee"
+    },
+    {
+      "check": "config",
+      "exitCode": 0,
+      "seconds": 0.05,
+      "log": "/tmp/aboiteau-repository-final-gate-2/config.log",
+      "logSHA256": "628ac0c1e5187e00e17d2f545df11824f8be6bf30336841ebc492cb28d046d0a"
+    },
+    {
+      "check": "unit",
+      "exitCode": 0,
+      "seconds": 25.26,
+      "log": "/tmp/aboiteau-repository-final-gate-2/unit.log",
+      "logSHA256": "8e6154b57c6ca81006491a2eecea99ecb652ba9abd29c00809e6ecda953d05a4"
+    },
+    {
+      "check": "workers",
+      "exitCode": 0,
+      "seconds": 33.78,
+      "log": "/tmp/aboiteau-repository-final-gate-2/workers.log",
+      "logSHA256": "592d83938bd3843e91c067ddc54e9a36369dde05819158d3e329a9b0e756208d"
+    },
+    {
+      "check": "ui",
+      "exitCode": 0,
+      "seconds": 1.05,
+      "log": "/tmp/aboiteau-repository-final-gate-2/ui.log",
+      "logSHA256": "5cf913a641852ef326435a43ad47f2768341e85e8cb4af8705306a70ebee2b49"
+    },
+    {
+      "check": "diff",
+      "exitCode": 0,
+      "seconds": 0.02,
+      "log": "/tmp/aboiteau-repository-final-gate-2/diff.log",
+      "logSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "tests": {
+    "bun": 530,
+    "bunUnitAndQualification": 525,
+    "bunRuntime": 5,
+    "workers": 394,
+    "workerFiles": 65
+  },
+  "bindingImage": {
+    "id": "sha256:b128a064a64736b5f2ddb85bae4957af4e4c5f5da474bbd3207d71aa58a8e4bc",
+    "sizeBytes": 493046441,
+    "architecture": "amd64",
+    "created": "2026-11-15T18:49:38.813233752Z",
+    "hostDaemonArchitecture": "aarch64",
+    "emulated": true,
+    "buildLog": "/tmp/aboiteau-repository-image-final-build.log",
+    "buildLogSHA256": "ec4673ccb050347691389f44c7a68b7c40db8a925368bd884e61c18cc920d43b"
+  },
+  "bindingImageSmoke": {
+    "exitCode": 0,
+    "summary": {
+      "schemaVersion": 1,
+      "kind": "model-free-image-workspace-binding",
+      "image": "aboiteau-repository:20261115",
+      "imageID": "sha256:b128a064a64736b5f2ddb85bae4957af4e4c5f5da474bbd3207d71aa58a8e4bc",
+      "repository": "https://github.com/octocat/hello-world",
+      "baseBranch": "master",
+      "workingBranch": "aboiteau/image-binding-smoke",
+      "baseCommit": "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d",
+      "taskCommit": "9e9273d515fb04d4d32c5c086f841c09b57d07bd",
+      "workspaceID": "ws_66d0ea47f1ff4b6f",
+      "providerExecutionRequested": false,
+      "conflictRefused": true,
+      "accountSeedExcludedBinding": true,
+      "fullStateSeedRefused": true,
+      "coldRestorePassed": true,
+      "tamperedMirrorRefused": true,
+      "cleanupConfirmed": true
+    },
+    "summarySHA256": "fb7283fecf22c1f7de07a6111bfda15df730a6ad83458d03bd3099f0b7b9c7ab",
+    "log": "/tmp/aboiteau-repository-binding-smoke.log",
+    "logSHA256": "31fed0fb45e05aae2941d46c7dc56581c36f57240b7327ad90ede13f7c0dfcc4"
+  },
+  "cleanup": {
+    "ownedSmokeContainersRemoved": true,
+    "preservedStudioContainerID": "8fd750f3c29a",
+    "studioHTTPStatus": 200,
+    "unrelatedContainersAndVolumesPreserved": true
+  }
+}

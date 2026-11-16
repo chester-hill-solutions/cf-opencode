@@ -1,0 +1,242 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-15T21:24:40.435314+00:00",
+  "status": "internal canary verified; approved login collector installed and automatic check verified",
+  "verificationChannel": {
+    "id": "C0A5YNXLP6C",
+    "name": "arfin-test",
+    "membershipVerified": true,
+    "userAuthorizedMessages": true
+  },
+  "localVerification": {
+    "bun": 600,
+    "worker": 432,
+    "typecheck": "passed final",
+    "config": "passed",
+    "ui": "passed",
+    "routerFocused": {
+      "tests": 7,
+      "assertions": 83
+    },
+    "fullLocalBridge": "passed; exactly one execution, replay accepted, second runner idle"
+  },
+  "agentImage": {
+    "localID": "sha256:a07c2d2d632e36a33c3edfb95e74bf0d43978515b8ca656f436ad18b213a38ab",
+    "registryPin": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/aboiteau-checks-agent@sha256:0aab4cba01bd119499e60dc37525eb9e789f7e62efcf939b062eac29b9b1b9d1",
+    "packagedControllerFilesVerified": 18,
+    "mismatches": 0
+  },
+  "checkerImage": {
+    "localID": "sha256:416095926dcfb1c8e255691117c3c5504579e875bbb58fc3657fc2469076c516",
+    "platform": "linux/arm64"
+  },
+  "remoteActions": {
+    "imageUploaded": true,
+    "isolatedBucketCreated": "cf-opencode-arfin-canary-20261115-checkpoints",
+    "canaryDeployed": true,
+    "legacyRouterDeployed": true,
+    "secretsWritten": true,
+    "slackMessagesSent": true,
+    "providerInference": false,
+    "canaryVersion": "f00aed96-0834-46ff-aee1-6c033017b7f0",
+    "legacyRouterVersion": "f276b83b-a8f8-4f6d-9f82-15857909cf7c",
+    "armedCanaryVersion": "a1bebf03-86f1-4e1d-a920-546b6cea10e4",
+    "providerConnected": "opencode only; user explicitly authorized this canary",
+    "requestedModelEnabled": true,
+    "encryptedCanarySeedCreated": true,
+    "daemonInstalled": true,
+    "collectorManualExecutionCompleted": true
+  },
+  "sourceSHA256": {
+    "src/slack-workspace-commands.ts": "33b7b9bc72fdbeb3e283970ff62e0525600183fd2f224d3eaf8c1ff67246290f",
+    "src/slack-canary.ts": "82bc55f15bb6479fe0d16fe35d9fb511c6a931d104bd2034c1a75f1ef3bb41d0",
+    "src/workspace-check-dispatch.ts": "9efe2937c753db68e2cf1baad1baf3f9006e8001d22edaec9ac8618bcda284f4",
+    "src/workspace-check-collector.ts": "8c5d0a5652a62d461dc6a5c5490de3439b9f6f21e50ab800e0cbc3bcd104f9cf",
+    "src/conversation/workspace-check-dispatcher.ts": "e3a18214d14f542f7001b4f865979bb0895cc72443a3545973779a9524a2e9cf",
+    "src/index.ts": "9ee4f3075cc107eb1fe11d90c3c2976d7655954b2a99928cffa054c4ff2f3c4f",
+    "src/conversation.ts": "da9a4b237b8575e603d1dfe33512c81121ff3d07f75a161118b794e97132d1ce",
+    "src/settings-do.ts": "4dcb4eaf9ec8cdfddfb58a96179390f5ed208550ce190093952ae226ed9ac3f7",
+    "src/env.ts": "5400bf59ddcf94bbd8904bc7c0be28c682dcbab2493a0f5409d5deb7f875367d",
+    "src/state.ts": "00ea1dc104713995337774e31198b393dd6ca47a5bc142121432f025e289d60b",
+    "src/conversation/images.ts": "b9efee7456b468bbc88495427cb010ed6b6423eb5d46ff8ce9b38b1f86e173bc",
+    "scripts/workspace-check-runner.ts": "18e2494ce51d66a9d5d60cb78f04214e22102882ecf3c1cc184ad850509c9f32",
+    "scripts/slack-canary-release/router.ts": "217477d4a5d0558ffbdae54ef68a4b27145811928820e5fa4186895d03b4d9e3"
+  },
+  "fixedCutoff": "1794776237.000000",
+  "localBridge": {
+    "passed": true,
+    "summary": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-slack-check-bridge-8eEOzd/summary.json",
+    "sha256": "c47ae6ce310c45d0ae35bd7324817a5715181ee22f80be2d1af71b0eead65613",
+    "initialFixtureFailureRetained": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-slack-check-bridge-RwCl0s/summary.json",
+    "promptRequests": 0
+  },
+  "slackThread": {
+    "channel": "C0A5YNXLP6C",
+    "threadTS": "1794776264.733389",
+    "modelSelectionReadBack": true,
+    "queueAcknowledgementReadBack": true,
+    "requestID": "791c0071-2816-4b42-88c6-b0f4b2461666",
+    "permalink": "https://teamnatelib.slack.com/archives/C0A5YNXLP6C/p1794776264733389?thread_ts=1794776264.733389&cid=C0A5YNXLP6C",
+    "checkPassedReadBack": true,
+    "finalInstructionsReadBack": true,
+    "messageCountAtReadback": 7,
+    "serviceReadyMessageTS": "1794777933.787329",
+    "serviceReadyMessageAcknowledged": true
+  },
+  "liveQualification": {
+    "status": "passed after same-request recovery",
+    "proof": {
+      "requestID": "791c0071-2816-4b42-88c6-b0f4b2461666",
+      "attemptID": "b6f94dc5-08e4-4086-9f24-eef112be62bf",
+      "completionSHA256": "5f903c1e36a5cb76164673e6b84e173c0a49a09490c12da41bff3e9b2f718d6b",
+      "source": {
+        "binding": {
+          "repository": "https://github.com/octocat/hello-world",
+          "baseBranch": "master",
+          "workingBranch": "task/arfin-smoke-20261115",
+          "schemaVersion": 1,
+          "bindingID": "58bd00ba-1c8d-4e7f-8dd6-c60698eb9e79",
+          "status": "bound",
+          "baseCommit": "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d"
+        },
+        "commitOID": "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d",
+        "treeOID": "b4eecafa9be2f2006ce1b709d6857b07069b4608",
+        "sourceSHA256": "e3d639ff24004ce2030593cdd8218aab1ec77d90af3690629e73d3d1b3fecf9b"
+      },
+      "outcome": "passed",
+      "cleanupConfirmed": true,
+      "notificationDelivered": true,
+      "coldRestore": "binding_head_tree_historical_source_preserved",
+      "inferenceRequested": false,
+      "newCheckAuthorized": false,
+      "worktreeChanges": "unverified",
+      "baselineChecks": "not_run",
+      "testOrConfigChanges": "not_evaluated",
+      "legacyCheckpointFingerprintScope": true
+    },
+    "notification": {
+      "requestID": "791c0071-2816-4b42-88c6-b0f4b2461666",
+      "attemptID": "b6f94dc5-08e4-4086-9f24-eef112be62bf",
+      "notification": {
+        "status": "delivered",
+        "attempts": 1,
+        "nextAttemptAt": 1794777302914
+      }
+    },
+    "permalink": "https://teamnatelib.slack.com/archives/C0A5YNXLP6C/p1794776264733389?thread_ts=1794776264.733389&cid=C0A5YNXLP6C",
+    "humanGeneratedIncomingSlackEvent": "not exercised; operator-signed controls and real Slack delivery",
+    "initialObservationTimeoutRetained": true,
+    "sourceStatement": "No new check authorization during recovery; original queued request completed once."
+  },
+  "receiptSHA256": {
+    ".wrangler/slack-canary-release/live-qualification-01/resume-observe-restore-1794777311236/summary.json": "581ff3842cf7bbfe8a6cd8863506969d2f288ebdb73e365fa8e0533afeb9850a",
+    ".wrangler/slack-canary-release/live-qualification-01/resume-observe-restore-1794777311236/completion.json": "63b6df69fbc9b1c0af2113ae03fd64126ab998e75b6e35361cb01f29992b09f6",
+    ".wrangler/slack-canary-release/live-qualification-01/resume-observe-restore-1794777311236/notification-delivered.json": "116e41364c65f0cf1c28ab34cbaf90aebc302aabb78b8490c8cf7aa8e567d4b6",
+    ".wrangler/slack-canary-release/live-qualification-01/resume-observe-restore-1794777311236/recycle.json": "12b34da73b0c67a0319e6eddbd3582af66e3b558b4d44e4a6860e0cec20d726f",
+    ".wrangler/slack-canary-release/slack-final-readback.json": "c5dc8bc1af60bc758464332050ece5d9a0f3fa298f318bf623db0bbaa50bcd45"
+  },
+  "currentCanaryConfigSHA256": "3a91bb229ee04924bd3e2547dbb55be05bd1721fe27c6a72bd3c9db0d7682dcc",
+  "automaticCollector": {
+    "approvedByUser": true,
+    "label": "ca.chesterhill.aboiteau-arfin-check-runner",
+    "launchdDomain": "gui/501",
+    "runAtLoad": true,
+    "keepAlive": false,
+    "observedRunningPID": 45988,
+    "proof": {
+      "requestID": "8732ec39-d6ed-464b-8115-29e0acfb5b38",
+      "execution": {
+        "schemaVersion": 1,
+        "requestID": "8732ec39-d6ed-464b-8115-29e0acfb5b38",
+        "status": "completed",
+        "queuedAt": 1794777797443,
+        "target": {
+          "channel": "C0A5YNXLP6C",
+          "replyTs": "1794776264.733389"
+        },
+        "attempt": {
+          "attemptID": "0aa2a87e-4420-4dd2-a1c5-6fdfe4f5cdba",
+          "collectorID": "6e2ec8b7-f933-4bfb-9fdc-e7deb35dde05",
+          "claimRequestID": "cd122b19-3ca9-4782-97d7-405586d0f47e",
+          "claimedAt": 1794777802594
+        },
+        "receipt": {
+          "schemaVersion": 1,
+          "mode": "committed_only",
+          "provenance": "local_operator",
+          "request": {
+            "requestID": "8732ec39-d6ed-464b-8115-29e0acfb5b38",
+            "expectedBindingID": "58bd00ba-1c8d-4e7f-8dd6-c60698eb9e79",
+            "commitOID": "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d",
+            "argv": [
+              "bun",
+              "--no-env-file",
+              "--no-install",
+              "-e",
+              "if (!require(\"node:fs\").existsSync(\"README\")) process.exit(9); console.log(\"arfin committed snapshot verified\")"
+            ],
+            "imageID": "sha256:416095926dcfb1c8e255691117c3c5504579e875bbb58fc3657fc2469076c516",
+            "timeoutMs": 20000
+          },
+          "binding": {
+            "repository": "https://github.com/octocat/hello-world",
+            "baseBranch": "master",
+            "workingBranch": "task/arfin-smoke-20261115",
+            "schemaVersion": 1,
+            "bindingID": "58bd00ba-1c8d-4e7f-8dd6-c60698eb9e79",
+            "status": "bound",
+            "baseCommit": "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d"
+          },
+          "treeOID": "b4eecafa9be2f2006ce1b709d6857b07069b4608",
+          "sourceSHA256": "e3d639ff24004ce2030593cdd8218aab1ec77d90af3690629e73d3d1b3fecf9b",
+          "platform": "linux/arm64",
+          "startedAt": 1794777803346,
+          "finishedAt": 1794777824147,
+          "outcome": "passed",
+          "exitCode": 0,
+          "cleanupConfirmed": true,
+          "freshness": {
+            "before": "matched",
+            "after": "matched"
+          },
+          "worktreeChanges": "unverified",
+          "baselineChecks": "not_run",
+          "testOrConfigChanges": "not_evaluated",
+          "logs": {
+            "stdout": {
+              "sha256": "40d3b3b10931ab6d848dea6b75ff6ae6aa09a7423bcf6d2271ac888ec15783c2",
+              "bytes": 34,
+              "capturedBytes": 34,
+              "truncated": false
+            },
+            "stderr": {
+              "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+              "bytes": 0,
+              "capturedBytes": 0,
+              "truncated": false
+            }
+          }
+        },
+        "logs": {
+          "key": "workspaces/de13e22fe5007a731aa0fae63f7ad4b0e6c0beef369389aa77c2467ef73a5a59/checks/8732ec39-d6ed-464b-8115-29e0acfb5b38/0aa2a87e-4420-4dd2-a1c5-6fdfe4f5cdba.logs.json",
+          "sha256": "ccaddbeafe4ab8beaea9f849afc2f362893f30ab5a57441e4e028fd2d0a04015"
+        },
+        "completedAt": 1794777827868,
+        "completionSHA256": "1f69921b0a64936cdedd956cae11616981215c860be6c937203156721ba14414",
+        "cleanupReconciledAt": null,
+        "notification": {
+          "status": "delivered",
+          "attempts": 1,
+          "nextAttemptAt": 1794777832895
+        }
+      },
+      "automaticCollector": true,
+      "separateAuthorizationFromOriginal": true,
+      "inferenceRequested": false
+    },
+    "proofSHA256": "c47672e3733cdfae6840eda3fe40a30d68a794438dc6916c0f95b1ccc8adb42d",
+    "bundleSHA256": "f2a6f9106753f1687171f9fc3ee2de9cfce90c2e823d83807875e2baf4059ae7",
+    "requires": "this Mac and Docker available",
+    "initialApprovalRejectionResolvedByExplicitUserAuthorization": true
+  }
+}

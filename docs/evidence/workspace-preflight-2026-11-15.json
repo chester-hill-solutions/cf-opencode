@@ -1,0 +1,193 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-15",
+  "scope": "R2-9 read-only workspace preflight; local qualification only",
+  "sourceBase": "ec5f6b44f1457ab9b8bc7e600b169ac3e9c7d1b2",
+  "workingTreeContainsOtherChanges": true,
+  "platform": {
+    "system": "Darwin",
+    "architecture": "arm64",
+    "bun": "1.3.5"
+  },
+  "sources": {
+    "workspace-preflight.ts": "53c82e31486de625ab6c299a9560b55aacfc5d5f4ef9efef3e76e085431b25df",
+    "src/workspace-preflight.ts": "a5af1639e09379a869f7bb4dba92b9dce1033de77c9c1d8145dcd9dfdda7909b",
+    "scripts/workspace-preflight.ts": "0438cd7ab7cc802fd9fbe1a08360e804fead406d0b04bee11c9ed736d62ca775",
+    "control-server.ts": "799fc06808cd7e1f3087c933386c3c35ed6cbfdeb1cb68eaaf38b302fc8a6230",
+    "src/index.ts": "36c3b0e2140e8bb46a1dd8470e8456183dd865b6c2af0697fb51027701a79612",
+    "src/conversation.ts": "34d6053a314a4d9ba6e4ef98f4bc016f6c34a5693e8c8aa30801de6e1aece8f1",
+    "src/conversation/runtime.ts": "f313c1dab2671944997b95b84e1420dd9c64bedb6df837edd1a5a03a9ddad4a3",
+    "Dockerfile": "80ceac2a0979ae47443eee3bf0f2383cc2b42afb6de881bc23eb16df89b3e7cf",
+    ".dockerignore": "6ad7afcb79a9730cbac05116589c434b3eee3ce57e7da0c491742d55ebd39d76",
+    "scripts/smoke-container.sh": "e46eb641cd9bf472d36348b89848a06f3529478958a8d7271bc17e9dd0657d9b",
+    "scripts/native-storage-qualification/source-guard.ts": "94aa426507a9db80f37675575c0607ba7012fd280bb0ebe95e83dbab1666a2d9",
+    "scripts/native-storage-qualification/preflight.ts": "0a3c9eebe19f298cb394862b55bc064cf9b6be8ec42bdf9edd40c88375c9fcd2",
+    "scripts/native-storage-qualification/qualification-contract.test.ts": "16cb527de5f015dc58faba0c5a1a17694c810224069e00d0793ec38573be6fba",
+    "tests/workspace-preflight.test.ts": "635becc38d0e35181d56e3af8e8304c45de3424607ab8b72a9caab574fdc410d",
+    "tests/workspace-preflight-cli.test.ts": "20d6e147ea77008892c7d2c5669ceb49059db03406241f97758f76122e5ab66c",
+    "tests/control-preflight.test.ts": "76c4c3b1f0d736f6ee8af2c2367be1a5f97d2807d9d076a44122e1d291e49a9f",
+    "test/workspace-preflight.test.ts": "59b3cc26521566fc4e526eb49d1b5b74138dc185176f4afbda25f3b1fad1313d"
+  },
+  "checks": {
+    "fullGateExitCode": 0,
+    "unitQualification": {
+      "passed": 498,
+      "failed": 0,
+      "assertions": 1763
+    },
+    "opencodeRuntime": {
+      "passed": 5,
+      "failed": 0,
+      "assertions": 23
+    },
+    "workers": {
+      "files": 64,
+      "passed": 381,
+      "failed": 0
+    },
+    "typecheck": "passed",
+    "config": "passed",
+    "uiBuild": "passed",
+    "diffCheck": "passed"
+  },
+  "sampleReport": {
+    "schemaVersion": 1,
+    "mode": "read_only",
+    "status": "needs_verification",
+    "repository": {
+      "kind": "git",
+      "head": "ec5f6b44f1457ab9b8bc7e600b169ac3e9c7d1b2",
+      "branch": "codex/conversation-lifecycle",
+      "dirty": null
+    },
+    "tools": [
+      {
+        "name": "git",
+        "available": true
+      },
+      {
+        "name": "bun",
+        "available": true
+      },
+      {
+        "name": "node",
+        "available": true
+      },
+      {
+        "name": "npm",
+        "available": true
+      },
+      {
+        "name": "pnpm",
+        "available": true
+      },
+      {
+        "name": "yarn",
+        "available": true
+      },
+      {
+        "name": "python3",
+        "available": true
+      },
+      {
+        "name": "make",
+        "available": true
+      }
+    ],
+    "project": {
+      "packageManager": "bun",
+      "scripts": [
+        "bench",
+        "bench:container",
+        "build:ui",
+        "check:config",
+        "deploy",
+        "dev",
+        "dev:ui",
+        "qualification:local",
+        "qualification:preflight",
+        "qualification:provider-egress",
+        "smoke:container",
+        "test",
+        "test:workers",
+        "typecheck"
+      ],
+      "manifests": [
+        "package.json",
+        "bun.lock"
+      ],
+      "guidance": [
+        "README.md"
+      ],
+      "dependencies": "present"
+    },
+    "suggestions": [
+      {
+        "purpose": "check",
+        "argv": [
+          "bun",
+          "run",
+          "test"
+        ],
+        "requiresApproval": true
+      },
+      {
+        "purpose": "check",
+        "argv": [
+          "bun",
+          "run",
+          "typecheck"
+        ],
+        "requiresApproval": true
+      }
+    ],
+    "findings": [
+      {
+        "code": "lock_unverified",
+        "severity": "warning",
+        "message": "Bun text lock syntax needs manual validation before setup is proposed."
+      },
+      {
+        "code": "worktree_changes_unverified",
+        "severity": "warning",
+        "message": "Local changes were not inspected because working-tree Git probes can execute repository filters."
+      },
+      {
+        "code": "verification_not_run",
+        "severity": "info",
+        "message": "Setup and checks were not run; this report does not establish readiness."
+      }
+    ],
+    "verification": {
+      "setup": "not_run",
+      "checks": "not_run"
+    }
+  },
+  "limitations": [
+    "Setup and checks are not executed.",
+    "Working-tree change state is unknown; no status/diff/filter-capable probes.",
+    "JSONC/binary Bun, pnpm and Yarn lock setup suggestions require manual validation.",
+    "External Git metadata/linked worktrees are not supported.",
+    "Native Linux UID drop/image execution not qualified; local control tests use actual entrypoint over stdio and current UID.",
+    "Existing shared-token/credential/tenancy boundaries remain open."
+  ],
+  "nativeImageSmoke": {
+    "status": "environment_blocked",
+    "target": "linux/amd64 on arm64 Docker host",
+    "frontendIssue": "existing checksum ADD required explicit frontend; pinned docker/dockerfile:1.7.1",
+    "remainingFailure": "Docker build filesystem became read-only during Go compilation; host disk 100%, 684 MiB available at diagnosis",
+    "imageBuilt": false,
+    "runtimeStarted": false
+  },
+  "frozenStorageQualification": {
+    "artifactPinsChanged": false,
+    "currentSourceQualified": false,
+    "driftGuard": "actual qualification preflight rejects current controller mismatch before writes/spawns"
+  },
+  "externalEffects": {
+    "deployed": false,
+    "modelCalls": 0,
+    "publishedPRs": 0,
+    "realCredentialsUsedByFeatureTests": false
+  }
+}

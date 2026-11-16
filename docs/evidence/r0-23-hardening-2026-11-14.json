@@ -1,0 +1,453 @@
+{
+  "schemaVersion": 1,
+  "kind": "r0-23-scoped-hardening",
+  "evaluatedLocalDate": "2026-11-14",
+  "timezone": "America/Toronto",
+  "recordedAtUTC": "2026-11-15T03:55:27.874094+00:00",
+  "scope": {
+    "paths": [
+      "bench/comparison/baseline/"
+    ],
+    "clusters": [
+      "concurrency",
+      "reliability"
+    ],
+    "independentReadOnlyConcurrencyReview": true,
+    "nativeRuntimeQualification": false
+  },
+  "source": {
+    "baseHEAD": "ec5f6b44f1457ab9b8bc7e600b169ac3e9c7d1b2",
+    "workingTree": "uncommitted isolated benchmark source; base HEAD alone does not identify this implementation",
+    "protocolSHA256": "63e4c5dbb40e82f43fb5dc4f6c71d8d0bbcb61b10ac78479b2039d1987b98dc7",
+    "frozenManifest": "../../bench/comparison/protocol.freeze.json",
+    "priorManifest": "../../bench/comparison/protocol.freeze.v2.json",
+    "additionalSHA256": {
+      "bench/comparison/results.test.ts": "325d8e9437b3f269feb515c2f3dce0f828ad52e9e45166ea64b97e6ddd9fd431",
+      "bench/comparison/linux.test.ts": "1b80e6395dc368c44737b703be9c6af28cce70dc6492826457f84cab231b0fd1",
+      "bench/comparison/task.test.ts": "ae637e2a219da2b9ef6f6dd91ebd6abda0a69d4fac204c9b1d21ce595e282d27",
+      "bench/comparison/runtime.test.ts": "788af81bfc351479ea43cc1062a29f04115370a9c249abc03bce6cb64d35b3bd",
+      "bench/comparison/test-support.ts": "02d985eac49524ccbcda93967688f2b023c156b44800c1c89042eabe25727a3e",
+      "bench/comparison/tsconfig.json": "3e6f254896982403d643885709f509655e8c6b7df6388e5e1a9f43179b65275f",
+      "bench/comparison/baseline/tsconfig.json": "48eba8140290ed9641a827d7b00ee70edccb8697b6a5bc353c551562eab21f9b",
+      "bench/comparison/baseline/preflight.ts": "11d13836c0cf31097792cb037bef754760f75317393a5be0535955ed70bfe922",
+      "bench/comparison/baseline/local-smoke.ts": "5fabe12ebdcefb8c62b4b6211cd3782cc672810bca6429a7e6988ae06e8f9826",
+      "bench/comparison/baseline/wrangler.local.json": "6869cf610d21df1f8b3690d03589fd537afffd1e362f54517b68ed32501cc9c9",
+      "bench/comparison/baseline/bindings.generated.d.ts": "a3399ee123dc0202060fde94dc885defe970a4dd660f2082f2f6e139077ad509",
+      "bench/comparison/baseline/freeze.generated.ts": "b16d48472cf6a14c044114a84101f59497fba4c023c65f70b9acbf4ee806a8ab",
+      ".wrangler/comparison-preflight/bundle/worker.js": "100bb70fddac360eead4c28625fdc96488fe24cc475ceeee8dce49068619359f"
+    }
+  },
+  "findings": [
+    {
+      "id": "H1",
+      "priority": 1,
+      "mechanism": "pre-admission or delayed not_found result invalidated a concurrent accepted operation",
+      "repair": "task-runtime.ts waitResult snapshots acceptance before the SDK query"
+    },
+    {
+      "id": "H2",
+      "priority": 1,
+      "mechanism": "unconfirmed tool cancellation became terminal error and allowed new model/tool effects",
+      "repair": "uncertain tool status atomically marks the attempt ambiguous"
+    },
+    {
+      "id": "H3",
+      "priority": 2,
+      "mechanism": "paused startup submitted after cleanup reported disposal",
+      "repair": "attempt lifetime guards, tracked pending operations, final SDK close and inactive wake/boot guards"
+    },
+    {
+      "id": "H4",
+      "priority": 1,
+      "mechanism": "stalled SDK abort/dispose blocked owned container destruction",
+      "repair": "independent bounded container stop; retain underlying coordinator close"
+    },
+    {
+      "id": "H5",
+      "priority": 1,
+      "mechanism": "stalled receipt persistence blocked owned container destruction",
+      "repair": "independent stop/fence/receipt observations with partial cleanup fields"
+    },
+    {
+      "id": "H6",
+      "priority": 2,
+      "mechanism": "process launch remained unobservably pending after caller abort",
+      "repair": "race launch with abort; kill/cancel a late arriving process best effort"
+    },
+    {
+      "id": "H7",
+      "priority": 2,
+      "mechanism": "output-limit error waited forever for stream cancellation acknowledgement",
+      "repair": "nonblocking cancellation and sibling-reader abort"
+    },
+    {
+      "id": "H8",
+      "priority": 1,
+      "mechanism": "successful tool effect with lost receipt acknowledgement was rewritten as failure",
+      "repair": "separate execution and persistence failure; preserve unresolved effect and fence continuation"
+    },
+    {
+      "id": "H9",
+      "priority": 1,
+      "mechanism": "cleanup retry confirmed disposal while an earlier SDK close was still pending",
+      "repair": "single retained underlying close flight and final disposal after every earlier SDK call settles"
+    }
+  ],
+  "preFixRegressionLogs": {
+    "r0-23-hardening-red": "bun test v1.3.5 (1e86cebd)\n\nbench/comparison/runtime.test.ts:\n12 |   const runtime = new TaskRuntime(journal, async () => {}, host({ async abort() { entered.release(); await abort.promise } }))\n13 |   const cleanup = runtime.cleanup({ async destroy() { destroyed = true }, running: () => !destroyed }, 10)\n14 |   await entered.promise\n15 |   try {\n16 |     await Bun.sleep(25)\n17 |     expect(destroyed).toBe(true)\n                           ^\nerror: expect(received).toBe(expected)\n\nExpected: true\nReceived: false\n\n      at <anonymous> (/Users/ladmin/WebProjects/cf-opencode/bench/comparison/runtime.test.ts:17:23)\n(fail) cleanup destroys the container even while SDK cancellation stalls [36.46ms]\n27 |   await entered.promise\n28 |   let result\n29 |   try { result = await runtime.cleanup({ async destroy() { destroyed = true }, running: () => !destroyed }, 10) }\n30 |   finally { start.release(); await submission }\n31 |   expect(result.runtimeStopped).toBe(true)\n32 |   expect(result.coordinatorDisposed).toBe(false)\n                                          ^\nerror: expect(received).toBe(expected)\n\nExpected: false\nReceived: true\n\n      at <anonymous> (/Users/ladmin/WebProjects/cf-opencode/bench/comparison/runtime.test.ts:32:38)\n(fail) cleanup does not declare disposal or submit after a paused startup [1.00ms]\n43 |   }))\n44 |   const submitting = runtime.submit(\"task\", identity.id)\n45 |   await entered.promise\n46 |   try { await runtime.observe(identity.id) }\n47 |   finally { accept.release(); await submitting }\n48 |   expect((await journal.store.read())?.phase).toBe(\"running\")\n                                                   ^\nerror: expect(received).toBe(expected)\n\nExpected: \"running\"\nReceived: \"failed\"\n\n      at <anonymous> (/Users/ladmin/WebProjects/cf-opencode/bench/comparison/runtime.test.ts:48:47)\n(fail) observation of not_found cannot fail a concurrent submission [2.12ms]\n\nbench/comparison/linux.test.ts:\n(pass) Linux adapter writes, reads, edits and executes a real local command [304.85ms]\n(pass) Linux file tools refuse escape paths and symlinks without modifying the target [95.36ms]\n(pass) Linux adapter refuses ambiguous edits, large files and command failures [159.94ms]\n(pass) adapter rejects pre-aborted work and returns after an active direct process is aborted [105.20ms]\n(pass) caller abort returns even when direct-process exit is unconfirmed [0.53ms]\n72 |   }, \"/unused-synthetic-root\")\n73 |   const work = tools.execute(\"shell\", { command: \"synthetic-only\" }, controller.signal).then(() => \"success\", () => \"aborted\")\n74 |   await entered.promise; controller.abort()\n75 |   const observed = await Promise.race([work, Bun.sleep(25).then(() => \"stalled\")])\n76 |   launch.release(); await work; await Promise.resolve()\n77 |   expect(observed).toBe(\"aborted\")\n                        ^\nerror: expect(received).toBe(expected)\n\nExpected: \"aborted\"\nReceived: \"stalled\"\n\n      at <anonymous> (/Users/ladmin/WebProjects/cf-opencode/bench/comparison/linux.test.ts:77:20)\n(fail) abort during process launch returns promptly and stops a late process [27.45ms]\n85 |     stderr: null, exitCode: Promise.resolve(0), kill() {},\n86 |   }), \"/unused-synthetic-root\")\n87 |   const work = tools.execute(\"shell\", { command: \"synthetic-only\" }, controller.signal).then(() => \"success\", error => String(error))\n88 |   const observed = await Promise.race([work, Bun.sleep(25).then(() => \"stalled\")])\n89 |   controller.abort(); await work\n90 |   expect(observed).toContain(\"limit\")\n                        ^\nerror: expect(received).toContain(expected)\n\nExpected to contain: \"limit\"\nReceived: \"stalled\"\n\n      at <anonymous> (/Users/ladmin/WebProjects/cf-opencode/bench/comparison/linux.test.ts:90:20)\n(fail) an output limit returns even when stream cancellation never acknowledges [27.30ms]\n\n 5 pass\n 5 fail\n 21 expect() calls\nRan 10 tests across 2 files. [899.00ms]\n",
+    "r0-23-runtime-red": "bun test v1.3.5 (1e86cebd)\n\nbench/comparison/runtime.test.ts:\n14 |   const runtime = new TaskRuntime(journal, async () => {}, host({ async abort() { entered.release(); await abort.promise } }))\n15 |   const cleanup = runtime.cleanup({ async destroy() { destroyed = true }, running: () => !destroyed }, 10)\n16 |   await entered.promise\n17 |   try {\n18 |     await Bun.sleep(25)\n19 |     expect(destroyed).toBe(true)\n                           ^\nerror: expect(received).toBe(expected)\n\nExpected: true\nReceived: false\n\n      at <anonymous> (/Users/ladmin/WebProjects/cf-opencode/bench/comparison/runtime.test.ts:19:23)\n(fail) cleanup destroys the container even while SDK cancellation stalls [32.41ms]\n29 |   await entered.promise\n30 |   let result\n31 |   try { result = await runtime.cleanup({ async destroy() { destroyed = true }, running: () => !destroyed }, 10) }\n32 |   finally { start.release(); await submission }\n33 |   expect(result.runtimeStopped).toBe(true)\n34 |   expect(result.coordinatorDisposed).toBe(false)\n                                          ^\nerror: expect(received).toBe(expected)\n\nExpected: false\nReceived: true\n\n      at <anonymous> (/Users/ladmin/WebProjects/cf-opencode/bench/comparison/runtime.test.ts:34:38)\n(fail) cleanup does not declare disposal or submit after a paused startup [0.37ms]\n45 |   }))\n46 |   const submitting = runtime.submit(\"task\", identity.id)\n47 |   await entered.promise\n48 |   try { await runtime.observe(identity.id) }\n49 |   finally { accept.release(); await submitting }\n50 |   expect((await journal.store.read())?.phase).toBe(\"running\")\n                                                   ^\nerror: expect(received).toBe(expected)\n\nExpected: \"running\"\nReceived: \"failed\"\n\n      at <anonymous> (/Users/ladmin/WebProjects/cf-opencode/bench/comparison/runtime.test.ts:50:47)\n(fail) observation of not_found cannot fail a concurrent submission [0.33ms]\n59 |     return { stdout: new ReadableStream(), stderr: new ReadableStream(), exitCode: new Promise<number>(() => {}), kill() {} }\n60 |   }, \"/unused-synthetic-root\")\n61 |   const work = executeTaskTool(plane, journal, \"tool-1\", \"shell\", { command: \"synthetic-only\" }, controller.signal)\n62 |   await entered.promise; controller.abort()\n63 |   await expect(work).rejects.toThrow(\"stop unproven\")\n64 |   await expect(journal.beginModel(2)).rejects.toThrow()\n                                                   ^\nerror: \n\nExpected promise that rejects\nReceived promise that resolved: Promise { <resolved> }\n\n      at <anonymous> (/Users/ladmin/WebProjects/cf-opencode/bench/comparison/runtime.test.ts:64:47)\n(fail) unconfirmed tool cancellation blocks automatic model and tool continuation [6.37ms]\n\n 0 pass\n 4 fail\n 6 expect() calls\nRan 4 tests across 1 file. [205.00ms]\n",
+    "r0-23-cleanup-storage-red": "bun test v1.3.5 (1e86cebd)\n\nbench/comparison/runtime.test.ts:\n(pass) cleanup destroys the container even while SDK cancellation stalls [34.75ms]\n(pass) cleanup does not declare disposal or submit after a paused startup [11.48ms]\n(pass) observation of not_found cannot fail a concurrent submission [0.96ms]\n(pass) unconfirmed tool cancellation blocks automatic model and tool continuation [7.61ms]\n71 |   const originalFail = journal.fail.bind(journal)\n72 |   journal.fail = async stage => { entered.release(); await persistence.promise; await originalFail(stage) }\n73 |   const runtime = new TaskRuntime(journal, async () => {}, host())\n74 |   const cleanup = runtime.cleanup({ async destroy() { destroyed = true }, running: () => !destroyed }, 10)\n75 |   await entered.promise\n76 |   try { await Bun.sleep(25); expect(destroyed).toBe(true) }\n                                                    ^\nerror: expect(received).toBe(expected)\n\nExpected: true\nReceived: false\n\n      at <anonymous> (/Users/ladmin/WebProjects/cf-opencode/bench/comparison/runtime.test.ts:76:48)\n(fail) cleanup attempts container stop even when receipt persistence stalls [29.81ms]\n\n 4 pass\n 1 fail\n 12 expect() calls\nRan 5 tests across 1 file. [365.00ms]\n",
+    "r0-23-tool-receipt-red": "bun test v1.3.5 (1e86cebd)\n\nbench/comparison/runtime.test.ts:\n(pass) cleanup destroys the container even while SDK cancellation stalls [41.24ms]\n(pass) cleanup does not declare disposal or submit after a paused startup [18.98ms]\n(pass) observation of not_found cannot fail a concurrent submission [3.03ms]\n(pass) unconfirmed tool cancellation blocks automatic model and tool continuation [23.40ms]\n(pass) cleanup attempts container stop even when receipt persistence stalls [27.24ms]\n(pass) an observed answer can settle before the submission acknowledgement returns [1.20ms]\n(pass) a known accepted operation that disappears remains ambiguous [0.71ms]\n(pass) an unconfirmed container stop cannot write a stopped receipt [12.44ms]\n(pass) confirmed container stop with a failed receipt write reports partial cleanup [0.74ms]\n(pass) ordinary observed process failure still permits corrective coding work [0.97ms]\n132 |   journal.finishTool = async (...args) => {\n133 |     if (++writes === 1) throw new Error(\"synthetic receipt write acknowledgement lost\")\n134 |     await finish(...args)\n135 |   }\n136 |   await expect(executeTaskTool({ async execute() { return \"written\" } }, journal, \"write-1\", \"write\", { path: \"file\", content: \"x\" }, new AbortController().signal)).rejects.toThrow(\"acknowledgement lost\")\n137 |   expect((await journal.store.read())?.tools[0]?.status).toBe(\"started\")\n                                                               ^\nerror: expect(received).toBe(expected)\n\nExpected: \"started\"\nReceived: \"error\"\n\n      at <anonymous> (/Users/ladmin/WebProjects/cf-opencode/bench/comparison/runtime.test.ts:137:58)\n(fail) a successful effect with an unacknowledged receipt is not rewritten as tool failure [3.55ms]\n\n 10 pass\n 1 fail\n 29 expect() calls\nRan 11 tests across 1 file. [535.00ms]\n",
+    "r0-23-cleanup-retry-red": "bun test v1.3.5 (1e86cebd)\n\nbench/comparison/runtime.test.ts:\n(pass) cleanup destroys the container even while SDK cancellation stalls [35.41ms]\n(pass) cleanup does not declare disposal or submit after a paused startup [11.36ms]\n(pass) observation of not_found cannot fail a concurrent submission [2.96ms]\n(pass) unconfirmed tool cancellation blocks automatic model and tool continuation [10.39ms]\n(pass) cleanup attempts container stop even when receipt persistence stalls [26.87ms]\n(pass) an observed answer can settle before the submission acknowledgement returns [1.23ms]\n(pass) a known accepted operation that disappears remains ambiguous [0.31ms]\n(pass) an unconfirmed container stop cannot write a stopped receipt [13.30ms]\n(pass) confirmed container stop with a failed receipt write reports partial cleanup [0.74ms]\n(pass) ordinary observed process failure still permits corrective coding work [0.70ms]\n(pass) a successful effect with an unacknowledged receipt is not rewritten as tool failure [0.30ms]\n143 |   let disposals = 0\n144 |   const runtime = new TaskRuntime(journal, async () => {}, host({ async dispose() { if (++disposals === 1) await firstClose.promise } }))\n145 |   const container = { async destroy() {}, running: () => false }\n146 |   try {\n147 |     expect((await runtime.cleanup(container, 5)).coordinatorDisposed).toBe(false)\n148 |     expect((await runtime.cleanup(container, 5)).coordinatorDisposed).toBe(false)\n                                                                            ^\nerror: expect(received).toBe(expected)\n\nExpected: false\nReceived: true\n\n      at <anonymous> (/Users/ladmin/WebProjects/cf-opencode/bench/comparison/runtime.test.ts:148:71)\n(fail) cleanup retries cannot confirm disposal while a prior SDK close is pending [7.33ms]\n\n 11 pass\n 1 fail\n 32 expect() calls\nRan 12 tests across 1 file. [289.00ms]\n",
+    "r0-23-delayed-not-found-red": "bun test v1.3.5 (1e86cebd)\n\nbench/comparison/runtime.test.ts:\n(pass) cleanup destroys the container even while SDK cancellation stalls [36.88ms]\n(pass) cleanup does not declare disposal or submit after a paused startup [33.75ms]\n(pass) observation of not_found cannot fail a concurrent submission [0.60ms]\n(pass) unconfirmed tool cancellation blocks automatic model and tool continuation [2.75ms]\n(pass) cleanup attempts container stop even when receipt persistence stalls [27.45ms]\n(pass) an observed answer can settle before the submission acknowledgement returns [0.47ms]\n(pass) a known accepted operation that disappears remains ambiguous [0.17ms]\n(pass) an unconfirmed container stop cannot write a stopped receipt [12.32ms]\n(pass) confirmed container stop with a failed receipt write reports partial cleanup [0.28ms]\n(pass) ordinary observed process failure still permits corrective coding work [0.53ms]\n(pass) a successful effect with an unacknowledged receipt is not rewritten as tool failure [0.31ms]\n(pass) cleanup retries cannot confirm disposal while a prior SDK close is pending [34.80ms]\n166 |   await submittingNow.promise\n167 |   const observation = runtime.observe(identity.id)\n168 |   await queried.promise\n169 |   accept.release(); await submission\n170 |   deliver.release(); await observation\n171 |   expect((await journal.store.read())?.phase).toBe(\"running\")\n                                                    ^\nerror: expect(received).toBe(expected)\n\nExpected: \"running\"\nReceived: \"ambiguous\"\n\n      at <anonymous> (/Users/ladmin/WebProjects/cf-opencode/bench/comparison/runtime.test.ts:171:47)\n(fail) a missing result captured before admission cannot invalidate a later accepted submission [2.56ms]\n\n 12 pass\n 1 fail\n 36 expect() calls\nRan 13 tests across 1 file. [309.00ms]\n"
+  },
+  "checks": [
+    {
+      "command": "bun test bench/comparison/results.test.ts bench/comparison/runtime.test.ts bench/comparison/linux.test.ts bench/comparison/task.test.ts",
+      "exitCode": 0,
+      "testsPassed": 37,
+      "testsFailed": 0,
+      "assertions": 155
+    },
+    {
+      "command": "./node_modules/.bin/tsc -p bench/comparison/tsconfig.json",
+      "exitCode": 0
+    },
+    {
+      "command": "./node_modules/.bin/tsc -p bench/comparison/baseline/tsconfig.json",
+      "exitCode": 0
+    },
+    {
+      "command": "bun bench/comparison/cli.ts selfcheck",
+      "exitCode": 0,
+      "observation": {
+        "schemaVersion": 1,
+        "kind": "local-oracle-selfcheck",
+        "protocolSHA256": "63e4c5dbb40e82f43fb5dc4f6c71d8d0bbcb61b10ac78479b2039d1987b98dc7",
+        "platform": "darwin",
+        "arch": "arm64",
+        "bun": "1.3.5",
+        "fixtureCommits": {
+          "ledger": "8f85941eaf677eab8670b67acd4ea9c854f7840c",
+          "queue": "b56cb0c4654010e1b80f6255b560906960b868e7"
+        },
+        "fixtureSHA256": {
+          "ledger": "a175ef567a0c552e16d8e64c11bb98a3f9349485d21663c43c50afa7458b5396",
+          "queue": "e153c8f04423007cb85d9d822b04b0eb8018f2c51374505421dc91fdce1e1668"
+        },
+        "observed": [
+          {
+            "taskID": "L1",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "L2",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "L3",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "L4",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "L5",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "Q1",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "Q2",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "Q3",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "Q4",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "Q5",
+            "baseRejected": true,
+            "referencePassed": true
+          }
+        ],
+        "providerCalls": 0,
+        "modelEffectiveness": "unmeasured"
+      }
+    },
+    {
+      "command": "bun bench/comparison/baseline/preflight.ts",
+      "exitCode": 0,
+      "wranglerVersion": "4.158.0",
+      "deployMode": "dry-run",
+      "resourcesCreated": false,
+      "bundleKiB": 25311.65,
+      "bundleGzipKiB": 3835.8
+    },
+    {
+      "command": "bun bench/comparison/baseline/local-smoke.ts",
+      "exitCode": 0,
+      "observation": {
+        "schemaVersion": 3,
+        "kind": "local-precompiled-sdk-smoke",
+        "passed": true,
+        "protocolSHA256": "63e4c5dbb40e82f43fb5dc4f6c71d8d0bbcb61b10ac78479b2039d1987b98dc7",
+        "compatibilityDate": "2026-11-11",
+        "bun": "1.3.5",
+        "platform": "darwin",
+        "arch": "arm64",
+        "probe": {
+          "schemaVersion": 1,
+          "kind": "model-free-harness-fit",
+          "mode": "simulated-plane",
+          "passed": true,
+          "status": "done",
+          "reason": null,
+          "tools": [
+            {
+              "tool": "write",
+              "bytes": 7
+            },
+            {
+              "tool": "read",
+              "bytes": 6
+            },
+            {
+              "tool": "edit",
+              "bytes": 6
+            },
+            {
+              "tool": "shell",
+              "bytes": 23
+            },
+            {
+              "tool": "read",
+              "bytes": 5
+            }
+          ],
+          "providerCalls": 0,
+          "modelEffectiveness": "unmeasured",
+          "descendantStop": "unmeasured"
+        },
+        "taskProbe": {
+          "kind": "synthetic-task-adapter",
+          "passed": true,
+          "externalProviderCalls": 0,
+          "transport": "mocked-http-sse",
+          "toolPlane": "simulated",
+          "receipt": {
+            "schemaVersion": 1,
+            "identity": {
+              "id": "synthetic-task-wiring",
+              "taskID": "PROBE",
+              "condition": "cold",
+              "repetition": 1,
+              "protocolSHA256": "synthetic-only",
+              "configSHA256": "synthetic-only"
+            },
+            "phase": "done",
+            "startedAt": 1794714758137,
+            "readyAt": 1794714758138,
+            "runningAt": 1794714758138,
+            "finishedAt": 1794714759535,
+            "operationID": "synthetic-task-wiring",
+            "submission": "accepted",
+            "tools": [
+              {
+                "id": "task-tool-1",
+                "name": "write",
+                "inputSHA256": "1d20d5346d00c4769a2b2abc9b39656ddefb9a91cc8e7f245e2d33cb10fab9eb",
+                "status": "done",
+                "output": "written",
+                "outputBytes": 7
+              },
+              {
+                "id": "task-tool-2",
+                "name": "read",
+                "inputSHA256": "c70f914dc4468a94aab2c7dfd6cbd52efbdabbdce9256ae2b4834707d432758e",
+                "status": "done",
+                "output": "alpha\n",
+                "outputBytes": 6
+              },
+              {
+                "id": "task-tool-3",
+                "name": "edit",
+                "inputSHA256": "e96a9fe474ec6261892aaa335323bdce844569c2207a2074ae722eace014ac08",
+                "status": "done",
+                "output": "edited",
+                "outputBytes": 6
+              },
+              {
+                "id": "task-tool-4",
+                "name": "shell",
+                "inputSHA256": "e0b8ab050c65efe966b43e0e675d7c96327d5c53057b290004068e0ac8aec0c6",
+                "status": "done",
+                "output": "simulated-shell-success",
+                "outputBytes": 23
+              },
+              {
+                "id": "task-tool-5",
+                "name": "read",
+                "inputSHA256": "c70f914dc4468a94aab2c7dfd6cbd52efbdabbdce9256ae2b4834707d432758e",
+                "status": "done",
+                "output": "beta\n",
+                "outputBytes": 5
+              }
+            ],
+            "modelCalls": [
+              {
+                "id": 0,
+                "finished": true,
+                "inputTokens": 10,
+                "outputTokens": 1
+              },
+              {
+                "id": 1,
+                "finished": true,
+                "inputTokens": 10,
+                "outputTokens": 1
+              },
+              {
+                "id": 2,
+                "finished": true,
+                "inputTokens": 10,
+                "outputTokens": 1
+              },
+              {
+                "id": 3,
+                "finished": true,
+                "inputTokens": 10,
+                "outputTokens": 1
+              },
+              {
+                "id": 4,
+                "finished": true,
+                "inputTokens": 10,
+                "outputTokens": 1
+              },
+              {
+                "id": 5,
+                "finished": true,
+                "inputTokens": 10,
+                "outputTokens": 1
+              }
+            ],
+            "result": {
+              "status": "done",
+              "text": "R0_23_TASK_ADAPTER_COMPLETE"
+            },
+            "failure": null,
+            "cleanup": "pending",
+            "cleanupCoordinatorDisposed": null,
+            "modelUSD": null,
+            "oraclePassed": null
+          }
+        },
+        "nativeAbsentTask": {
+          "schemaVersion": 1,
+          "identity": {
+            "id": "r0-23-63e4c5dbb40e-l1-cold-1",
+            "taskID": "L1",
+            "protocolSHA256": "63e4c5dbb40e82f43fb5dc4f6c71d8d0bbcb61b10ac78479b2039d1987b98dc7",
+            "condition": "cold",
+            "repetition": 1,
+            "configSHA256": "f19a0de341e9a3fecd96608e6500b9def84c96983838ea2ae04e8b5484fa8a32"
+          },
+          "phase": "failed",
+          "startedAt": 1794714759582,
+          "readyAt": null,
+          "runningAt": null,
+          "finishedAt": 1794714759583,
+          "operationID": "r0-23-63e4c5dbb40e-l1-cold-1",
+          "submission": "pending",
+          "tools": [],
+          "modelCalls": [],
+          "result": null,
+          "failure": "fixture setup interrupted",
+          "cleanup": "pending",
+          "cleanupCoordinatorDisposed": null,
+          "modelUSD": null,
+          "oraclePassed": null
+        },
+        "nativeAbsentCleanup": {
+          "runtimeStopped": true,
+          "coordinatorDisposed": true,
+          "cleanupRecorded": true,
+          "stopFenceRecorded": true,
+          "providerStop": "unproven",
+          "receiptRetained": true
+        },
+        "cleanupReceipt": {
+          "schemaVersion": 1,
+          "identity": {
+            "id": "r0-23-63e4c5dbb40e-l1-cold-1",
+            "taskID": "L1",
+            "protocolSHA256": "63e4c5dbb40e82f43fb5dc4f6c71d8d0bbcb61b10ac78479b2039d1987b98dc7",
+            "condition": "cold",
+            "repetition": 1,
+            "configSHA256": "f19a0de341e9a3fecd96608e6500b9def84c96983838ea2ae04e8b5484fa8a32"
+          },
+          "phase": "failed",
+          "startedAt": 1794714759582,
+          "readyAt": null,
+          "runningAt": null,
+          "finishedAt": 1794714759583,
+          "operationID": "r0-23-63e4c5dbb40e-l1-cold-1",
+          "submission": "pending",
+          "tools": [],
+          "modelCalls": [],
+          "result": null,
+          "failure": "fixture setup interrupted",
+          "cleanup": "stopped",
+          "cleanupCoordinatorDisposed": true,
+          "modelUSD": null,
+          "oraclePassed": null
+        },
+        "concurrentAdmissionChecked": true,
+        "taskIdentityAndCleanupTombstoneChecked": true,
+        "authenticationChecked": true,
+        "cachedPassRefused": true,
+        "cachedReceiptLabeled": true,
+        "localStateCleanup": true,
+        "providerCalls": 0,
+        "nativeLinux": "unmeasured",
+        "realModelEffectiveness": "unmeasured"
+      },
+      "assertionsInclude": [
+        "task-probe SDK teardown disabled the physical Lifecycle alarm",
+        "parallel ordinary-task submissions admit exactly one attempt",
+        "cleanup retains the stopped receipt and tombstone"
+      ]
+    }
+  ],
+  "deploymentPerformed": false,
+  "externalModelProviderCalls": 0,
+  "measuredAttempts": [],
+  "executionReady": false,
+  "gatesClosed": [],
+  "limits": [
+    "This is a scoped code audit with simulated failure interleavings, not a production-readiness certificate.",
+    "Workerd smoke uses mocked provider HTTP/SSE and simulated tools; process/file integration runs on the macOS host.",
+    "Cancellation is signaled and late process stop is attempted; native descendant termination and provider cancellation remain unproved.",
+    "Native actor recreation, checkpoint/fault injection, provider interoperability/billing and snapshot quiescence remain unqualified.",
+    "Cleanup observers are bounded; underlying work can remain pending. Partial confirmation is not complete teardown.",
+    "The strict journal/uncertainty policy differs from upstream defaults and must remain disclosed in comparative measurements.",
+    "The diagnostic workload is not representative G0 qualification; no head-to-head task/cost/latency/security winner is established."
+  ]
+}

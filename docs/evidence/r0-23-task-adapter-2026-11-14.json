@@ -1,0 +1,356 @@
+{
+  "schemaVersion": 1,
+  "kind": "r0-23-task-adapter-local-checks",
+  "evaluatedLocalDate": "2026-11-14",
+  "timezone": "America/Toronto",
+  "recordedAtUTC": "2026-11-15T03:05:28.314338+00:00",
+  "source": {
+    "baseHEAD": "ec5f6b44f1457ab9b8bc7e600b169ac3e9c7d1b2",
+    "workingTree": "uncommitted isolated benchmark implementation; base HEAD alone does not identify this code",
+    "protocolSHA256": "32babda03aa9cdd3b8c9d23c91af7d56a85f0f0de4877da8826afcc905c6ff1f",
+    "frozenManifest": "../../bench/comparison/protocol.freeze.v2.json",
+    "priorManifest": "../../bench/comparison/protocol.freeze.v1.json",
+    "additionalSHA256": {
+      "bench/comparison/results.test.ts": "325d8e9437b3f269feb515c2f3dce0f828ad52e9e45166ea64b97e6ddd9fd431",
+      "bench/comparison/linux.test.ts": "84897a025cf92c82ebf867ead156ed442e918b4d37adae349992f0249a104f3f",
+      "bench/comparison/task.test.ts": "bdb16a0526923c0f05c3eae388e51ac6839f38271f29db29e49c35e3bc884a8d",
+      "bench/comparison/tsconfig.json": "3e6f254896982403d643885709f509655e8c6b7df6388e5e1a9f43179b65275f",
+      "bench/comparison/baseline/tsconfig.json": "48eba8140290ed9641a827d7b00ee70edccb8697b6a5bc353c551562eab21f9b",
+      "bench/comparison/baseline/local-smoke.ts": "48bf90f68e881c562ce87f4fd60f894082ba4c126947ffb374a2ca6c9b2d113e",
+      "bench/comparison/baseline/preflight.ts": "11d13836c0cf31097792cb037bef754760f75317393a5be0535955ed70bfe922",
+      "bench/comparison/baseline/wrangler.local.json": "6869cf610d21df1f8b3690d03589fd537afffd1e362f54517b68ed32501cc9c9",
+      "bench/comparison/baseline/bindings.generated.d.ts": "a3399ee123dc0202060fde94dc885defe970a4dd660f2082f2f6e139077ad509",
+      "bench/comparison/baseline/freeze.generated.ts": "7d5e6a22aaa98ec3578a5b49dea3da4ee67eaa09d1bc877a9008b0a6116e11cf",
+      ".wrangler/comparison-preflight/bundle/worker.js": "d3ffa635994ca1c8c98fba9c725a859db1df62094890abcb7d6142b666cf5a6c"
+    }
+  },
+  "implementation": [
+    "Frozen task requests and server-only model settings; deterministic trial IDs prevent alternate aliases.",
+    "Per-attempt DO/native-container controller with durable admission, passive receipt, explicit observation, bounded snapshot and cleanup tombstone.",
+    "Provider credential remains in the coordinator; fixed HTTPS chat destination, redirects refused, request deadline and response byte bound.",
+    "Durable model call claims and terminal token observations; missing/error/truncated terminal streams remain unknown; monetary prices remain null.",
+    "Durable tool claims before effects; completed cached results may replay, but uncertain/failed/uncached effects refuse reexecution.",
+    "Native fixture installer copies only public base files and reproduces the host Git commit for both repositories.",
+    "Task/config/credential defaults are empty; no provider calls or deployment enabled by this change.",
+    "SDK boot refuses changed model/settings, protocol or credential identity before resuming a retained operation."
+  ],
+  "checks": [
+    {
+      "command": "./node_modules/.bin/tsc -p bench/comparison/tsconfig.json",
+      "exitCode": 0
+    },
+    {
+      "command": "./node_modules/.bin/tsc -p bench/comparison/baseline/tsconfig.json",
+      "exitCode": 0
+    },
+    {
+      "command": "bun test bench/comparison/results.test.ts bench/comparison/linux.test.ts bench/comparison/task.test.ts",
+      "exitCode": 0,
+      "testsPassed": 21,
+      "testsFailed": 0,
+      "assertions": 112
+    },
+    {
+      "command": "bun bench/comparison/cli.ts selfcheck",
+      "exitCode": 0,
+      "observation": {
+        "schemaVersion": 1,
+        "kind": "local-oracle-selfcheck",
+        "protocolSHA256": "32babda03aa9cdd3b8c9d23c91af7d56a85f0f0de4877da8826afcc905c6ff1f",
+        "platform": "darwin",
+        "arch": "arm64",
+        "bun": "1.3.5",
+        "fixtureCommits": {
+          "ledger": "8f85941eaf677eab8670b67acd4ea9c854f7840c",
+          "queue": "b56cb0c4654010e1b80f6255b560906960b868e7"
+        },
+        "fixtureSHA256": {
+          "ledger": "a175ef567a0c552e16d8e64c11bb98a3f9349485d21663c43c50afa7458b5396",
+          "queue": "e153c8f04423007cb85d9d822b04b0eb8018f2c51374505421dc91fdce1e1668"
+        },
+        "observed": [
+          {
+            "taskID": "L1",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "L2",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "L3",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "L4",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "L5",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "Q1",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "Q2",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "Q3",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "Q4",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "Q5",
+            "baseRejected": true,
+            "referencePassed": true
+          }
+        ],
+        "providerCalls": 0,
+        "modelEffectiveness": "unmeasured"
+      }
+    },
+    {
+      "command": "bun bench/comparison/baseline/preflight.ts",
+      "exitCode": 0,
+      "wranglerVersion": "4.158.0",
+      "deployMode": "dry-run",
+      "resourcesCreated": false,
+      "bundleKiB": 25303.89,
+      "bundleGzipKiB": 3834.16
+    },
+    {
+      "command": "bun bench/comparison/baseline/local-smoke.ts",
+      "exitCode": 0,
+      "observation": {
+        "schemaVersion": 2,
+        "kind": "local-precompiled-sdk-smoke",
+        "passed": true,
+        "protocolSHA256": "32babda03aa9cdd3b8c9d23c91af7d56a85f0f0de4877da8826afcc905c6ff1f",
+        "compatibilityDate": "2026-11-11",
+        "bun": "1.3.5",
+        "platform": "darwin",
+        "arch": "arm64",
+        "probe": {
+          "schemaVersion": 1,
+          "kind": "model-free-harness-fit",
+          "mode": "simulated-plane",
+          "passed": true,
+          "status": "done",
+          "reason": null,
+          "tools": [
+            {
+              "tool": "write",
+              "bytes": 7
+            },
+            {
+              "tool": "read",
+              "bytes": 6
+            },
+            {
+              "tool": "edit",
+              "bytes": 6
+            },
+            {
+              "tool": "shell",
+              "bytes": 23
+            },
+            {
+              "tool": "read",
+              "bytes": 5
+            }
+          ],
+          "providerCalls": 0,
+          "modelEffectiveness": "unmeasured",
+          "descendantStop": "unmeasured"
+        },
+        "taskProbe": {
+          "kind": "synthetic-task-adapter",
+          "passed": true,
+          "externalProviderCalls": 0,
+          "transport": "mocked-http-sse",
+          "toolPlane": "simulated",
+          "receipt": {
+            "schemaVersion": 1,
+            "identity": {
+              "id": "synthetic-task-wiring",
+              "taskID": "PROBE",
+              "condition": "cold",
+              "repetition": 1,
+              "protocolSHA256": "synthetic-only",
+              "configSHA256": "synthetic-only"
+            },
+            "phase": "done",
+            "startedAt": 1794711813939,
+            "readyAt": 1794711813940,
+            "runningAt": 1794711813940,
+            "finishedAt": 1794711815334,
+            "operationID": "synthetic-task-wiring",
+            "tools": [
+              {
+                "id": "task-tool-1",
+                "name": "write",
+                "inputSHA256": "1d20d5346d00c4769a2b2abc9b39656ddefb9a91cc8e7f245e2d33cb10fab9eb",
+                "status": "done",
+                "output": "written",
+                "outputBytes": 7
+              },
+              {
+                "id": "task-tool-2",
+                "name": "read",
+                "inputSHA256": "c70f914dc4468a94aab2c7dfd6cbd52efbdabbdce9256ae2b4834707d432758e",
+                "status": "done",
+                "output": "alpha\n",
+                "outputBytes": 6
+              },
+              {
+                "id": "task-tool-3",
+                "name": "edit",
+                "inputSHA256": "e96a9fe474ec6261892aaa335323bdce844569c2207a2074ae722eace014ac08",
+                "status": "done",
+                "output": "edited",
+                "outputBytes": 6
+              },
+              {
+                "id": "task-tool-4",
+                "name": "shell",
+                "inputSHA256": "e0b8ab050c65efe966b43e0e675d7c96327d5c53057b290004068e0ac8aec0c6",
+                "status": "done",
+                "output": "simulated-shell-success",
+                "outputBytes": 23
+              },
+              {
+                "id": "task-tool-5",
+                "name": "read",
+                "inputSHA256": "c70f914dc4468a94aab2c7dfd6cbd52efbdabbdce9256ae2b4834707d432758e",
+                "status": "done",
+                "output": "beta\n",
+                "outputBytes": 5
+              }
+            ],
+            "modelCalls": [
+              {
+                "id": 0,
+                "finished": true,
+                "inputTokens": 10,
+                "outputTokens": 1
+              },
+              {
+                "id": 1,
+                "finished": true,
+                "inputTokens": 10,
+                "outputTokens": 1
+              },
+              {
+                "id": 2,
+                "finished": true,
+                "inputTokens": 10,
+                "outputTokens": 1
+              },
+              {
+                "id": 3,
+                "finished": true,
+                "inputTokens": 10,
+                "outputTokens": 1
+              },
+              {
+                "id": 4,
+                "finished": true,
+                "inputTokens": 10,
+                "outputTokens": 1
+              },
+              {
+                "id": 5,
+                "finished": true,
+                "inputTokens": 10,
+                "outputTokens": 1
+              }
+            ],
+            "result": {
+              "status": "done",
+              "text": "R0_23_TASK_ADAPTER_COMPLETE"
+            },
+            "failure": null,
+            "cleanup": "pending",
+            "modelUSD": null,
+            "oraclePassed": null
+          }
+        },
+        "nativeAbsentTask": {
+          "schemaVersion": 1,
+          "identity": {
+            "id": "r0-23-32babda03aa9-l1-cold-1",
+            "taskID": "L1",
+            "protocolSHA256": "32babda03aa9cdd3b8c9d23c91af7d56a85f0f0de4877da8826afcc905c6ff1f",
+            "condition": "cold",
+            "repetition": 1,
+            "configSHA256": "487e04889b51dfa87998841104b111956144c1466914e17334f80aa516b180bd"
+          },
+          "phase": "failed",
+          "startedAt": 1794711815365,
+          "readyAt": null,
+          "runningAt": null,
+          "finishedAt": 1794711815366,
+          "operationID": "r0-23-32babda03aa9-l1-cold-1",
+          "tools": [],
+          "modelCalls": [],
+          "result": null,
+          "failure": "fixture setup interrupted",
+          "cleanup": "pending",
+          "modelUSD": null,
+          "oraclePassed": null
+        },
+        "taskIdentityAndCleanupTombstoneChecked": true,
+        "authenticationChecked": true,
+        "cachedPassRefused": true,
+        "cachedReceiptLabeled": true,
+        "localStateCleanup": true,
+        "providerCalls": 0,
+        "nativeLinux": "unmeasured",
+        "realModelEffectiveness": "unmeasured"
+      }
+    }
+  ],
+  "priorNonpassingChecks": [
+    {
+      "check": "native template with max_instances",
+      "outcome": "Wrangler rejected this field for Durable Object-managed containers before deployment. Field removed; serial execution is a driver/operator obligation, not an enforced shared instance limit."
+    },
+    {
+      "check": "TypeScript during adapter development",
+      "outcome": "Bun extends fetch with preconnect; the provider transport callable was separated from that augmentation and the default hook forwarded. Untyped tool input was narrowed before execution. Both final projects pass."
+    }
+  ],
+  "externalModelProviderCalls": 0,
+  "deploymentPerformed": false,
+  "measuredAttempts": [],
+  "executionReady": false,
+  "decision": "unrated",
+  "gatesClosed": [],
+  "limits": [
+    "The SDK smoke uses mocked HTTP/SSE and simulated tools. Six synthetic model requests do not constitute inference or billing evidence.",
+    "The missing-native-binding task is an intentional API failure test, not a failed coding attempt in the 150-trial matrix.",
+    "File/Git/process integration checks ran on macOS arm64. Native Linux execution, provider equivalence, fault recovery and deployed cleanup remain unqualified.",
+    "The task journal is instrumentation and an explicit replay policy; it does not reproduce every upstream default or the production admission/held-usage ledger.",
+    "Setup interrupted before SDK submission is not automatically repeated; container loss refuses fresh replacement. Native fault/checkpoint adapters remain open.",
+    "An SDK done operation is not an accepted coding task. oraclePassed remains null; independent public/private checks are required.",
+    "Snapshot exports report unproven descendant quiescence. Container stop does not establish provider cancellation or final accounting.",
+    "Numeric spend scope, model-call counts and request deadlines do not enforce a dollar ceiling. Task trials must run serially; no shared instance cap is configured.",
+    "Exact common provider/model/settings, staging identities, budget and native qualification are still required before any real task run.",
+    "No comparative quality, latency, cost, recovery or security advantage is established; G0 and C0 remain open."
+  ]
+}

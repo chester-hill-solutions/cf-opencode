@@ -1,0 +1,159 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-15T23:12:57.254664+00:00",
+  "status": "implemented and deployed for isolated internal canary; primitive carry/cold restore and live unbound Slack answer verified",
+  "requirement": "A thread owns a general workspace without requiring a repo; user may later instruct repository creation/checkout and carry selected work while preserving files and conversation.",
+  "scope": "isolated #arfin-test canary; no legacy Worker/image changes",
+  "architecture": {
+    "workspaceRoot": "/workspace",
+    "repositoryOptional": true,
+    "normalTransfer": "OpenCode tools create or use a child checkout and copy requested work without discarding originals",
+    "sameSession": true,
+    "sourceMetadataExcluded": true,
+    "conflictPolicy": "ask before overwriting",
+    "registeredRootBinding": "existing fresh-workspace shortcut; guards unchanged",
+    "trustedChecks": "nested checkouts not automatically registered !check inputs"
+  },
+  "verification": {
+    "workerTests": 454,
+    "workerTestsStatus": "passed",
+    "focusedPureCommandTests": 25,
+    "fullTypes": "passed",
+    "config": "passed",
+    "diffCheck": "passed",
+    "modelFreeCarry": {
+      "schemaVersion": 1,
+      "proofKind": "primitive_capability",
+      "passed": true,
+      "imageID": "sha256:a07c2d2d632e36a33c3edfb95e74bf0d43978515b8ca656f436ad18b213a38ab",
+      "platform": "linux/amd64",
+      "workspaceID": "ws_fa851e1dcf0c68df",
+      "sessionID": "ses_e1e86a76fffeJc1YwIHfyo4p7X",
+      "sourceNetwork": "none",
+      "originalsPreserved": true,
+      "conflictPreserved": true,
+      "selectedFileCount": 3,
+      "childGit": {
+        "hashes": {
+          "draft.ts": "559ac6bcb9af32a410944e03e9bab7af33fdabe77f3212464ebd367f50f4859a",
+          "notes/plan.md": "06f763bb6c4981f0d2fead6d06b0de3897e00b25519ce7605163ab9fa9129309",
+          "README.md": "95aad41d8df425977e0cc935fc5c36c194e74b47dda01b915ed68cba76312378",
+          "project/src/draft.ts": "559ac6bcb9af32a410944e03e9bab7af33fdabe77f3212464ebd367f50f4859a",
+          "project/docs/plan.md": "06f763bb6c4981f0d2fead6d06b0de3897e00b25519ce7605163ab9fa9129309",
+          "project/docs/workspace-README.md": "95aad41d8df425977e0cc935fc5c36c194e74b47dda01b915ed68cba76312378",
+          "project/README.md": "008be12d21a63c2c020c2406be51b346c219bc8f6fcc5d474176f86c6548b438",
+          "project/src/existing.ts": "da0a0240a2eabdf88d4fc8426bc7fcfc1dda5b1d6d83d420c756f9a1e45999c7"
+        },
+        "head": "71ae847749a5b0d2226231a1d6019c205ee26b78",
+        "branch": "task/carry-proof",
+        "status": "M src/existing.ts\n?? docs/\n?? src/draft.ts",
+        "generalRootNoGit": true
+      },
+      "coldRestorePassed": true,
+      "sessionPreserved": true,
+      "cleanupConfirmed": true,
+      "modelExecutionRequested": false,
+      "autonomousTransferQualified": false,
+      "registeredChildBindingQualified": false,
+      "trustedChildChecksQualified": false,
+      "nodeModules": "excluded by existing checkpoints"
+    },
+    "liveGeneralWorkspace": {
+      "verified": true,
+      "unboundWorkspace": true,
+      "workspaceContextObserved": true,
+      "channel": "C0A5YNXLP6C",
+      "threadTS": "1794784106.444609",
+      "sessionID": "ses_e1e87bed5ffedSKpxjpG69U0a6",
+      "model": "opencode/deepseek-v4.1-flash",
+      "costUSD": 0.00074171,
+      "assistantSteps": 1,
+      "assistantMessageIDs": [
+        "msg_1e17846db001R0V6tKcsgpsN8s"
+      ],
+      "assistantText": "ARFIN_GENERAL_WORKSPACE_READY_20261115",
+      "slackMessage": {
+        "ts": "1794784125.217819",
+        "user": "U0CEWGTR7E2",
+        "text": "ARFIN_GENERAL_WORKSPACE_READY_20261115"
+      },
+      "reservationReleased": true,
+      "toolsObserved": false,
+      "onePrompt": true,
+      "syntheticOperatorEvent": true,
+      "initialAssertionCorrection": "Native user message text is message.text, not assistant-style content parts. Initial assertion failed after model and Slack succeeded; no prompt was resent."
+    },
+    "deployedWorkerSourceMatchesWorkspace": true,
+    "originalThreadWorkspaceGuidance": {
+      "conversationKey": "C0A5YNXLP6C:1794778051.500769",
+      "sessionPreserved": true,
+      "inferenceRequested": false,
+      "slackMessageTS": "1794784138.193579",
+      "visibleText": "Your general workspace is ready to use; a repository is optional. Ask me to create or edit files here. You can explicitly ask me to check out a public repository in a new subfolder, copy only chosen files, preserve originals, exclude workspace/runtime metadata, and ask before overwriting conflicts. That checkout uses ordinary agent tools; it does not change the registered root repository or make the subfolder eligible for `!check`. To register an optional root repository before work starts, use `!repo <https://github.com/owner/repo> main aboiteau/task-123`. Use `!repo` to inspect this workspace."
+    },
+    "ownVerificationRuntimeCleanup": {
+      "status": 200,
+      "value": {
+        "ok": true
+      }
+    },
+    "carryHandoff": {
+      "status": "passed",
+      "proofKind": "primitive_capability",
+      "script": "/Users/ladmin/WebProjects/cf-opencode/scripts/smoke-workspace-carry.sh",
+      "scriptSHA256": "a37121daef257db37feb8da16421ac9b80f2bdcca0c8890a269f73d38db1bb07",
+      "summary": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-workspace-carry.so6AP7/summary.json",
+      "summarySHA256": "34e31d8d66e6f87bd8cc1e9cf4a306a8e725e76c331d0e990c8ad019615c66e8",
+      "imageID": "sha256:a07c2d2d632e36a33c3edfb95e74bf0d43978515b8ca656f436ad18b213a38ab",
+      "workspaceID": "ws_fa851e1dcf0c68df",
+      "sessionID": "ses_e1e86a76fffeJc1YwIHfyo4p7X",
+      "firstFailureRetained": "/private/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-workspace-carry.bYNV5m",
+      "firstFailureCause": "Public fixture helper copied as root-owned mode0600; agent could not read it. Fixed only fixture ownership/readability before one authorized retry.",
+      "limits": [
+        "Authored model-free operations, not autonomous OpenCode carry behavior",
+        "Child checkout is not a registered root binding and is not qualified for existing root-only isolated checks",
+        "Existing checkpoint exclusion of node_modules retained; no claim all arbitrary workspace bytes are archived"
+      ],
+      "sourceFindings": [
+        "OpenCode session directory remains /workspace (src/conversation/sessions.ts)",
+        "Native Stow identity root remains /workspace (stow-workspace.ts)",
+        "archiveWorkspace walks nested .git and .stow, excludes node_modules (control-server.ts)",
+        "Fresh root-only binding/verify guard remains unchanged (workspace-repository.ts, src/state.ts)"
+      ]
+    },
+    "slackPermalink": "https://teamnatelib.slack.com/archives/C0A5YNXLP6C/p1794784125217819?thread_ts=1794784106.444609&cid=C0A5YNXLP6C",
+    "finalCapacity": {
+      "cap": 2,
+      "activeLeases": 1,
+      "ownVerificationLeaseReleased": true
+    }
+  },
+  "sourceSHA256": {
+    "src/conversation/slack-adapter.ts": "86fdfe4742cc04496a0653718a5262e381b0217d1e7e5d0a2e276092a1b7e5d4",
+    "src/slack-workspace-commands.ts": "a243420193c1f69bcf2085de3c9d016c4b36123253c33ff9b426267932a39b6d",
+    "src/slack-commands.ts": "29de280c6e921eef808fc07a8ba9def3ef4f9ecb2cfde6798192d2e2b01c5c40",
+    "test/slack-workspace-repository.test.ts": "628f67963b44ffc31c777139a80606da5d5da97b58cdd150dfc7ee4daa7ea135",
+    "tests/slack-workspace-commands.test.ts": "8d7bfde0cef1021058fbcadfed453008996ddecda736f587a71b05f891f34de1",
+    "tests/slack-commands.test.ts": "f4712fbededbf1d6ac4c62619d8a4277907f9d8bee611bd099b0bf6a51be71d2",
+    "scripts/smoke-workspace-carry.sh": "a37121daef257db37feb8da16421ac9b80f2bdcca0c8890a269f73d38db1bb07"
+  },
+  "openWork": [
+    "path-aware nested repository registration and trusted checks",
+    "structured transfer receipts/conflict UI",
+    "private repository credential boundary"
+  ],
+  "historicalCorrection": "54df8cc6 no-repo rejection was too restrictive; removed. Prior reply-delivery fix retained.",
+  "deployedCanaryVersion": "d9b7fd15-3007-4354-952e-80961032acb3",
+  "containerRollout": "none",
+  "durableObjectCodeUpdate": "deferred 30s; canary conversations observed idle beforehand",
+  "limits": [
+    "Native file carry proof uses authored tool operations, not autonomous model instruction-following qualification.",
+    "Nested repo is agent managed, not a registered root/check target.",
+    "Native session was created without inference; this proves session identity/location retention, not a new general-workspace conversation-history matrix."
+  ],
+  "operationalNotes": [
+    "First offline carry fixture failed because a copied public helper retained root-owned 0600 permissions; corrected owner/mode and reran successfully, preserving first evidence.",
+    "Initial live verification asserted assistant-style content parts on a user message. Native user text is message.text. The paid turn and Slack answer had already succeeded; verified via read-only observation without resending.",
+    "Only owned idle verification runtimes were checkpointed/stopped to return canary capacity."
+  ]
+}

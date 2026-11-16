@@ -1,0 +1,21 @@
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "aboiteau-r0-23-local-model-free",
+  "main": "worker.ts",
+  "compatibility_date": "2026-11-11",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": { "bindings": [
+    { "class_name": "SyntheticHarnessProbe", "name": "SYNTHETIC" },
+    { "class_name": "LinuxBaselineProbe", "name": "BASELINE" },
+    { "class_name": "TaskBaseline", "name": "TASKS" },
+    { "class_name": "SyntheticTaskProbe", "name": "TASK_PROBE" },
+    { "class_name": "SyntheticSmokeProvider", "name": "SYNTHETIC_SMOKE_PROVIDER" }
+  ] },
+  "exports": {
+    "SyntheticHarnessProbe": { "type": "durable-object", "storage": "sqlite" },
+    "LinuxBaselineProbe": { "type": "durable-object", "storage": "sqlite" },
+    "TaskBaseline": { "type": "durable-object", "storage": "sqlite" },
+    "SyntheticTaskProbe": { "type": "durable-object", "storage": "sqlite" },
+    "SyntheticSmokeProvider": { "type": "durable-object", "storage": "sqlite" }
+  }
+}

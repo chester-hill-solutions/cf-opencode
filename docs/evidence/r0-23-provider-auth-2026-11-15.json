@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "provider-authentication-blocker",
+  "model": "opencode/deepseek-v4.1-flash",
+  "credentialSource": "existing local OpenCode auth store; bytes not recorded",
+  "storedCredentialType": "api",
+  "currentConsoleKeyFormat": false,
+  "environmentCredentialPresent": false,
+  "inferenceHTTPStatus": 401,
+  "authenticatedCatalogHTTPStatus": 401,
+  "catalogEndpoint": "https://opencode.ai/inference/v1/models",
+  "inferenceRequestsAdmitted": 1,
+  "modelTokensReturned": null,
+  "providerUSD": null,
+  "billingReconciled": false,
+  "automaticFurtherDispatch": "blocked after unknown usage",
+  "smokeEvidence": "r0-23-live-2026-11-15-05.json",
+  "requiredAction": "No sign-in action required. The runner now selects the active CLI OAuth connection and real inference is verified.",
+  "supersededDiagnosis": {
+    "reason": "The smoke loaded an inactive legacy API key instead of the active v2 CLI connection. Re-login was not required.",
+    "currentCLI": "2.2.7",
+    "activeCredentialType": "oauth",
+    "activeCredentialWorkspace": "Chester Hill Solutions",
+    "activeCredentialExpired": false,
+    "authenticatedConsoleConfigHTTPStatus": 200,
+    "authenticatedCatalogHTTPStatus": 200,
+    "requiredAction": "Fix runner selection using targeted opencode auth export opencode; use active OAuth access plus x-org-id; never export refresh credentials to staging."
+  },
+  "resolution": {
+    "activeOAuthWasAlreadyValid": true,
+    "newLoginPerformed": false,
+    "legacyInactiveKeySelectionFixed": true,
+    "finalSmokeAccepted": 4,
+    "finalSmokeAttempts": 4,
+    "completedProviderRequests": 27,
+    "finalReceipt": "r0-23-live-2026-11-15-08.json"
+  }
+}

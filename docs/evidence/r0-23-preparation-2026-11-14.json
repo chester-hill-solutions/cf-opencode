@@ -1,0 +1,215 @@
+{
+  "schemaVersion": 1,
+  "kind": "r0-23-local-preparation",
+  "evaluatedLocalDate": "2026-11-14",
+  "timezone": "America/Toronto",
+  "recordedAtUTC": "2026-11-15T02:32:32.360616+00:00",
+  "source": {
+    "baseHEAD": "ec5f6b44f1457ab9b8bc7e600b169ac3e9c7d1b2",
+    "workingTree": "uncommitted benchmark source; base HEAD alone does not identify this implementation",
+    "protocolSHA256": "b5200b1bb5d6bc373d0a38befcafe5de2331fe93789be8344011e76b7f968c9b",
+    "frozenManifest": "../../bench/comparison/protocol.freeze.v1.json",
+    "additionalSHA256": {
+      "bench/comparison/results.test.ts": "325d8e9437b3f269feb515c2f3dce0f828ad52e9e45166ea64b97e6ddd9fd431",
+      "bench/comparison/linux.test.ts": "84897a025cf92c82ebf867ead156ed442e918b4d37adae349992f0249a104f3f",
+      "bench/comparison/tsconfig.json": "3e6f254896982403d643885709f509655e8c6b7df6388e5e1a9f43179b65275f",
+      "bench/comparison/baseline/tsconfig.json": "82471482ccb8a7a8d818bca5b2bbe318b46f2c1f996ed9a115fea9b1458fa2b6",
+      "bench/comparison/baseline/local-smoke.ts": "b9abeae1da7dd7192dba72a4cc2a9bd7470edfa387e98be63357bd7e2d51744e",
+      "bench/comparison/baseline/preflight.ts": "5184a5d3aba060dbd0bc6ef6965cf26ee767c620221aea48337db219816d0553",
+      "bench/comparison/baseline/wrangler.local.json": "34ecd4c2f56902749472c5ab0b86630f1b91ae71dd7840086d5c3b9b6775edbb",
+      "bench/comparison/baseline/bindings.generated.d.ts": "818d864175a7dd101f3cdfe4cdd59317c690285d92572277e803c2b65b332abc",
+      ".wrangler/comparison-preflight/bundle/worker.js": "065969244259875929e9c589ab6ef7cebff12f0a9392d596241d625d044ca3b3",
+      "src/control-auth.ts": "6b30d7c78667a72f8886585b6481a0a0d2b65d9a6dd1f81fbd3d3505434d7b2f"
+    }
+  },
+  "checks": [
+    {
+      "command": "./node_modules/.bin/tsc -p bench/comparison/tsconfig.json",
+      "exitCode": 0
+    },
+    {
+      "command": "./node_modules/.bin/tsc -p bench/comparison/baseline/tsconfig.json",
+      "exitCode": 0
+    },
+    {
+      "command": "bun test bench/comparison/results.test.ts bench/comparison/linux.test.ts",
+      "exitCode": 0,
+      "testsPassed": 9,
+      "testsFailed": 0,
+      "assertions": 34
+    },
+    {
+      "command": "bun bench/comparison/cli.ts selfcheck",
+      "exitCode": 0,
+      "observation": {
+        "schemaVersion": 1,
+        "kind": "local-oracle-selfcheck",
+        "protocolSHA256": "b5200b1bb5d6bc373d0a38befcafe5de2331fe93789be8344011e76b7f968c9b",
+        "platform": "darwin",
+        "arch": "arm64",
+        "bun": "1.3.5",
+        "fixtureCommits": {
+          "ledger": "8f85941eaf677eab8670b67acd4ea9c854f7840c",
+          "queue": "b56cb0c4654010e1b80f6255b560906960b868e7"
+        },
+        "fixtureSHA256": {
+          "ledger": "a175ef567a0c552e16d8e64c11bb98a3f9349485d21663c43c50afa7458b5396",
+          "queue": "e153c8f04423007cb85d9d822b04b0eb8018f2c51374505421dc91fdce1e1668"
+        },
+        "observed": [
+          {
+            "taskID": "L1",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "L2",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "L3",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "L4",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "L5",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "Q1",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "Q2",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "Q3",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "Q4",
+            "baseRejected": true,
+            "referencePassed": true
+          },
+          {
+            "taskID": "Q5",
+            "baseRejected": true,
+            "referencePassed": true
+          }
+        ],
+        "providerCalls": 0,
+        "modelEffectiveness": "unmeasured"
+      }
+    },
+    {
+      "command": "bun bench/comparison/baseline/preflight.ts",
+      "exitCode": 0,
+      "wranglerVersion": "4.158.0",
+      "deployMode": "dry-run",
+      "accountID": "00000000000000000000000000000000",
+      "resourcesCreated": false,
+      "bundleKiB": 25095.02,
+      "bundleGzipKiB": 3790.34
+    },
+    {
+      "command": "bun bench/comparison/baseline/local-smoke.ts",
+      "exitCode": 0,
+      "observation": {
+        "schemaVersion": 1,
+        "kind": "local-precompiled-sdk-smoke",
+        "passed": true,
+        "compatibilityDate": "2026-11-11",
+        "bun": "1.3.5",
+        "platform": "darwin",
+        "arch": "arm64",
+        "probe": {
+          "schemaVersion": 1,
+          "kind": "model-free-harness-fit",
+          "mode": "simulated-plane",
+          "passed": true,
+          "status": "done",
+          "reason": null,
+          "tools": [
+            {
+              "tool": "write",
+              "bytes": 7
+            },
+            {
+              "tool": "read",
+              "bytes": 6
+            },
+            {
+              "tool": "edit",
+              "bytes": 6
+            },
+            {
+              "tool": "shell",
+              "bytes": 23
+            },
+            {
+              "tool": "read",
+              "bytes": 5
+            }
+          ],
+          "providerCalls": 0,
+          "modelEffectiveness": "unmeasured",
+          "descendantStop": "unmeasured"
+        },
+        "authenticationChecked": true,
+        "cachedPassRefused": true,
+        "cachedReceiptLabeled": true,
+        "localStateCleanup": true,
+        "providerCalls": 0,
+        "nativeLinux": "unmeasured",
+        "realModelEffectiveness": "unmeasured"
+      }
+    }
+  ],
+  "priorNonpassingChecks": [
+    {
+      "check": "Vite source-loading Workerd probe",
+      "outcome": "Worker failed before test assertions; replaced with the precompiled local Worker path; cause not established"
+    },
+    {
+      "check": "local SDK smoke under filesystem/network sandbox",
+      "outcome": "loopback listen refused with EPERM before Worker startup; identical probe passed with loopback permission"
+    },
+    {
+      "check": "oracle development selfcheck",
+      "outcome": "Initially exposed an invalid assert.throws matcher and an overstrict rejection-observer order; corrected before final successful selfcheck"
+    }
+  ],
+  "plannedAttempts": {
+    "ordinary": 120,
+    "fault": 30,
+    "total": 150,
+    "matchedStratum": "unrated; no additional trial matrix authorized or qualified"
+  },
+  "measuredAttempts": [],
+  "externalModelProviderCalls": 0,
+  "deploymentPerformed": false,
+  "executionReady": false,
+  "decision": "unrated",
+  "gatesClosed": [],
+  "limits": [
+    "Authored diagnostic fixtures do not establish representative G0 workload coverage or product/model accuracy.",
+    "Reference repair passes are evaluator selfchecks, not agent task successes.",
+    "The SDK probe uses a synthetic in-process model and simulated tool plane, not native Linux or real inference.",
+    "Process-adapter checks ran on macOS arm64, not a deployed Linux container; direct-process abort does not prove descendant termination.",
+    "Local Workerd compatibility date is 2026-11-11; the native template targets 2026-11-14.",
+    "Real-task/model routing and native fault/checkpoint controls are not implemented or qualified by this fixed probe.",
+    "Exact common model endpoint/settings, numeric provider budget and approved native staging identities remain unresolved.",
+    "No comparative coding success, latency, accepted-task cost, recovery or security winner is established."
+  ]
+}

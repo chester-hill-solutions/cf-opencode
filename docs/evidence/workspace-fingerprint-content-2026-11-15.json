@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-16T00:08:46.834970+00:00",
+  "status": "source repaired; targeted and complete local Bun gates passed; native image not deployed",
+  "problem": "Non-Git checkpoint deduplication used size and mtime alone; same-size content changes at unchanged timestamps could be skipped.",
+  "reproduction": {
+    "deterministic": true,
+    "fixedFileBytes": 262144,
+    "timestampPreserved": true,
+    "lastByteChanged": true,
+    "redRegressionObserved": true
+  },
+  "repair": {
+    "streamedContentDigest": true,
+    "residentReadBytes": 65536,
+    "typeModeAndSymlinkTargetIdentity": true,
+    "fileMutationDuringRead": "reject",
+    "rootController": "fixed bounded CLI delegates to agent UID; no root-content hash oracle",
+    "providerExecution": false,
+    "historicalImagePinsChanged": false
+  },
+  "verification": {
+    "targetedTests": 20,
+    "targetedAssertions": 71,
+    "sourceTypes": "passed",
+    "pureTestTypes": "passed",
+    "completeBunTests": 618,
+    "runtimeTests": 5,
+    "nativeCI": "authoritative merge checks are attached to PR head"
+  },
+  "sourceSHA256": {
+    "control-server.ts": "3c7c4e1caff6682a1db8f1d9d6cdbce7222be6c7bda4aa012402174ce6013c2e",
+    "tests/workspace.test.ts": "36eb212fd04eb0d68780cc30b1d92b73c8e1b99e40c6473def48cffcc52f63f2"
+  },
+  "rolloutBoundary": "Existing canary still uses frozen a07 image. This source fix requires a newly built/qualified image and a retained-workspace upgrade; no runtime rollout is part of PR publication."
+}

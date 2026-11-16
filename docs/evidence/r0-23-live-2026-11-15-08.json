@@ -1,0 +1,2635 @@
+{
+  "schemaVersion": 1,
+  "scope": {
+    "id": "r0-23-20261115-c4389b",
+    "worker": "aboiteau-r0-23-20261115-c4389b",
+    "bucket": "aboiteau-r0-23-20261115-c4389b-checkpoints",
+    "accountID": "ad5ec479b9a421faa2ed06c3d1c2b23a",
+    "canonicalModel": "opencode/deepseek-v4.1-flash",
+    "model": "deepseek-v4.1-flash",
+    "baseURL": "https://opencode.ai/inference/openai/v1",
+    "endpoint": "https://opencode.ai/inference/openai/v1/chat/completions",
+    "authorizedTotalProviderBudgetUSD": 5,
+    "priorUnknownCostReserveUSD": 0.25,
+    "priorKnownCostReserveUSD": 0.25,
+    "providerBudgetUSD": 4.5,
+    "maxCallsPerAttempt": 16,
+    "maxCallsTotal": 64,
+    "contextTokens": 32768,
+    "maxOutputTokens": 4096,
+    "temperature": 0,
+    "requestTimeoutMs": 60000,
+    "taskDeadlineMs": 600000,
+    "grantLifetimeMs": 2700000,
+    "inputUSDPerMillion": 0.3,
+    "outputUSDPerMillion": 1.2,
+    "tasks": [
+      "L1",
+      "Q1"
+    ],
+    "providerDocs": "https://opencode.ai/docs/console/models/"
+  },
+  "startedAt": "2026-11-15T15:55:26.358Z",
+  "protocolSHA256": "00b6cc5ba24314714b8183e6aae09aa8033629cc48d2103222809120d15b89cd",
+  "native": [
+    {
+      "path": "/native/prepare",
+      "observedAt": "2026-11-15T15:56:15.325Z",
+      "value": {
+        "accepted": true,
+        "providerCalls": 0,
+        "incarnation": "a730d4ce-b013-4b99-9afd-d7636e56ff1f",
+        "receipt": {
+          "schemaVersion": 1,
+          "kind": "model-free-native-qualification",
+          "providerCalls": 0,
+          "protocolSHA256": "00b6cc5ba24314714b8183e6aae09aa8033629cc48d2103222809120d15b89cd",
+          "attemptID": "59f05ff4-6b80-4b29-85d3-3e44874a0064",
+          "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-metadata-candidate@sha256:4fe5c456f39903be5cbba5027a5d00f1961ac37fb63c7e6a3493c09af2903f24",
+          "requestedResources": {
+            "vcpu": 1,
+            "memoryMib": 2048,
+            "diskMb": 8192
+          },
+          "observedResources": null,
+          "phase": "preparing",
+          "initialIncarnation": "a730d4ce-b013-4b99-9afd-d7636e56ff1f",
+          "createdAt": 1794758175238,
+          "deadlineAt": 1794758415238,
+          "marker": "65d632e7-c638-4cb3-a9ce-435c57f64810",
+          "checks": []
+        },
+        "httpStatus": 202
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "kind": "model-free-native-qualification",
+      "providerCalls": 0,
+      "incarnation": "a730d4ce-b013-4b99-9afd-d7636e56ff1f",
+      "containerRunning": true,
+      "receipt": {
+        "schemaVersion": 1,
+        "kind": "model-free-native-qualification",
+        "providerCalls": 0,
+        "protocolSHA256": "00b6cc5ba24314714b8183e6aae09aa8033629cc48d2103222809120d15b89cd",
+        "attemptID": "59f05ff4-6b80-4b29-85d3-3e44874a0064",
+        "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-metadata-candidate@sha256:4fe5c456f39903be5cbba5027a5d00f1961ac37fb63c7e6a3493c09af2903f24",
+        "requestedResources": {
+          "vcpu": 1,
+          "memoryMib": 2048,
+          "diskMb": 8192
+        },
+        "observedResources": null,
+        "phase": "prepared",
+        "initialIncarnation": "a730d4ce-b013-4b99-9afd-d7636e56ff1f",
+        "createdAt": 1794758175238,
+        "deadlineAt": 1794758415238,
+        "marker": "65d632e7-c638-4cb3-a9ce-435c57f64810",
+        "checks": [
+          {
+            "id": "runtime-platform",
+            "passed": true,
+            "details": {
+              "platform": "linux",
+              "arch": "x64"
+            }
+          },
+          {
+            "id": "write-read",
+            "passed": true,
+            "details": {}
+          },
+          {
+            "id": "edit-shell",
+            "passed": true,
+            "details": {}
+          },
+          {
+            "id": "path-read",
+            "passed": true,
+            "details": {
+              "scope": "file-tool boundary only; shell is trusted unrestricted execution"
+            }
+          },
+          {
+            "id": "symlink-read",
+            "passed": true,
+            "details": {}
+          },
+          {
+            "id": "path-write",
+            "passed": true,
+            "details": {
+              "scope": "file-tool boundary only; shell is trusted unrestricted execution"
+            }
+          },
+          {
+            "id": "symlink-write",
+            "passed": true,
+            "details": {}
+          },
+          {
+            "id": "path-edit",
+            "passed": true,
+            "details": {
+              "scope": "file-tool boundary only; shell is trusted unrestricted execution"
+            }
+          },
+          {
+            "id": "symlink-edit",
+            "passed": true,
+            "details": {}
+          },
+          {
+            "id": "outside-retained",
+            "passed": true,
+            "details": {}
+          },
+          {
+            "id": "ambiguous-edit",
+            "passed": true,
+            "details": {}
+          },
+          {
+            "id": "ambiguous-edit-retained",
+            "passed": true,
+            "details": {}
+          },
+          {
+            "id": "read-size-limit",
+            "passed": true,
+            "details": {}
+          },
+          {
+            "id": "write-size-limit",
+            "passed": true,
+            "details": {}
+          },
+          {
+            "id": "stdout-limit",
+            "passed": true,
+            "details": {
+              "bytesLimit": 65536,
+              "physicalStop": "unproven by output refusal"
+            }
+          },
+          {
+            "id": "stderr-limit",
+            "passed": true,
+            "details": {
+              "bytesLimit": 65536,
+              "physicalStop": "unproven by output refusal"
+            }
+          },
+          {
+            "id": "fixture-ledger",
+            "passed": true,
+            "details": {
+              "expected": "8f85941eaf677eab8670b67acd4ea9c854f7840c",
+              "observed": "8f85941eaf677eab8670b67acd4ea9c854f7840c"
+            }
+          },
+          {
+            "id": "fixture-queue",
+            "passed": true,
+            "details": {
+              "expected": "b56cb0c4654010e1b80f6255b560906960b868e7",
+              "observed": "b56cb0c4654010e1b80f6255b560906960b868e7"
+            }
+          },
+          {
+            "id": "cancellation-observation",
+            "passed": true,
+            "details": {
+              "callerReturned": true,
+              "directExitObserved": true,
+              "descendantProgressAfterAbort": true,
+              "descendantProgressAfterKill": false,
+              "descendantStopped": "unproven; progress sampling is not a process-tree stop proof"
+            }
+          }
+        ],
+        "commits": {
+          "ledger": "8f85941eaf677eab8670b67acd4ea9c854f7840c",
+          "queue": "b56cb0c4654010e1b80f6255b560906960b868e7"
+        },
+        "cancellation": {
+          "callerReturned": true,
+          "callerRejectedAsUncertain": true,
+          "directExitObserved": true,
+          "directExitCode": 137,
+          "descendantProgressAfterAbort": true,
+          "descendantKillRequested": true,
+          "descendantProgressAfterKill": false,
+          "descendantStopped": "unproven"
+        }
+      },
+      "cleanup": null,
+      "httpStatus": 200
+    },
+    {
+      "path": "/native/recreate",
+      "observedAt": "2026-11-15T15:56:17.681Z",
+      "value": {
+        "accepted": true,
+        "providerCalls": 0,
+        "requestedIncarnation": "a730d4ce-b013-4b99-9afd-d7636e56ff1f",
+        "action": "coordinator-abort-scheduled",
+        "httpStatus": 202
+      }
+    },
+    {
+      "schemaVersion": 1,
+      "kind": "model-free-native-qualification",
+      "providerCalls": 0,
+      "incarnation": "67ad3587-5c44-43b2-9c55-a3c99f570326",
+      "containerRunning": true,
+      "receipt": {
+        "schemaVersion": 1,
+        "kind": "model-free-native-qualification",
+        "providerCalls": 0,
+        "protocolSHA256": "00b6cc5ba24314714b8183e6aae09aa8033629cc48d2103222809120d15b89cd",
+        "attemptID": "59f05ff4-6b80-4b29-85d3-3e44874a0064",
+        "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-metadata-candidate@sha256:4fe5c456f39903be5cbba5027a5d00f1961ac37fb63c7e6a3493c09af2903f24",
+        "requestedResources": {
+          "vcpu": 1,
+          "memoryMib": 2048,
+          "diskMb": 8192
+        },
+        "observedResources": null,
+        "phase": "recreated",
+        "initialIncarnation": "a730d4ce-b013-4b99-9afd-d7636e56ff1f",
+        "createdAt": 1794758175238,
+        "deadlineAt": 1794758415238,
+        "marker": "65d632e7-c638-4cb3-a9ce-435c57f64810",
+        "checks": [
+          {
+            "id": "runtime-platform",
+            "passed": true,
+            "details": {
+              "platform": "linux",
+              "arch": "x64"
+            }
+          },
+          {
+            "id": "write-read",
+            "passed": true,
+            "details": {}
+          },
+          {
+            "id": "edit-shell",
+            "passed": true,
+            "details": {}
+          },
+          {
+            "id": "path-read",
+            "passed": true,
+            "details": {
+              "scope": "file-tool boundary only; shell is trusted unrestricted execution"
+            }
+          },
+          {
+            "id": "symlink-read",
+            "passed": true,
+            "details": {}
+          },
+          {
+            "id": "path-write",
+            "passed": true,
+            "details": {
+              "scope": "file-tool boundary only; shell is trusted unrestricted execution"
+            }
+          },
+          {
+            "id": "symlink-write",
+            "passed": true,
+            "details": {}
+          },
+          {
+            "id": "path-edit",
+            "passed": true,
+            "details": {
+              "scope": "file-tool boundary only; shell is trusted unrestricted execution"
+            }
+          },
+          {
+            "id": "symlink-edit",
+            "passed": true,
+            "details": {}
+          },
+          {
+            "id": "outside-retained",
+            "passed": true,
+            "details": {}
+          },
+          {
+            "id": "ambiguous-edit",
+            "passed": true,
+            "details": {}
+          },
+          {
+            "id": "ambiguous-edit-retained",
+            "passed": true,
+            "details": {}
+          },
+          {
+            "id": "read-size-limit",
+            "passed": true,
+            "details": {}
+          },
+          {
+            "id": "write-size-limit",
+            "passed": true,
+            "details": {}
+          },
+          {
+            "id": "stdout-limit",
+            "passed": true,
+            "details": {
+              "bytesLimit": 65536,
+              "physicalStop": "unproven by output refusal"
+            }
+          },
+          {
+            "id": "stderr-limit",
+            "passed": true,
+            "details": {
+              "bytesLimit": 65536,
+              "physicalStop": "unproven by output refusal"
+            }
+          },
+          {
+            "id": "fixture-ledger",
+            "passed": true,
+            "details": {
+              "expected": "8f85941eaf677eab8670b67acd4ea9c854f7840c",
+              "observed": "8f85941eaf677eab8670b67acd4ea9c854f7840c"
+            }
+          },
+          {
+            "id": "fixture-queue",
+            "passed": true,
+            "details": {
+              "expected": "b56cb0c4654010e1b80f6255b560906960b868e7",
+              "observed": "b56cb0c4654010e1b80f6255b560906960b868e7"
+            }
+          },
+          {
+            "id": "cancellation-observation",
+            "passed": true,
+            "details": {
+              "callerReturned": true,
+              "directExitObserved": true,
+              "descendantProgressAfterAbort": true,
+              "descendantProgressAfterKill": false,
+              "descendantStopped": "unproven; progress sampling is not a process-tree stop proof"
+            }
+          },
+          {
+            "id": "coordinator-recreation",
+            "passed": true,
+            "details": {
+              "changedIncarnation": true,
+              "containerContinued": true,
+              "markerContinued": true
+            }
+          }
+        ],
+        "commits": {
+          "ledger": "8f85941eaf677eab8670b67acd4ea9c854f7840c",
+          "queue": "b56cb0c4654010e1b80f6255b560906960b868e7"
+        },
+        "cancellation": {
+          "callerReturned": true,
+          "callerRejectedAsUncertain": true,
+          "directExitObserved": true,
+          "directExitCode": 137,
+          "descendantProgressAfterAbort": true,
+          "descendantKillRequested": true,
+          "descendantProgressAfterKill": false,
+          "descendantStopped": "unproven"
+        },
+        "recreate": {
+          "requestedBy": "a730d4ce-b013-4b99-9afd-d7636e56ff1f",
+          "requestedAt": 1794758177619,
+          "observedBy": "67ad3587-5c44-43b2-9c55-a3c99f570326",
+          "containerContinued": true,
+          "markerContinued": true
+        }
+      },
+      "cleanup": null,
+      "httpStatus": 200
+    },
+    {
+      "path": "/native/lose",
+      "observedAt": "2026-11-15T15:56:19.252Z",
+      "value": {
+        "providerCalls": 0,
+        "incarnation": "67ad3587-5c44-43b2-9c55-a3c99f570326",
+        "runtimeStopped": true,
+        "portableRecovery": "unsupported",
+        "httpStatus": 200
+      }
+    },
+    {
+      "path": "/native/restart",
+      "observedAt": "2026-11-15T15:56:19.624Z",
+      "value": {
+        "schemaVersion": 1,
+        "kind": "model-free-native-qualification",
+        "providerCalls": 0,
+        "incarnation": "67ad3587-5c44-43b2-9c55-a3c99f570326",
+        "containerRunning": true,
+        "receipt": {
+          "schemaVersion": 1,
+          "kind": "model-free-native-qualification",
+          "providerCalls": 0,
+          "protocolSHA256": "00b6cc5ba24314714b8183e6aae09aa8033629cc48d2103222809120d15b89cd",
+          "attemptID": "59f05ff4-6b80-4b29-85d3-3e44874a0064",
+          "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-metadata-candidate@sha256:4fe5c456f39903be5cbba5027a5d00f1961ac37fb63c7e6a3493c09af2903f24",
+          "requestedResources": {
+            "vcpu": 1,
+            "memoryMib": 2048,
+            "diskMb": 8192
+          },
+          "observedResources": null,
+          "phase": "restarted",
+          "initialIncarnation": "a730d4ce-b013-4b99-9afd-d7636e56ff1f",
+          "createdAt": 1794758175238,
+          "deadlineAt": 1794758415238,
+          "marker": "65d632e7-c638-4cb3-a9ce-435c57f64810",
+          "checks": [
+            {
+              "id": "runtime-platform",
+              "passed": true,
+              "details": {
+                "platform": "linux",
+                "arch": "x64"
+              }
+            },
+            {
+              "id": "write-read",
+              "passed": true,
+              "details": {}
+            },
+            {
+              "id": "edit-shell",
+              "passed": true,
+              "details": {}
+            },
+            {
+              "id": "path-read",
+              "passed": true,
+              "details": {
+                "scope": "file-tool boundary only; shell is trusted unrestricted execution"
+              }
+            },
+            {
+              "id": "symlink-read",
+              "passed": true,
+              "details": {}
+            },
+            {
+              "id": "path-write",
+              "passed": true,
+              "details": {
+                "scope": "file-tool boundary only; shell is trusted unrestricted execution"
+              }
+            },
+            {
+              "id": "symlink-write",
+              "passed": true,
+              "details": {}
+            },
+            {
+              "id": "path-edit",
+              "passed": true,
+              "details": {
+                "scope": "file-tool boundary only; shell is trusted unrestricted execution"
+              }
+            },
+            {
+              "id": "symlink-edit",
+              "passed": true,
+              "details": {}
+            },
+            {
+              "id": "outside-retained",
+              "passed": true,
+              "details": {}
+            },
+            {
+              "id": "ambiguous-edit",
+              "passed": true,
+              "details": {}
+            },
+            {
+              "id": "ambiguous-edit-retained",
+              "passed": true,
+              "details": {}
+            },
+            {
+              "id": "read-size-limit",
+              "passed": true,
+              "details": {}
+            },
+            {
+              "id": "write-size-limit",
+              "passed": true,
+              "details": {}
+            },
+            {
+              "id": "stdout-limit",
+              "passed": true,
+              "details": {
+                "bytesLimit": 65536,
+                "physicalStop": "unproven by output refusal"
+              }
+            },
+            {
+              "id": "stderr-limit",
+              "passed": true,
+              "details": {
+                "bytesLimit": 65536,
+                "physicalStop": "unproven by output refusal"
+              }
+            },
+            {
+              "id": "fixture-ledger",
+              "passed": true,
+              "details": {
+                "expected": "8f85941eaf677eab8670b67acd4ea9c854f7840c",
+                "observed": "8f85941eaf677eab8670b67acd4ea9c854f7840c"
+              }
+            },
+            {
+              "id": "fixture-queue",
+              "passed": true,
+              "details": {
+                "expected": "b56cb0c4654010e1b80f6255b560906960b868e7",
+                "observed": "b56cb0c4654010e1b80f6255b560906960b868e7"
+              }
+            },
+            {
+              "id": "cancellation-observation",
+              "passed": true,
+              "details": {
+                "callerReturned": true,
+                "directExitObserved": true,
+                "descendantProgressAfterAbort": true,
+                "descendantProgressAfterKill": false,
+                "descendantStopped": "unproven; progress sampling is not a process-tree stop proof"
+              }
+            },
+            {
+              "id": "coordinator-recreation",
+              "passed": true,
+              "details": {
+                "changedIncarnation": true,
+                "containerContinued": true,
+                "markerContinued": true
+              }
+            },
+            {
+              "id": "container-loss-observation",
+              "passed": true,
+              "details": {
+                "priorMarkerAbsent": true,
+                "portableRecovery": "unsupported; fresh image start is not successful restore"
+              }
+            }
+          ],
+          "commits": {
+            "ledger": "8f85941eaf677eab8670b67acd4ea9c854f7840c",
+            "queue": "b56cb0c4654010e1b80f6255b560906960b868e7"
+          },
+          "cancellation": {
+            "callerReturned": true,
+            "callerRejectedAsUncertain": true,
+            "directExitObserved": true,
+            "directExitCode": 137,
+            "descendantProgressAfterAbort": true,
+            "descendantKillRequested": true,
+            "descendantProgressAfterKill": false,
+            "descendantStopped": "unproven"
+          },
+          "recreate": {
+            "requestedBy": "a730d4ce-b013-4b99-9afd-d7636e56ff1f",
+            "requestedAt": 1794758177619,
+            "observedBy": "67ad3587-5c44-43b2-9c55-a3c99f570326",
+            "containerContinued": true,
+            "markerContinued": true
+          },
+          "loss": {
+            "stopped": true,
+            "observedAt": 1794758179205
+          },
+          "restart": {
+            "priorMarkerAbsent": true,
+            "portableRecovery": "unsupported",
+            "observedAt": 1794758179578
+          }
+        },
+        "cleanup": null,
+        "httpStatus": 200
+      }
+    },
+    {
+      "path": "/native/cleanup",
+      "observedAt": "2026-11-15T15:56:19.892Z",
+      "value": {
+        "schemaVersion": 1,
+        "kind": "model-free-native-qualification",
+        "providerCalls": 0,
+        "incarnation": "67ad3587-5c44-43b2-9c55-a3c99f570326",
+        "runtimeStopped": true,
+        "cleanupRecorded": true,
+        "tombstoneRecorded": true,
+        "httpStatus": 200
+      }
+    }
+  ],
+  "attempts": [
+    {
+      "arm": "opencode-harness-linux",
+      "taskID": "L1",
+      "id": "r0-23-00b6cc5ba243-l1-cold-1",
+      "startedAt": "2026-11-15T15:56:46.266Z",
+      "outcome": "accepted",
+      "admission": {
+        "accepted": true,
+        "cached": false,
+        "receipt": {
+          "schemaVersion": 1,
+          "identity": {
+            "id": "r0-23-00b6cc5ba243-l1-cold-1",
+            "taskID": "L1",
+            "protocolSHA256": "00b6cc5ba24314714b8183e6aae09aa8033629cc48d2103222809120d15b89cd",
+            "condition": "cold",
+            "repetition": 1,
+            "configSHA256": "f004855847e0b317a9af43efb583e9f20ff0ccb972d358f844b5de71e7ce22e2"
+          },
+          "phase": "preparing",
+          "startedAt": 1794758208357,
+          "readyAt": null,
+          "runningAt": null,
+          "finishedAt": null,
+          "operationID": "r0-23-00b6cc5ba243-l1-cold-1",
+          "submission": "pending",
+          "tools": [],
+          "modelCalls": [],
+          "result": null,
+          "failure": null,
+          "cleanup": "pending",
+          "cleanupCoordinatorDisposed": null,
+          "modelUSD": null,
+          "oraclePassed": null
+        },
+        "httpStatus": 202
+      },
+      "status": {
+        "cached": true,
+        "observation": "cached",
+        "receipt": {
+          "schemaVersion": 1,
+          "identity": {
+            "id": "r0-23-00b6cc5ba243-l1-cold-1",
+            "taskID": "L1",
+            "protocolSHA256": "00b6cc5ba24314714b8183e6aae09aa8033629cc48d2103222809120d15b89cd",
+            "condition": "cold",
+            "repetition": 1,
+            "configSHA256": "f004855847e0b317a9af43efb583e9f20ff0ccb972d358f844b5de71e7ce22e2"
+          },
+          "phase": "done",
+          "startedAt": 1794758208357,
+          "readyAt": 1794758209575,
+          "runningAt": 1794758209575,
+          "finishedAt": 1794758253795,
+          "operationID": "r0-23-00b6cc5ba243-l1-cold-1",
+          "submission": "accepted",
+          "tools": [
+            {
+              "id": "call_111b890c169e4e48b8fa7904",
+              "name": "shell",
+              "inputSHA256": "81c27cee2d659f7f9ac84d957b93a9cbe4f909a86495c75d4741d4d74afa43ce",
+              "status": "done",
+              "output": "total 8\ndrwxr-xr-x 1 root  root   74 Nov 15 15:56 .\ndrwxr-xr-x 1 agent agent  10 Nov 15 15:56 ..\ndrwxr-xr-x 1 root  root  144 Nov 15 15:56 .git\n-rw-r--r-- 1 root  root   28 Nov 15 15:56 .r0-23-attempt\n-rw-r--r-- 1 root  root  119 Nov 15 15:56 package.json\ndrwxr-xr-x 1 root  root   28 Nov 15 15:56 src\ndrwxr-xr-x 1 root  root   26 Nov 15 15:56 test\n.\n./.git\n./.r0-23-attempt\n./package.json\n./src\n./src/cli.ts\n./src/index.ts\n./test\n./test/basic.test.ts\n",
+              "outputBytes": 452
+            },
+            {
+              "id": "call_c015e5fe99c143cb98075795",
+              "name": "read",
+              "inputSHA256": "87ac5b5b6b52adb4cfe1b51b3d4ffc76de42cda3f2c25abcd579aa1dc9b38658",
+              "status": "done",
+              "output": "export function parseLines(text: string): unknown[] {\n  return text.split(\"\\n\").filter(Boolean).map((line) => JSON.parse(line))\n}\nexport function parseAmount(value: string): number { return Math.round(Number(value) * 100) }\nexport interface Entry { id: string; currency: string; cents: number }\nexport function summarize(rows: Entry[]): Record<string, number> {\n  const totals: Record<string, number> = {}\n  for (const row of rows) totals[row.currency] = (totals[row.currency] || 0) + row.cents\n  return totals\n}\nexport function mergeLedgers(left: Entry[], right: Entry[]): Entry[] { return [...left, ...right] }\n",
+              "outputBytes": 613
+            },
+            {
+              "id": "call_2c60dda0e3c24e39b5090afc",
+              "name": "read",
+              "inputSHA256": "79c3b4f667f3d751af49db5eb3de6a8971f6c3a4f7dd8bfb7829cc16e760520a",
+              "status": "done",
+              "output": "import { expect, test } from \"bun:test\"\nimport { parseLines, parseAmount, summarize, mergeLedgers } from \"../src/index\"\ntest(\"basic ledger operations\", () => {\n  expect(parseLines('{\"id\":\"a\"}\\n')).toEqual([{id:\"a\"}])\n  expect(parseAmount(\"12.30\")).toBe(1230)\n  expect(summarize([{id:\"a\",currency:\"USD\",cents:25}])).toEqual({USD:25})\n  expect(mergeLedgers([], [{id:\"a\",currency:\"USD\",cents:25}])).toHaveLength(1)\n})\n",
+              "outputBytes": 415
+            },
+            {
+              "id": "call_dfe030d5d53f426f991e4f62",
+              "name": "read",
+              "inputSHA256": "67b02b602ce8530f24006da9d58fc2f1be40259f8f1a4e0f9de4bdec24b76901",
+              "status": "done",
+              "output": "{\n  \"name\": \"ledger-kit-benchmark\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"scripts\": {\n    \"test\": \"bun test\"\n  }\n}\n",
+              "outputBytes": 119
+            },
+            {
+              "id": "call_8ec156b11d9c4ea1af7d220c",
+              "name": "read",
+              "inputSHA256": "b971c2dbf918d51b9ff4f0660fd836c5dc515f51291122d7c311721b1f1328ae",
+              "status": "done",
+              "output": "import { parseLines, summarize, type Entry } from \"./index\"\nconst [input, output] = process.argv.slice(2)\nif (!input || !output) throw new Error(\"usage: bun src/cli.ts INPUT OUTPUT\")\nawait Bun.write(output, \"\")\nconst rows = parseLines(await Bun.file(input).text()) as Entry[]\nawait Bun.write(output, JSON.stringify(summarize(rows)) + \"\\n\")\n",
+              "outputBytes": 340
+            },
+            {
+              "id": "call_c2e021e34b4e4e90b7c5f802",
+              "name": "shell",
+              "inputSHA256": "c3e162168fd86663a3b6c71f5fa0fbbc0c630f54ad43eca5c9f2e2ee08f3e3b1",
+              "status": "done",
+              "output": "r0-23-00b6cc5ba243-l1-cold-18f85941 Frozen R0-23 base fixture\nOn branch main\nUntracked files:\n  (use \"git add <file>...\" to include in what will be committed)\n\t.r0-23-attempt\n\nnothing added to commit but untracked files present (use \"git add\" to track)\n",
+              "outputBytes": 253
+            },
+            {
+              "id": "call_a69f78911a9a47a89186e691",
+              "name": "edit",
+              "inputSHA256": "a24b8ed32494fe1b2e0981b28026970c8c7bd2fd7dbacd0571d8b28913780cf9",
+              "status": "done",
+              "output": "edited",
+              "outputBytes": 6
+            },
+            {
+              "id": "call_a5579f5873444ecf901a0e1d",
+              "name": "write",
+              "inputSHA256": "d73fab40d19136bcb11b89c79c2a2ef250db4903f22138209e9f7339ff2f1222",
+              "status": "error",
+              "output": null,
+              "outputBytes": null
+            },
+            {
+              "id": "call_300e7c64ebf146a087fc2249",
+              "name": "shell",
+              "inputSHA256": "bbb0eee94d1f1713820b8c79e07ff531132fbfd6f5d7940a09fa5121d4a63644",
+              "status": "done",
+              "output": "ok basic LF\nok no trailing newline\nok CRLF\nok BOM\nok BOM+CRLF+final no newline\nok blank/ws lines\nok order preserved\nok empty\nok BOM only\nok indented JSON\nok escaped newline in string\nok malformed line 1 -> Invalid JSON on line 1: JSON Parse error: Unexpected EOF\nok malformed line 2 -> Invalid JSON on line 2: JSON Parse error: Unexpected identifier \"not\"\nok malformed line 2 CRLF -> Invalid JSON on line 2: JSON Parse error: Unexpected identifier \"not\"\nok malformed after blanks -> Invalid JSON on line 4: JSON Parse error: Expected '}'\nok malformed final no newline -> Invalid JSON on line 3: JSON Parse error: Unexpected EOF\nok second BOM is malformed -> Invalid JSON on line 1: JSON Parse error: Unrecognized token '﻿'\nALL PASS\n",
+              "outputBytes": 734
+            },
+            {
+              "id": "call_66a3402c867f4873990fa216",
+              "name": "shell",
+              "inputSHA256": "c7423589a66bea42181f04e6d429a9cabe0a95972cda988637a31f2b6d900de9",
+              "status": "done",
+              "output": "bun test v1.3.14 (0d9b296a)\ndiff --git a/src/index.ts b/src/index.ts\nindex d518e7f..a952422 100644\n--- a/src/index.ts\n+++ b/src/index.ts\n@@ -1,5 +1,21 @@\n export function parseLines(text: string): unknown[] {\n-  return text.split(\"\\n\").filter(Boolean).map((line) => JSON.parse(line))\n+  // Strip a single leading UTF-8 BOM; any further BOM is left as record content.\n+  const source = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text\n+  const rows: unknown[] = []\n+  const lines = source.split(/\\r?\\n/)\n+  for (let i = 0; i < lines.length; i++) {\n+    const line = lines[i]\n+    // Blank/whitespace-only lines are not records. The empty tail produced by a\n+    // trailing newline is skipped by the same check.\n+    if (line.trim() === \"\") continue\n+    try {\n+      rows.push(JSON.parse(line))\n+    } catch (cause) {\n+      const detail = cause instanceof Error ? cause.message : String(cause)\n+      throw new Error(`Invalid JSON on line ${i + 1}: ${detail}`)\n+    }\n+  }\n+  return rows\n }\n export function parseAmount(value: string): number { return Math.round(Number(value) * 100) }\n export interface Entry { id: string; currency: string; cents: number }\n",
+              "outputBytes": 1163
+            },
+            {
+              "id": "call_821facb9f359489bbf41ad94",
+              "name": "shell",
+              "inputSHA256": "82904b76ab91ffccdc0d968fb49d7310b827582d72f1d06eb22c222bf144ff85",
+              "status": "done",
+              "output": "bun test v1.3.14 (0d9b296a)\n\ntest/basic.test.ts:\n(pass) basic ledger operations [1.87ms]\n\n 1 pass\n 0 fail\n 4 expect() calls\nRan 1 test across 1 file. [30.00ms]\nexit=0\n",
+              "outputBytes": 167
+            }
+          ],
+          "modelCalls": [
+            {
+              "id": 0,
+              "finished": true,
+              "inputTokens": 1787,
+              "outputTokens": 125
+            },
+            {
+              "id": 1,
+              "finished": true,
+              "inputTokens": 2292,
+              "outputTokens": 176
+            },
+            {
+              "id": 2,
+              "finished": true,
+              "inputTokens": 2852,
+              "outputTokens": 1160
+            },
+            {
+              "id": 3,
+              "finished": true,
+              "inputTokens": 4024,
+              "outputTokens": 760
+            },
+            {
+              "id": 4,
+              "finished": true,
+              "inputTokens": 4991,
+              "outputTokens": 866
+            },
+            {
+              "id": 5,
+              "finished": true,
+              "inputTokens": 6069,
+              "outputTokens": 198
+            },
+            {
+              "id": 6,
+              "finished": true,
+              "inputTokens": 6626,
+              "outputTokens": 148
+            },
+            {
+              "id": 7,
+              "finished": true,
+              "inputTokens": 6852,
+              "outputTokens": 218
+            }
+          ],
+          "result": {
+            "status": "done",
+            "text": "Implemented in `src/index.ts`.\n\n`parseLines` now:\n- Strips exactly one leading UTF-8 BOM (a second BOM is treated as content, so it fails as malformed JSON on line 1).\n- Splits on LF or CRLF via `/\\r?\\n/`.\n- Skips blank/whitespace-only lines and the empty tail from a trailing newline.\n- Handles a final record without a newline.\n- Preserves record order.\n- Throws an `Error` for malformed nonblank records with the physical 1-based line number, e.g. `Invalid JSON on line 2: JSON Parse error: ...`.\n\nVerification: all existing tests pass (`1 pass, 0 fail`), plus manual checks covering BOM, CRLF, blank lines, missing final newline, ordering, and malformed records at various physical line positions."
+          },
+          "failure": null,
+          "cleanup": "pending",
+          "cleanupCoordinatorDisposed": null,
+          "modelUSD": null,
+          "oraclePassed": null
+        },
+        "httpStatus": 200
+      },
+      "snapshot": {
+        "files": {
+          "src/index.ts": "export function parseLines(text: string): unknown[] {\n  // Strip a single leading UTF-8 BOM; any further BOM is left as record content.\n  const source = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text\n  const rows: unknown[] = []\n  const lines = source.split(/\\r?\\n/)\n  for (let i = 0; i < lines.length; i++) {\n    const line = lines[i]\n    // Blank/whitespace-only lines are not records. The empty tail produced by a\n    // trailing newline is skipped by the same check.\n    if (line.trim() === \"\") continue\n    try {\n      rows.push(JSON.parse(line))\n    } catch (cause) {\n      const detail = cause instanceof Error ? cause.message : String(cause)\n      throw new Error(`Invalid JSON on line ${i + 1}: ${detail}`)\n    }\n  }\n  return rows\n}\nexport function parseAmount(value: string): number { return Math.round(Number(value) * 100) }\nexport interface Entry { id: string; currency: string; cents: number }\nexport function summarize(rows: Entry[]): Record<string, number> {\n  const totals: Record<string, number> = {}\n  for (const row of rows) totals[row.currency] = (totals[row.currency] || 0) + row.cents\n  return totals\n}\nexport function mergeLedgers(left: Entry[], right: Entry[]): Entry[] { return [...left, ...right] }\n",
+          "src/cli.ts": "import { parseLines, summarize, type Entry } from \"./index\"\nconst [input, output] = process.argv.slice(2)\nif (!input || !output) throw new Error(\"usage: bun src/cli.ts INPUT OUTPUT\")\nawait Bun.write(output, \"\")\nconst rows = parseLines(await Bun.file(input).text()) as Entry[]\nawait Bun.write(output, JSON.stringify(summarize(rows)) + \"\\n\")\n",
+          "test/basic.test.ts": "import { expect, test } from \"bun:test\"\nimport { parseLines, parseAmount, summarize, mergeLedgers } from \"../src/index\"\ntest(\"basic ledger operations\", () => {\n  expect(parseLines('{\"id\":\"a\"}\\n')).toEqual([{id:\"a\"}])\n  expect(parseAmount(\"12.30\")).toBe(1230)\n  expect(summarize([{id:\"a\",currency:\"USD\",cents:25}])).toEqual({USD:25})\n  expect(mergeLedgers([], [{id:\"a\",currency:\"USD\",cents:25}])).toHaveLength(1)\n})\n",
+          "package.json": "{\n  \"name\": \"ledger-kit-benchmark\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"scripts\": {\n    \"test\": \"bun test\"\n  }\n}\n"
+        },
+        "quiescence": "unproven",
+        "httpStatus": 200
+      },
+      "cleanup": {
+        "runtimeStopped": true,
+        "coordinatorDisposed": true,
+        "cleanupRecorded": true,
+        "stopFenceRecorded": true,
+        "providerStop": "unproven",
+        "receiptRetained": true,
+        "httpStatus": 200
+      },
+      "checks": {
+        "publicTests": {
+          "passed": true
+        },
+        "oracle": {
+          "passed": true
+        },
+        "runtimeStopped": true,
+        "receipt": {
+          "id": "r0-23-00b6cc5ba243-l1-cold-1",
+          "taskID": "L1",
+          "publicTestsPassed": true,
+          "oraclePassed": true,
+          "runtimeStopped": true,
+          "providerCalls": 0,
+          "phase": "complete",
+          "diagnostics": {
+            "copiedFiles": 4,
+            "retainedAgentTest": null,
+            "publicExitCode": 0,
+            "oracleExitCode": 0,
+            "failure": null
+          },
+          "httpStatus": 200
+        }
+      },
+      "finishedAt": "2026-11-15T15:57:40.379Z"
+    },
+    {
+      "arm": "aboiteau",
+      "taskID": "L1",
+      "id": "r0-23-00b6cc5ba243-l1-cold-1",
+      "startedAt": "2026-11-15T15:57:40.449Z",
+      "outcome": "accepted",
+      "admission": {
+        "accepted": true,
+        "receipt": {
+          "schemaVersion": 1,
+          "identity": {
+            "id": "r0-23-00b6cc5ba243-l1-cold-1",
+            "taskID": "L1",
+            "protocolSHA256": "00b6cc5ba24314714b8183e6aae09aa8033629cc48d2103222809120d15b89cd",
+            "condition": "cold",
+            "repetition": 1
+          },
+          "phase": "submitted",
+          "preparedAt": 1794758198776,
+          "submittedAt": 1794758261726,
+          "fixtureCommit": "8f85941eaf677eab8670b67acd4ea9c854f7840c",
+          "fixtureReadyAt": 1794758273419,
+          "submission": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "sessionID": "ses_e20120618ffe0oFsOVWcHRYz8u"
+            }
+          }
+        },
+        "httpStatus": 202
+      },
+      "status": {
+        "receipt": {
+          "schemaVersion": 1,
+          "identity": {
+            "id": "r0-23-00b6cc5ba243-l1-cold-1",
+            "taskID": "L1",
+            "protocolSHA256": "00b6cc5ba24314714b8183e6aae09aa8033629cc48d2103222809120d15b89cd",
+            "condition": "cold",
+            "repetition": 1
+          },
+          "phase": "submitted",
+          "preparedAt": 1794758198776,
+          "submittedAt": 1794758261726,
+          "fixtureCommit": "8f85941eaf677eab8670b67acd4ea9c854f7840c",
+          "fixtureReadyAt": 1794758273419,
+          "submission": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "sessionID": "ses_e20120618ffe0oFsOVWcHRYz8u"
+            }
+          }
+        },
+        "state": {
+          "queue": [],
+          "seen": [
+            "msg:r0-23-00b6cc5ba243-l1-cold-1"
+          ],
+          "pending": {},
+          "permissionNotifications": {},
+          "phase": "idle",
+          "containerStarts": 1,
+          "settingsVersion": 1,
+          "sessionID": "ses_e20120618ffe0oFsOVWcHRYz8u",
+          "transport": "http",
+          "runStartedAt": 1794758278046,
+          "lastReply": "I'll start by exploring the repository structure and the relevant code.\n\nNow I'll implement the fix:\n\nFixed `parseLines` in `src/index.ts`.\n\nBehavior now:\n- Strips a single leading UTF-8 BOM.\n- Splits on LF or CRLF (`/\\r?\\n/`).\n- Skips blank and whitespace-only lines.\n- Parses a final line without a trailing newline.\n- Preserves input order.\n- Throws an `Error` for malformed nonblank lines with the physical 1-based line number, e.g. `Invalid JSON on line 2: ...`.\n\nVerification: `bun test` passes (1 test), and ad-hoc edge cases for BOM, CRLF, blank lines, missing final newline, and error line numbers all pass.",
+          "lastSlackReply": "I'll start by exploring the repository structure and the relevant code.\n\nNow I'll implement the fix:\n\nFixed `parseLines` in `src/index.ts`.\n\nBehavior now:\n- Strips a single leading UTF-8 BOM.\n- Splits on LF or CRLF (`/\\r?\\n/`).\n- Skips blank and whitespace-only lines.\n- Parses a final line without a trailing newline.\n- Preserves input order.\n- Throws an `Error` for malformed nonblank lines with the physical 1-based line number, e.g. `Invalid JSON on line 2: ...`.\n\nVerification: `bun test` passes (1 test), and ad-hoc edge cases for BOM, CRLF, blank lines, missing final newline, and error line numbers all pass.",
+          "usageCursor": {
+            "sessionID": "ses_e20120618ffe0oFsOVWcHRYz8u",
+            "seq": 67
+          },
+          "usageExecution": {
+            "sessionID": "ses_e20120618ffe0oFsOVWcHRYz8u",
+            "startedSeq": 3,
+            "terminalSeq": 67,
+            "latestStepSeq": 66
+          },
+          "usageTerminal": {
+            "sessionID": "ses_e20120618ffe0oFsOVWcHRYz8u",
+            "assistantMessageID": "msg_1dfee60cf0017LXDeBb8tbx6PX",
+            "seq": 66
+          },
+          "checkpointManifest": {
+            "workspace": {
+              "key": "workspaces/dde1e260fd9449f30387e235b1428657b1c18ad415268d302954002cd1c9a436/workspace-1794758310164.tar.gz",
+              "size": 14181,
+              "encrypted": true
+            },
+            "state": {
+              "key": "workspaces/dde1e260fd9449f30387e235b1428657b1c18ad415268d302954002cd1c9a436/state-1794758310164.tar.gz",
+              "size": 43194,
+              "encrypted": true
+            },
+            "fingerprint": "9022c339f531037b8709e64d6b0ec6d6f01eb41b412808030d57e473679348f8",
+            "stateFingerprint": "fa0dd0c4476fc0fd883b091821583fa02dad6501bec625483901357e36f6ed07",
+            "createdAt": 1794758310928
+          },
+          "checkpointKey": "workspaces/dde1e260fd9449f30387e235b1428657b1c18ad415268d302954002cd1c9a436/workspace-1794758310164.tar.gz",
+          "checkpointSize": 57375,
+          "checkpointEncrypted": true,
+          "checkpointFingerprint": "9022c339f531037b8709e64d6b0ec6d6f01eb41b412808030d57e473679348f8",
+          "checkpointStateFingerprint": "fa0dd0c4476fc0fd883b091821583fa02dad6501bec625483901357e36f6ed07",
+          "turnObservation": {
+            "policy": "observe_and_alert",
+            "thresholdMs": 900000,
+            "executionDeadlineEnforced": false,
+            "runStartedAt": 1794758278046,
+            "elapsedMs": 33273,
+            "overdue": false,
+            "timeoutObserved": false,
+            "timeoutObservedAt": null,
+            "settlement": "settled"
+          },
+          "stop": null
+        },
+        "permissionRequests": [],
+        "permissionReplayComplete": true,
+        "containerRunning": true,
+        "quiescence": "unproven",
+        "httpStatus": 200
+      },
+      "snapshot": {
+        "files": {
+          "package.json": "{\n  \"name\": \"ledger-kit-benchmark\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"scripts\": {\n    \"test\": \"bun test\"\n  }\n}\n",
+          "src/index.ts": "export function parseLines(text: string): unknown[] {\n  const source = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text\n  const rows: unknown[] = []\n  const lines = source.split(/\\r?\\n/)\n  for (let i = 0; i < lines.length; i++) {\n    const line = lines[i]\n    if (line.trim() === \"\") continue\n    try {\n      rows.push(JSON.parse(line))\n    } catch (error) {\n      const message = error instanceof Error ? error.message : String(error)\n      throw new Error(`Invalid JSON on line ${i + 1}: ${message}`)\n    }\n  }\n  return rows\n}\nexport function parseAmount(value: string): number { return Math.round(Number(value) * 100) }\nexport interface Entry { id: string; currency: string; cents: number }\nexport function summarize(rows: Entry[]): Record<string, number> {\n  const totals: Record<string, number> = {}\n  for (const row of rows) totals[row.currency] = (totals[row.currency] || 0) + row.cents\n  return totals\n}\nexport function mergeLedgers(left: Entry[], right: Entry[]): Entry[] { return [...left, ...right] }\n",
+          "src/cli.ts": "import { parseLines, summarize, type Entry } from \"./index\"\nconst [input, output] = process.argv.slice(2)\nif (!input || !output) throw new Error(\"usage: bun src/cli.ts INPUT OUTPUT\")\nawait Bun.write(output, \"\")\nconst rows = parseLines(await Bun.file(input).text()) as Entry[]\nawait Bun.write(output, JSON.stringify(summarize(rows)) + \"\\n\")\n",
+          "test/basic.test.ts": "import { expect, test } from \"bun:test\"\nimport { parseLines, parseAmount, summarize, mergeLedgers } from \"../src/index\"\ntest(\"basic ledger operations\", () => {\n  expect(parseLines('{\"id\":\"a\"}\\n')).toEqual([{id:\"a\"}])\n  expect(parseAmount(\"12.30\")).toBe(1230)\n  expect(summarize([{id:\"a\",currency:\"USD\",cents:25}])).toEqual({USD:25})\n  expect(mergeLedgers([], [{id:\"a\",currency:\"USD\",cents:25}])).toHaveLength(1)\n})\n"
+        },
+        "quiescence": "unproven",
+        "httpStatus": 200
+      },
+      "cleanup": {
+        "runtimeStopped": true,
+        "product": {
+          "ok": true
+        },
+        "receipt": {
+          "schemaVersion": 1,
+          "identity": {
+            "id": "r0-23-00b6cc5ba243-l1-cold-1",
+            "taskID": "L1",
+            "protocolSHA256": "00b6cc5ba24314714b8183e6aae09aa8033629cc48d2103222809120d15b89cd",
+            "condition": "cold",
+            "repetition": 1
+          },
+          "phase": "cleaned",
+          "preparedAt": 1794758198776,
+          "submittedAt": 1794758261726,
+          "fixtureCommit": "8f85941eaf677eab8670b67acd4ea9c854f7840c",
+          "fixtureReadyAt": 1794758273419,
+          "submission": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "sessionID": "ses_e20120618ffe0oFsOVWcHRYz8u"
+            }
+          },
+          "cleanedAt": 1794758312697
+        },
+        "httpStatus": 200
+      },
+      "checks": {
+        "publicTests": {
+          "passed": true
+        },
+        "oracle": {
+          "passed": true
+        },
+        "runtimeStopped": true,
+        "receipt": {
+          "id": "aboiteau-r0-23-00b6cc5ba243-l1-cold-1",
+          "taskID": "L1",
+          "publicTestsPassed": true,
+          "oraclePassed": true,
+          "runtimeStopped": true,
+          "providerCalls": 0,
+          "phase": "complete",
+          "diagnostics": {
+            "copiedFiles": 4,
+            "retainedAgentTest": null,
+            "publicExitCode": 0,
+            "oracleExitCode": 0,
+            "failure": null
+          },
+          "httpStatus": 200
+        }
+      },
+      "finishedAt": "2026-11-15T15:58:34.796Z"
+    },
+    {
+      "arm": "aboiteau",
+      "taskID": "Q1",
+      "id": "r0-23-00b6cc5ba243-q1-cold-1",
+      "startedAt": "2026-11-15T15:58:34.938Z",
+      "outcome": "accepted",
+      "admission": {
+        "accepted": true,
+        "receipt": {
+          "schemaVersion": 1,
+          "identity": {
+            "id": "r0-23-00b6cc5ba243-q1-cold-1",
+            "taskID": "Q1",
+            "protocolSHA256": "00b6cc5ba24314714b8183e6aae09aa8033629cc48d2103222809120d15b89cd",
+            "condition": "cold",
+            "repetition": 1
+          },
+          "phase": "submitted",
+          "preparedAt": 1794758200881,
+          "submittedAt": 1794758317201,
+          "fixtureCommit": "b56cb0c4654010e1b80f6255b560906960b868e7",
+          "fixtureReadyAt": 1794758324743,
+          "submission": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "sessionID": "ses_e20113f39ffelhJb2d6RkxLPQf"
+            }
+          }
+        },
+        "httpStatus": 202
+      },
+      "status": {
+        "receipt": {
+          "schemaVersion": 1,
+          "identity": {
+            "id": "r0-23-00b6cc5ba243-q1-cold-1",
+            "taskID": "Q1",
+            "protocolSHA256": "00b6cc5ba24314714b8183e6aae09aa8033629cc48d2103222809120d15b89cd",
+            "condition": "cold",
+            "repetition": 1
+          },
+          "phase": "submitted",
+          "preparedAt": 1794758200881,
+          "submittedAt": 1794758317201,
+          "fixtureCommit": "b56cb0c4654010e1b80f6255b560906960b868e7",
+          "fixtureReadyAt": 1794758324743,
+          "submission": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "sessionID": "ses_e20113f39ffelhJb2d6RkxLPQf"
+            }
+          }
+        },
+        "state": {
+          "queue": [],
+          "seen": [
+            "msg:r0-23-00b6cc5ba243-q1-cold-1"
+          ],
+          "pending": {},
+          "permissionNotifications": {},
+          "phase": "idle",
+          "containerStarts": 1,
+          "settingsVersion": 1,
+          "sessionID": "ses_e20113f39ffelhJb2d6RkxLPQf",
+          "transport": "http",
+          "runStartedAt": 1794758328971,
+          "lastReply": "Fixed `WorkQueue` in `src/index.ts`.\n\nThe issue was that the rejection branch called `job.reject` directly, so it never decremented `running` or scheduled the next pending job. Rejections leaked concurrency slots and could leave the queue stalled.\n\nNow both fulfillment and rejection go through a shared `settle` path that:\n\n1. Decrements `running` exactly once.\n2. Settles the returned promise via `resolve` or `reject`.\n3. Drains the next pending task.\n\nThis also covers tasks that throw synchronously, since the throw is converted into a promise rejection by `.then(job.work)`.\n\nVerified with:\n- Existing `bun test` suite: passes.\n- Added ad-hoc checks for mixed rejections/synchronous throws, concurrency staying at or below the limit, and `active`/`pending` returning to zero.",
+          "lastSlackReply": "Fixed `WorkQueue` in `src/index.ts`.\n\nThe issue was that the rejection branch called `job.reject` directly, so it never decremented `running` or scheduled the next pending job. Rejections leaked concurrency slots and could leave the queue stalled.\n\nNow both fulfillment and rejection go through a shared `settle` path that:\n\n1. Decrements `running` exactly once.\n2. Settles the returned promise via `resolve` or `reject`.\n3. Drains the next pending task.\n\nThis also covers tasks that throw synchronously, since the throw is converted into a promise rejection by `.then(job.work)`.\n\nVerified with:\n- Existing `bun test` suite: passes.\n- Added ad-hoc checks for mixed rejections/synchronous throws, concurrency staying at or below the limit, and `active`/`pending` returning to zero.",
+          "usageCursor": {
+            "sessionID": "ses_e20113f39ffelhJb2d6RkxLPQf",
+            "seq": 75
+          },
+          "usageExecution": {
+            "sessionID": "ses_e20113f39ffelhJb2d6RkxLPQf",
+            "startedSeq": 3,
+            "terminalSeq": 75,
+            "latestStepSeq": 74
+          },
+          "usageTerminal": {
+            "sessionID": "ses_e20113f39ffelhJb2d6RkxLPQf",
+            "assistantMessageID": "msg_1dfef36f3001K9W1l7NFn1a4BC",
+            "seq": 74
+          },
+          "checkpointManifest": {
+            "workspace": {
+              "key": "workspaces/1c15533c6556f8f9991a15882e19a3e1068fee63fb59340267603be581ef94d0/workspace-1794758364986.tar.gz",
+              "size": 13478,
+              "encrypted": true
+            },
+            "state": {
+              "key": "workspaces/1c15533c6556f8f9991a15882e19a3e1068fee63fb59340267603be581ef94d0/state-1794758364986.tar.gz",
+              "size": 44834,
+              "encrypted": true
+            },
+            "fingerprint": "94407473739131b36029cddeb3e24b12c5bdc452b5585a88d61bd70d89bd4d12",
+            "stateFingerprint": "e56b87021b0d53676c250c631bb935c9a6f8811c76a384b49d628d332f238de3",
+            "createdAt": 1794758365685
+          },
+          "checkpointKey": "workspaces/1c15533c6556f8f9991a15882e19a3e1068fee63fb59340267603be581ef94d0/workspace-1794758364986.tar.gz",
+          "checkpointSize": 58312,
+          "checkpointEncrypted": true,
+          "checkpointFingerprint": "94407473739131b36029cddeb3e24b12c5bdc452b5585a88d61bd70d89bd4d12",
+          "checkpointStateFingerprint": "e56b87021b0d53676c250c631bb935c9a6f8811c76a384b49d628d332f238de3",
+          "turnObservation": {
+            "policy": "observe_and_alert",
+            "thresholdMs": 900000,
+            "executionDeadlineEnforced": false,
+            "runStartedAt": 1794758328971,
+            "elapsedMs": 37444,
+            "overdue": false,
+            "timeoutObserved": false,
+            "timeoutObservedAt": null,
+            "settlement": "settled"
+          },
+          "stop": null
+        },
+        "permissionRequests": [],
+        "permissionReplayComplete": true,
+        "containerRunning": true,
+        "quiescence": "unproven",
+        "httpStatus": 200
+      },
+      "snapshot": {
+        "files": {
+          "package.json": "{\n  \"name\": \"work-queue-benchmark\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"scripts\": {\n    \"test\": \"bun test\"\n  }\n}\n",
+          "src/index.ts": "interface Job { work: () => Promise<unknown>; resolve: (value: unknown) => void; reject: (error: unknown) => void }\nexport class WorkQueue {\n  private jobs: Job[] = []\n  private running = 0\n  constructor(private concurrency = 1) {}\n  get active(): number { return this.running }\n  get pending(): number { return this.jobs.length }\n  run<T>(work: () => Promise<T>, _options: { priority?: number; signal?: AbortSignal } = {}): Promise<T> {\n    return new Promise((resolve, reject) => { this.jobs.push({ work, resolve: resolve as (value: unknown) => void, reject }); this.drain() })\n  }\n  private drain(): void {\n    while (this.running < this.concurrency && this.jobs.length) {\n      const job = this.jobs.shift()!\n      this.running++\n      const settle = (callback: (value: unknown) => void, value: unknown): void => {\n        this.running--\n        callback(value)\n        this.drain()\n      }\n      Promise.resolve()\n        .then(job.work)\n        .then((value) => settle(job.resolve, value), (error) => settle(job.reject, error))\n    }\n  }\n}\n",
+          "test/basic.test.ts": "import { expect, test } from \"bun:test\"\nimport { WorkQueue } from \"../src/index\"\ntest(\"runs successful tasks\", async () => {\n  const queue = new WorkQueue(2)\n  expect(await Promise.all([queue.run(async()=>1),queue.run(async()=>2)])).toEqual([1,2])\n  expect(queue.active).toBe(0)\n  expect(queue.pending).toBe(0)\n})\n"
+        },
+        "quiescence": "unproven",
+        "httpStatus": 200
+      },
+      "cleanup": {
+        "runtimeStopped": true,
+        "product": {
+          "ok": true
+        },
+        "receipt": {
+          "schemaVersion": 1,
+          "identity": {
+            "id": "r0-23-00b6cc5ba243-q1-cold-1",
+            "taskID": "Q1",
+            "protocolSHA256": "00b6cc5ba24314714b8183e6aae09aa8033629cc48d2103222809120d15b89cd",
+            "condition": "cold",
+            "repetition": 1
+          },
+          "phase": "cleaned",
+          "preparedAt": 1794758200881,
+          "submittedAt": 1794758317201,
+          "fixtureCommit": "b56cb0c4654010e1b80f6255b560906960b868e7",
+          "fixtureReadyAt": 1794758324743,
+          "submission": {
+            "status": 200,
+            "body": {
+              "ok": true,
+              "sessionID": "ses_e20113f39ffelhJb2d6RkxLPQf"
+            }
+          },
+          "cleanedAt": 1794758368058
+        },
+        "httpStatus": 200
+      },
+      "checks": {
+        "publicTests": {
+          "passed": true
+        },
+        "oracle": {
+          "passed": true
+        },
+        "runtimeStopped": true,
+        "receipt": {
+          "id": "aboiteau-r0-23-00b6cc5ba243-q1-cold-1",
+          "taskID": "Q1",
+          "publicTestsPassed": true,
+          "oraclePassed": true,
+          "runtimeStopped": true,
+          "providerCalls": 0,
+          "phase": "complete",
+          "diagnostics": {
+            "copiedFiles": 3,
+            "retainedAgentTest": null,
+            "publicExitCode": 0,
+            "oracleExitCode": 0,
+            "failure": null
+          },
+          "httpStatus": 200
+        }
+      },
+      "finishedAt": "2026-11-15T15:59:31.407Z"
+    },
+    {
+      "arm": "opencode-harness-linux",
+      "taskID": "Q1",
+      "id": "r0-23-00b6cc5ba243-q1-cold-1",
+      "startedAt": "2026-11-15T15:59:31.480Z",
+      "outcome": "accepted",
+      "admission": {
+        "accepted": true,
+        "cached": false,
+        "receipt": {
+          "schemaVersion": 1,
+          "identity": {
+            "id": "r0-23-00b6cc5ba243-q1-cold-1",
+            "taskID": "Q1",
+            "protocolSHA256": "00b6cc5ba24314714b8183e6aae09aa8033629cc48d2103222809120d15b89cd",
+            "condition": "cold",
+            "repetition": 1,
+            "configSHA256": "f004855847e0b317a9af43efb583e9f20ff0ccb972d358f844b5de71e7ce22e2"
+          },
+          "phase": "preparing",
+          "startedAt": 1794758372531,
+          "readyAt": null,
+          "runningAt": null,
+          "finishedAt": null,
+          "operationID": "r0-23-00b6cc5ba243-q1-cold-1",
+          "submission": "pending",
+          "tools": [],
+          "modelCalls": [],
+          "result": null,
+          "failure": null,
+          "cleanup": "pending",
+          "cleanupCoordinatorDisposed": null,
+          "modelUSD": null,
+          "oraclePassed": null
+        },
+        "httpStatus": 202
+      },
+      "status": {
+        "cached": true,
+        "observation": "cached",
+        "receipt": {
+          "schemaVersion": 1,
+          "identity": {
+            "id": "r0-23-00b6cc5ba243-q1-cold-1",
+            "taskID": "Q1",
+            "protocolSHA256": "00b6cc5ba24314714b8183e6aae09aa8033629cc48d2103222809120d15b89cd",
+            "condition": "cold",
+            "repetition": 1,
+            "configSHA256": "f004855847e0b317a9af43efb583e9f20ff0ccb972d358f844b5de71e7ce22e2"
+          },
+          "phase": "done",
+          "startedAt": 1794758372531,
+          "readyAt": 1794758373131,
+          "runningAt": 1794758373131,
+          "finishedAt": 1794758408273,
+          "operationID": "r0-23-00b6cc5ba243-q1-cold-1",
+          "submission": "accepted",
+          "tools": [
+            {
+              "id": "call_67adb13cf9924552a5d80c4b",
+              "name": "shell",
+              "inputSHA256": "54e59987da9381c881bc0e69ca91090a3e4712ac8397a3dd7fbea16046e46534",
+              "status": "done",
+              "output": "/workspace/r0-23/src/index.ts\n/workspace/r0-23/test/basic.test.ts\n/workspace/r0-23/package.json\n/workspace/r0-23/.r0-23-attempt\n",
+              "outputBytes": 128
+            },
+            {
+              "id": "call_9e810f960e3146b9853cf3c8",
+              "name": "shell",
+              "inputSHA256": "31745c09131f4614046bd220559e3d6040f8f231a24cd27e2ffb7d7c0a23ed83",
+              "status": "done",
+              "output": "total 8\ndrwxr-xr-x 1 root  root   74 Nov 15 15:59 .\ndrwxr-xr-x 1 agent agent  10 Nov 15 15:59 ..\ndrwxr-xr-x 1 root  root  144 Nov 15 15:59 .git\n-rw-r--r-- 1 root  root   28 Nov 15 15:59 .r0-23-attempt\n-rw-r--r-- 1 root  root  119 Nov 15 15:59 package.json\ndrwxr-xr-x 1 root  root   16 Nov 15 15:59 src\ndrwxr-xr-x 1 root  root   26 Nov 15 15:59 test\n",
+              "outputBytes": 349
+            },
+            {
+              "id": "call_bf761323db2e42e78d56fa9a",
+              "name": "read",
+              "inputSHA256": "87ac5b5b6b52adb4cfe1b51b3d4ffc76de42cda3f2c25abcd579aa1dc9b38658",
+              "status": "done",
+              "output": "interface Job { work: () => Promise<unknown>; resolve: (value: unknown) => void; reject: (error: unknown) => void }\nexport class WorkQueue {\n  private jobs: Job[] = []\n  private running = 0\n  constructor(private concurrency = 1) {}\n  get active(): number { return this.running }\n  get pending(): number { return this.jobs.length }\n  run<T>(work: () => Promise<T>, _options: { priority?: number; signal?: AbortSignal } = {}): Promise<T> {\n    return new Promise((resolve, reject) => { this.jobs.push({ work, resolve: resolve as (value: unknown) => void, reject }); this.drain() })\n  }\n  private drain(): void {\n    while (this.running < this.concurrency && this.jobs.length) {\n      const job = this.jobs.shift()!\n      this.running++\n      Promise.resolve().then(job.work).then((value) => { this.running--; job.resolve(value); this.drain() }, job.reject)\n    }\n  }\n}\n",
+              "outputBytes": 867
+            },
+            {
+              "id": "call_b47d692ed51948a3a871d95e",
+              "name": "read",
+              "inputSHA256": "79c3b4f667f3d751af49db5eb3de6a8971f6c3a4f7dd8bfb7829cc16e760520a",
+              "status": "done",
+              "output": "import { expect, test } from \"bun:test\"\nimport { WorkQueue } from \"../src/index\"\ntest(\"runs successful tasks\", async () => {\n  const queue = new WorkQueue(2)\n  expect(await Promise.all([queue.run(async()=>1),queue.run(async()=>2)])).toEqual([1,2])\n  expect(queue.active).toBe(0)\n  expect(queue.pending).toBe(0)\n})\n",
+              "outputBytes": 314
+            },
+            {
+              "id": "call_017fe884f9e04d55aadfec6e",
+              "name": "read",
+              "inputSHA256": "67b02b602ce8530f24006da9d58fc2f1be40259f8f1a4e0f9de4bdec24b76901",
+              "status": "done",
+              "output": "{\n  \"name\": \"work-queue-benchmark\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"scripts\": {\n    \"test\": \"bun test\"\n  }\n}\n",
+              "outputBytes": 119
+            },
+            {
+              "id": "call_207ba39189fb4c5193ffd160",
+              "name": "read",
+              "inputSHA256": "6a026ca5f8e6b1a250aae79f37307ac9a3ed4b1234b8b430ff50f2d1385ad57c",
+              "status": "done",
+              "output": "r0-23-00b6cc5ba243-q1-cold-1",
+              "outputBytes": 28
+            },
+            {
+              "id": "call_d1701c55ca3c4fab9112703d",
+              "name": "edit",
+              "inputSHA256": "c5163c50c5aa201a3c113cff8f549ede5c1574c38a0ff793db01600dbfc547b0",
+              "status": "done",
+              "output": "edited",
+              "outputBytes": 6
+            },
+            {
+              "id": "call_7b9929d81d1d4612a51a0d46",
+              "name": "write",
+              "inputSHA256": "b95180343ddd578f3ec975254341fb3980a7fb2bccb57f3de14c550afe718088",
+              "status": "done",
+              "output": "written",
+              "outputBytes": 7
+            },
+            {
+              "id": "call_37d6d1834e284545a5eeff7e",
+              "name": "shell",
+              "inputSHA256": "a7e6101ffbd01fc2effd192c74f1589865d908d5a0ff66464291e4ccd414a76e",
+              "status": "done",
+              "output": "bun test v1.3.14 (0d9b296a)\n\ntest/basic.test.ts:\n(pass) runs successful tasks [2.60ms]\n\n 1 pass\n 0 fail\n 3 expect() calls\nRan 1 test across 1 file. [37.00ms]\n",
+              "outputBytes": 158
+            },
+            {
+              "id": "call_8078b4c9d30b4fab8935c73b",
+              "name": "shell",
+              "inputSHA256": "a7e6101ffbd01fc2effd192c74f1589865d908d5a0ff66464291e4ccd414a76e",
+              "status": "done",
+              "output": "bun test v1.3.14 (0d9b296a)\n\ntest/basic.test.ts:\n(pass) runs successful tasks [0.64ms]\n\ntest/reject.test.ts:\n(pass) frees slot after rejection and keeps running [0.37ms]\n(pass) frees slot after synchronous throw [0.24ms]\n(pass) settles each promise once and respects concurrency [26.86ms]\n\n 4 pass\n 0 fail\n 17 expect() calls\nRan 4 tests across 2 files. [44.00ms]\n",
+              "outputBytes": 363
+            },
+            {
+              "id": "call_749344860e194be08c60d47e",
+              "name": "shell",
+              "inputSHA256": "573301d2d5c240e9c21fb5fec7b0fb07425e50c999af1ead38b0d47e65915909",
+              "status": "done",
+              "output": "diff --git a/src/index.ts b/src/index.ts\nindex ef627aa..6696f48 100644\n--- a/src/index.ts\n+++ b/src/index.ts\n@@ -12,7 +12,18 @@ export class WorkQueue {\n     while (this.running < this.concurrency && this.jobs.length) {\n       const job = this.jobs.shift()!\n       this.running++\n-      Promise.resolve().then(job.work).then((value) => { this.running--; job.resolve(value); this.drain() }, job.reject)\n+      let settled = false\n+      const finish = (settle: () => void): void => {\n+        if (settled) return\n+        settled = true\n+        this.running--\n+        settle()\n+        this.drain()\n+      }\n+      Promise.resolve().then(job.work).then(\n+        (value) => finish(() => job.resolve(value)),\n+        (error) => finish(() => job.reject(error)),\n+      )\n     }\n   }\n }\n M src/index.ts\n?? .r0-23-attempt\n?? test/reject.test.ts\n",
+              "outputBytes": 843
+            }
+          ],
+          "modelCalls": [
+            {
+              "id": 0,
+              "finished": true,
+              "inputTokens": 1759,
+              "outputTokens": 120
+            },
+            {
+              "id": 1,
+              "finished": true,
+              "inputTokens": 2110,
+              "outputTokens": 161
+            },
+            {
+              "id": 2,
+              "finished": true,
+              "inputTokens": 2695,
+              "outputTokens": 1006
+            },
+            {
+              "id": 3,
+              "finished": true,
+              "inputTokens": 3713,
+              "outputTokens": 608
+            },
+            {
+              "id": 4,
+              "finished": true,
+              "inputTokens": 4404,
+              "outputTokens": 77
+            },
+            {
+              "id": 5,
+              "finished": true,
+              "inputTokens": 4610,
+              "outputTokens": 445
+            },
+            {
+              "id": 6,
+              "finished": true,
+              "inputTokens": 5313,
+              "outputTokens": 297
+            }
+          ],
+          "result": {
+            "status": "done",
+            "text": "Fixed `src/index.ts`.\n\n### The bug\nOn rejection, the queue used `job.reject` directly as the rejection handler. That propagated the error to the caller but never decremented `running` or called `drain()`, so the failed task permanently consumed a slot and queued tasks stalled.\n\n### The fix\nBoth success and failure now go through a single `finish` path that:\n- guards with a `settled` flag so the slot is released and the promise settled exactly once,\n- decrements `running`,\n- settles the caller's promise,\n- calls `drain()` to start the next pending job.\n\nSynchronous throws from `work` were already converted to rejections by `Promise.resolve().then(job.work)`; they now correctly free their slot too.\n\n### Verification\nAdded `test/reject.test.ts` covering rejection, synchronous throw, concurrency bounds, and settling exactly once. All tests pass:\n\n```\ntest/basic.test.ts:\n(pass) runs successful tasks\ntest/reject.test.ts:\n(pass) frees slot after rejection and keeps running\n(pass) frees slot after synchronous throw\n(pass) settles each promise once and respects concurrency\n4 pass, 0 fail\n```"
+          },
+          "failure": null,
+          "cleanup": "pending",
+          "cleanupCoordinatorDisposed": null,
+          "modelUSD": null,
+          "oraclePassed": null
+        },
+        "httpStatus": 200
+      },
+      "snapshot": {
+        "files": {
+          "src/index.ts": "interface Job { work: () => Promise<unknown>; resolve: (value: unknown) => void; reject: (error: unknown) => void }\nexport class WorkQueue {\n  private jobs: Job[] = []\n  private running = 0\n  constructor(private concurrency = 1) {}\n  get active(): number { return this.running }\n  get pending(): number { return this.jobs.length }\n  run<T>(work: () => Promise<T>, _options: { priority?: number; signal?: AbortSignal } = {}): Promise<T> {\n    return new Promise((resolve, reject) => { this.jobs.push({ work, resolve: resolve as (value: unknown) => void, reject }); this.drain() })\n  }\n  private drain(): void {\n    while (this.running < this.concurrency && this.jobs.length) {\n      const job = this.jobs.shift()!\n      this.running++\n      let settled = false\n      const finish = (settle: () => void): void => {\n        if (settled) return\n        settled = true\n        this.running--\n        settle()\n        this.drain()\n      }\n      Promise.resolve().then(job.work).then(\n        (value) => finish(() => job.resolve(value)),\n        (error) => finish(() => job.reject(error)),\n      )\n    }\n  }\n}\n",
+          "test/basic.test.ts": "import { expect, test } from \"bun:test\"\nimport { WorkQueue } from \"../src/index\"\ntest(\"runs successful tasks\", async () => {\n  const queue = new WorkQueue(2)\n  expect(await Promise.all([queue.run(async()=>1),queue.run(async()=>2)])).toEqual([1,2])\n  expect(queue.active).toBe(0)\n  expect(queue.pending).toBe(0)\n})\n",
+          "test/reject.test.ts": "import { expect, test } from \"bun:test\"\nimport { WorkQueue } from \"../src/index\"\n\ntest(\"frees slot after rejection and keeps running\", async () => {\n  const queue = new WorkQueue(2)\n  const seen: string[] = []\n  const failing = queue.run(async () => { throw new Error(\"boom\") })\n  const passing = queue.run(async () => { seen.push(\"pass\"); return 2 })\n  const after = queue.run(async () => { seen.push(\"after\"); return 3 })\n  await expect(failing).rejects.toThrow(\"boom\")\n  expect(await passing).toBe(2)\n  expect(await after).toBe(3)\n  expect(seen).toEqual([\"pass\", \"after\"])\n  expect(queue.active).toBe(0)\n  expect(queue.pending).toBe(0)\n})\n\ntest(\"frees slot after synchronous throw\", async () => {\n  const queue = new WorkQueue(1)\n  const sync = queue.run((() => { throw new Error(\"sync\") }) as unknown as () => Promise<never>)\n  const next = queue.run(async () => 7)\n  await expect(sync).rejects.toThrow(\"sync\")\n  expect(await next).toBe(7)\n  expect(queue.active).toBe(0)\n  expect(queue.pending).toBe(0)\n})\n\ntest(\"settles each promise once and respects concurrency\", async () => {\n  const queue = new WorkQueue(2)\n  let inFlight = 0\n  let maxInFlight = 0\n  const tasks = Array.from({ length: 10 }, (_, i) =>\n    queue.run(async () => {\n      inFlight++\n      maxInFlight = Math.max(maxInFlight, inFlight)\n      await new Promise((r) => setTimeout(r, 5))\n      inFlight--\n      if (i % 3 === 0) throw new Error(`e${i}`)\n      return i\n    }),\n  )\n  const results = await Promise.allSettled(tasks)\n  expect(results.every((r) => r.status === \"fulfilled\" || r.status === \"rejected\")).toBe(true)\n  expect(maxInFlight).toBeLessThanOrEqual(2)\n  expect(queue.active).toBe(0)\n  expect(queue.pending).toBe(0)\n})\n",
+          "package.json": "{\n  \"name\": \"work-queue-benchmark\",\n  \"private\": true,\n  \"type\": \"module\",\n  \"scripts\": {\n    \"test\": \"bun test\"\n  }\n}\n"
+        },
+        "quiescence": "unproven",
+        "httpStatus": 200
+      },
+      "cleanup": {
+        "runtimeStopped": true,
+        "coordinatorDisposed": true,
+        "cleanupRecorded": true,
+        "stopFenceRecorded": true,
+        "providerStop": "unproven",
+        "receiptRetained": true,
+        "httpStatus": 200
+      },
+      "checks": {
+        "publicTests": {
+          "passed": true
+        },
+        "oracle": {
+          "passed": true
+        },
+        "runtimeStopped": true,
+        "receipt": {
+          "id": "r0-23-00b6cc5ba243-q1-cold-1",
+          "taskID": "Q1",
+          "publicTestsPassed": true,
+          "oraclePassed": true,
+          "runtimeStopped": true,
+          "providerCalls": 0,
+          "phase": "complete",
+          "diagnostics": {
+            "copiedFiles": 4,
+            "retainedAgentTest": null,
+            "publicExitCode": 0,
+            "oracleExitCode": 0,
+            "failure": null
+          },
+          "httpStatus": 200
+        }
+      },
+      "finishedAt": "2026-11-15T16:00:10.752Z"
+    }
+  ],
+  "cleanup": {
+    "ownedApplications": [
+      {
+        "id": "df825cc21030446f856c1014259009bc",
+        "name": "aboiteau-r0-23-20261115-c4389b-smokeevaluator",
+        "state": "provisioning",
+        "instances": 0,
+        "image": "",
+        "version": 1,
+        "updated_at": "2026-11-15T15:56:09.543000064Z",
+        "created_at": "2026-11-15T15:56:09.543000064Z"
+      },
+      {
+        "id": "bc116343ddaf4b55b5e814e390172523",
+        "name": "aboiteau-r0-23-20261115-c4389b-smokeconversation",
+        "state": "ready",
+        "instances": 0,
+        "image": "",
+        "version": 1,
+        "updated_at": "2026-11-15T15:56:07.129999872Z",
+        "created_at": "2026-11-15T15:56:07.129999872Z"
+      },
+      {
+        "id": "2d7859a76f2e4153a0116d65105a26df",
+        "name": "aboiteau-r0-23-20261115-c4389b-nativequalification",
+        "state": "ready",
+        "instances": 0,
+        "image": "",
+        "version": 1,
+        "updated_at": "2026-11-15T15:56:03.848999936Z",
+        "created_at": "2026-11-15T15:56:03.848999936Z"
+      },
+      {
+        "id": "d4ed9a29d7c045228f6c4555ebed7c0e",
+        "name": "aboiteau-r0-23-20261115-c4389b-taskbaseline",
+        "state": "active",
+        "instances": 0,
+        "image": "",
+        "version": 1,
+        "updated_at": "2026-11-15T15:56:01.295000064Z",
+        "created_at": "2026-11-15T15:56:01.295000064Z"
+      },
+      {
+        "id": "809ccdf60d1b4baaa4e596d108a592db",
+        "name": "aboiteau-r0-23-20261115-c4389b-linuxbaselineprobe",
+        "state": "ready",
+        "instances": 0,
+        "image": "",
+        "version": 1,
+        "updated_at": "2026-11-15T15:55:59.135000064Z",
+        "created_at": "2026-11-15T15:55:59.135000064Z"
+      }
+    ],
+    "native": {
+      "schemaVersion": 1,
+      "kind": "model-free-native-qualification",
+      "providerCalls": 0,
+      "incarnation": "c591c089-b179-45a6-a422-3adc1becee22",
+      "runtimeStopped": true,
+      "cleanupRecorded": true,
+      "tombstoneRecorded": true,
+      "httpStatus": 200
+    },
+    "ownedApplicationsAbsent": true,
+    "bucket": {
+      "objectsRemaining": 0,
+      "deleted": 2,
+      "httpStatus": 200
+    },
+    "workerDeleteExitCode": 0,
+    "workerAbsent": true,
+    "preexistingApplicationsRetained": true,
+    "bucketDeleteExitCode": 0,
+    "bucketAbsent": true,
+    "localControlSecretsRemoved": true
+  },
+  "manifest": {
+    "schemaVersion": 1,
+    "kind": "prepared-comparison",
+    "protocolSHA256": "00b6cc5ba24314714b8183e6aae09aa8033629cc48d2103222809120d15b89cd",
+    "fixtureSHA256": {
+      "ledger": "a175ef567a0c552e16d8e64c11bb98a3f9349485d21663c43c50afa7458b5396",
+      "queue": "e153c8f04423007cb85d9d822b04b0eb8018f2c51374505421dc91fdce1e1668"
+    },
+    "sourceSHA256": {
+      "fixtures.ts": "8791deb1bf25dc85bb54aaa25f10efadb97ab9b1a9648ccba888ae3efa2c85c9",
+      "protocol.ts": "c707754294508f1487b9b0c36d402ad298527be95c84ed941623726c0b964d6b",
+      "oracle.ts": "02b2cf3f516e62152c87eb445130978b06db446861cb321169425a9ff5258c47",
+      "prepare.ts": "0eec441e84fd9cb1bb5dc0a7a6acda1f2690a50bb7f57fb9022655a0923463f5",
+      "results.ts": "9bb92452348e6698d6b2188a1674a6472430850b4b3c4f64fc0fd72d4e69ded7",
+      "cli.ts": "1c7f21320400625fc8c524fcfc8e00e94bbf512d286fcfb66f7eefd270b5bda2",
+      "live.ts": "14b55fb46d7bf07b0ea75db33f87724cb06cec106dd8f5899d940dd82e1ddfae",
+      "operator-credential.ts": "f9d4c1f433774cfd4c97358d7d3b5c7e94193ff22a99e9d7c3a03d892448ad1f",
+      "baseline/preflight.ts": "d5297099faf60d9af88ca324d6e2ca8ef71fdc3e281faba88f53024a71204812",
+      "baseline/local-smoke.ts": "2e45675682880012f235694d57e51a20b1755399993695d325dfbdad49b7f81a",
+      "baseline/wrangler.local.json": "71f60a8c30c9aa9dd1e0ec5ae47b086b6a705e7334fed51214c5e025e4b87d35",
+      "baseline/worker.ts": "a76fb9419190300f89affafef0397ba500ff932acd08b497beb6fb90b47bd8ec",
+      "baseline/linux.ts": "ce6bbcb3e7a1e3eee3b65867509e4fca59774659211bad84ec6b962a298828d7",
+      "baseline/provider.ts": "c1a8051843117ba058c388abc1cf3cd268450f47c474bfdf9526d26b2e64ecd3",
+      "baseline/journal.ts": "35d237d3ff4da4465f2f593bddb70e2f1d2792b775c812b0d3f309a64de8083f",
+      "baseline/task-model.ts": "ce1580a0867465d2815ce3f111322d9745db39eb1e7d9bacfdd981681e86d50f",
+      "baseline/task-plugin.ts": "824cb70a5cc89ac078731d618466cff40b7ee22f924d32adcc179f5b0d04b5ee",
+      "baseline/task-request.ts": "26df513cc989fa7f3bc0e7cc85e94e1e1566e8833b06485d9d30af05785701ba",
+      "baseline/task-workspace.ts": "5b2f6e732ff137b6f63e32bdf53142188c8db7d9cf65f1359e8b00666a2ae69c",
+      "baseline/task-worker.ts": "fc8ba22edf448682e12fd65c782a44e0d5b5e5c814132a0a16877dd56d198969",
+      "baseline/task-runtime.ts": "1e0b1c4373042ee9e59ccd91587d236ce9c7072406b858812018c589c1021197",
+      "baseline/task-probe.ts": "da65dea90d5e4c7cb3e8b2bee9d6bf2365281cd8bfaf1a314bb89a4b1b82465d",
+      "baseline/evaluator.ts": "74565ff2218e7a42bc9c2eabb9e17abeafb64a0daba242edfd395abdd26f8f27",
+      "baseline/native-qualification.ts": "7a13e686d55d07d1d559f6ea4936a6a88c483e76ff16f538c2175f3fc540a9ca",
+      "baseline/native-checks.ts": "bdbdddcbcca94a0cfad74c0845d7494cd1a093b876e5d408c97e5dda6b12feeb",
+      "baseline/aboiteau-arm.ts": "b9e0f0fa2d3ea29496978b9d4d1b01f12732eebde8aec0ac6176147b782c398f",
+      "baseline/smoke-provider.ts": "4e0d4779e649c9c82b3ae9c9c98e1d5f32f97d3d6f86f914f4fba03e7eef20c2",
+      "baseline/smoke-contract.ts": "d6a55ef4f8c72c669472b526339e114a88e3f07e179dad96c1bf9777293a7aa2",
+      "baseline/smoke-scope.ts": "88d827adbb70d3a8356675fbbfba42f5d342d8cf05dcdcd7501e023bdc8d27fb",
+      "baseline/package.json": "cb7d91e5b04fa2a6a752d78e0398ab0a8ce73ac26e0195b147445450acf28beb",
+      "baseline/bun.lock": "6c85ec006d4ad0135bc9c412a62cb049622c7356dbfdcc275097f5be8cdc5927",
+      "baseline/wrangler.template.jsonc": "891a02d6697f4124cc410c619e7b4d4b301c5d0947b3c8157311a79119126026",
+      "../../src/control-auth.ts": "6b30d7c78667a72f8886585b6481a0a0d2b65d9a6dd1f81fbd3d3505434d7b2f",
+      "../../src/conversation.ts": "fea220d06cf6ff5425e10dc8b96e61c769203968f142b9ddac9190907c8a83b6",
+      "../../src/conversation/event-stream.ts": "f081c55d354215c9f92159aa655b6afcaca32f71440a0ce361b9f0b6ecd1e08d"
+    },
+    "nativeArtifact": {
+      "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-metadata-candidate@sha256:4fe5c456f39903be5cbba5027a5d00f1961ac37fb63c7e6a3493c09af2903f24",
+      "stowVersion": "0.4.0",
+      "stowPatch": "metadata-refusal.2",
+      "stowSourceCommit": "3bb3e890bbe56f11dd783c2ccfb9bd2813156919",
+      "stowPatchSHA256": "054b8b091a052189af1d4e17d2464b9a2a95b5fa55421a8f3b9358c326c7d014",
+      "controllerSHA256": "0ec5e1e2dff12951041e837cab3aa877701f1d02359f6ecc8650e1cf20c8cace",
+      "binarySHA256": "39615975e58008a60a94b0c696e9ee46aa8dba77e1899e5297dcb4f5010e3174",
+      "profile": "custom-1cpu-2gib",
+      "instance": {
+        "vcpu": 1,
+        "memoryMib": 2048,
+        "diskMb": 8192
+      }
+    },
+    "baselineDependencies": {
+      "@ai-sdk/openai-compatible": "2.0.93",
+      "@ai-sdk/provider": "3.0.8",
+      "@opencode/plugin": "2.2.5",
+      "@opencode/sdk": "2.2.5",
+      "agents": "0.33.0"
+    },
+    "protocol": {
+      "schemaVersion": 1,
+      "id": "r0-23-v11",
+      "scope": "Authored diagnostic coding suite, not population-level model accuracy or a completed G0 representative-workload qualification.",
+      "arms": [
+        "aboiteau",
+        "opencode-harness-linux"
+      ],
+      "strata": {
+        "product": "Compare complete configurations; pin and disclose system prompts, tools, policies and runtime differences.",
+        "matched": "Unrated until the same model endpoint/settings, runtime version, tool schemas/behavior, system instructions and permissions are proved equivalent."
+      },
+      "repetitions": {
+        "ordinary": 3,
+        "conditions": [
+          "cold",
+          "warm"
+        ],
+        "faults": 3,
+        "modelTurnDeadlineMs": 900000
+      },
+      "order": "Pair by task/condition/repetition; alternate the arm that goes first. Fresh fixture repo per attempt. Warm trials prime only runtime/provider connectivity with no model turn; do not leak prior task solutions.",
+      "metrics": [
+        "acceptedTask",
+        "oraclePassed",
+        "publicTestsPassed",
+        "wallMs",
+        "firstOutputMs",
+        "restoreMs",
+        "checkpointMs",
+        "modelUSD",
+        "containerUSD",
+        "storageUSD",
+        "operatorSeconds",
+        "interventions",
+        "duplicateEffects",
+        "unknownUsage",
+        "lostFiles"
+      ],
+      "decision": {
+        "minAcceptedFraction": 0.9,
+        "minRelativeBenefit": 0.2,
+        "maxAcceptedFractionRegression": 0.05,
+        "maxMedianLatencyRegression": 0.1,
+        "maxCostRegression": 0.1,
+        "catastrophicViolationsAllowed": 0,
+        "p95MinimumSamples": 20,
+        "rule": "Reuse/reduce is a candidate only with no accounting/security/false-recovery violations, <=5 percentage-point task acceptance regression and >=20% measured cost or intervention reduction, without >10% regression in the other measured cost/latency metric. Missing costs, task equivalence or insufficient samples mean inconclusive; no automatic migration."
+      },
+      "execution": {
+        "phase": "authorized-four-attempt-smoke",
+        "permissionProfile": "Baseline Linux tool hooks allow the owned fixture tools. Native build shell is allowed in the owned disposable VM with existing product hard denials retained; other prompts/tools/policies remain different and matched equivalence is unrated.",
+        "model": "opencode/deepseek-v4.1-flash",
+        "providerEndpoint": "https://opencode.ai/inference/openai/v1/chat/completions",
+        "temperature": 0,
+        "maxOutputTokens": 4096,
+        "stagingAccount": "ad5ec479b9a421faa2ed06c3d1c2b23a",
+        "spendBudgetUSD": 5,
+        "continuationProviderBudgetUSD": 4.5,
+        "priorUnknownCostReserveUSD": 0.25,
+        "priorKnownCostReserveUSD": 0.25,
+        "deploymentNames": [
+          "aboiteau-r0-23-20261115-c4389b"
+        ],
+        "runEligible": false
+      },
+      "faults": [
+        {
+          "id": "F1",
+          "task": "L5",
+          "trigger": "Disconnect the client after durable acceptance, before the first tool result.",
+          "success": "Reconnect using the saved operation/event cursor; observe the original operation and oracle result without resubmitting the prompt."
+        },
+        {
+          "id": "F2",
+          "task": "Q1",
+          "trigger": "Evict only the coordinator DO after a recorded tool-start boundary; preserve its container.",
+          "success": "Recover the same accepted operation and files; count every model/tool restart, repeated effect and intervention."
+        },
+        {
+          "id": "F3",
+          "task": "L5",
+          "trigger": "Destroy the disposable container after a verified recovery point and a later recorded edit.",
+          "success": "Name the actual restored recovery point and lost bytes; report unsupported recovery or lost edits truthfully, never call restored history task success."
+        },
+        {
+          "id": "F4",
+          "task": "Q2",
+          "trigger": "Drop the first prompt-acceptance response after server-side durable acceptance; retry using the same operation identity and payload.",
+          "success": "No second accepted operation or duplicate external effect; an ambiguous outcome remains explicit."
+        },
+        {
+          "id": "F5",
+          "task": "L5",
+          "trigger": "Fail checkpoint publication after task output exists, before a successful checkpoint receipt.",
+          "success": "No false checkpoint success or unsafe deletion; preserve the prior checkpoint and report unsaved work/intervention explicitly."
+        }
+      ],
+      "tasks": [
+        {
+          "id": "L1",
+          "repo": "ledger",
+          "prompt": "Fix parseLines(text) in src/index.ts to accept a single leading UTF-8 BOM, LF or CRLF, blank/whitespace-only lines and a final line without a newline. Preserve parsed order. Malformed nonblank JSON must throw an Error whose message includes the physical 1-based line number. Do not silently skip malformed records. Keep the existing API and basic tests passing.",
+          "checks": [
+            "BOM/CRLF/blank/final-line parsing",
+            "physical malformed-line number"
+          ]
+        },
+        {
+          "id": "L2",
+          "repo": "ledger",
+          "prompt": "Make parseAmount(value:string) convert a decimal currency string into exact integer cents without floating-point rounding. Allow an optional leading minus, digits, and optionally one or two fractional digits. Reject empty, whitespace, plus signs, exponents, nonfinite values, more than two fractional digits and results outside the safe-integer range. Return positive zero for negative zero. Keep the existing API and basic tests passing.",
+          "checks": [
+            "exact signed cents",
+            "syntax and safe-integer boundaries",
+            "no negative zero"
+          ]
+        },
+        {
+          "id": "L3",
+          "repo": "ledger",
+          "prompt": "Harden summarize(rows) in src/index.ts. Currency labels such as __proto__, constructor and toString must be ordinary independent keys. Reject an empty/non-string currency, non-safe-integer cents or an overflowing total. Preserve the Record<string,number> API, do not mutate inputs and keep basic tests passing.",
+          "checks": [
+            "prototype-like keys",
+            "invalid amounts/labels",
+            "overflow and input immutability"
+          ]
+        },
+        {
+          "id": "L4",
+          "repo": "ledger",
+          "prompt": "Make mergeLedgers(left,right) merge by nonempty string id in first-seen order. Identical duplicates (same id, currency and cents) collapse to one; conflicting duplicates throw before returning a result. Do not mutate or alias input records: editing a returned record must not edit an input record. Keep basic tests passing.",
+          "checks": [
+            "order and deduplication",
+            "conflict/invalid id rejection",
+            "no input alias"
+          ]
+        },
+        {
+          "id": "L5",
+          "repo": "ledger",
+          "prompt": "Fix src/cli.ts so a failed input read, malformed JSON or invalid summary leaves an existing output file byte-for-byte intact. Compute and validate before publishing, then write to a unique temporary sibling and rename it into place. Clean up the temporary file on success or failure. Valid input still writes the summary plus newline. Keep basic tests passing.",
+          "checks": [
+            "failed input preserves old output",
+            "success atomically publishes summary",
+            "temporary-file cleanup"
+          ]
+        },
+        {
+          "id": "Q1",
+          "repo": "queue",
+          "prompt": "Fix WorkQueue so a rejected or synchronously throwing task frees its slot and later tasks keep running. Each returned promise must settle exactly once, active/pending counts must return to zero, and the concurrency bound must still hold. Keep the API and existing tests passing.",
+          "checks": [
+            "async reject and sync throw release slot",
+            "later task completion",
+            "zero final counts"
+          ]
+        },
+        {
+          "id": "Q2",
+          "repo": "queue",
+          "prompt": "Implement run(work,{priority?:number}) scheduling in WorkQueue. Higher priority queued work starts first; equal priorities preserve FIFO order; omitted priority means zero. Never preempt a running task. Keep the API and existing tests passing.",
+          "checks": [
+            "descending priority",
+            "stable FIFO ties",
+            "running task not preempted"
+          ]
+        },
+        {
+          "id": "Q3",
+          "repo": "queue",
+          "prompt": "Implement run(work,{signal?:AbortSignal}) queued cancellation in WorkQueue. Pre-aborted or aborted-while-queued work must reject with name AbortError and never execute; canceling one job must leave others intact. After work starts, aborting its signal must not interrupt it or release its slot early. Remove queued abort listeners when the job starts or is canceled. Keep existing tests passing.",
+          "checks": [
+            "pre-abort and queued abort",
+            "other work preserved",
+            "active abort does not free slot"
+          ]
+        },
+        {
+          "id": "Q4",
+          "repo": "queue",
+          "prompt": "Add setConcurrency(value:number):void to WorkQueue and validate the constructor's concurrency. Accept only integers 1 through 16; reject invalid values without changing the current limit. Increasing the limit starts waiting tasks immediately. Decreasing it leaves running jobs intact and starts no more until active work is below the new limit. Keep existing tests passing.",
+          "checks": [
+            "validation and unchanged limit on refusal",
+            "increase drains",
+            "decrease preserves active jobs"
+          ]
+        },
+        {
+          "id": "Q5",
+          "repo": "queue",
+          "prompt": "Add onIdle():Promise<void> to WorkQueue. It resolves only after both active and pending work are empty, supports multiple waiters, resolves immediately for an idle queue, and works again after another batch is enqueued. Keep existing tests passing.",
+          "checks": [
+            "multiple waiters",
+            "pending work included",
+            "repeated batches"
+          ]
+        }
+      ]
+    },
+    "executionReady": false,
+    "blockedBy": [
+      "native Linux tools and lifecycle await live qualification",
+      "four-attempt paid smoke awaits execution and cleanup receipts",
+      "full matrix and fault-injection qualification remain outside this smoke"
+    ],
+    "measuredAttempts": []
+  },
+  "providerConnection": {
+    "source": "opencode auth export opencode; active OAuth only",
+    "workspace": "Chester Hill Solutions",
+    "expiresAt": 1795290038240,
+    "authenticatedConfigHTTPStatus": 200,
+    "authenticatedCatalogHTTPStatus": 200
+  },
+  "priorScopeEvidence": [
+    "r0-23-live-2026-11-15.json",
+    "r0-23-live-2026-11-15-02.json",
+    "r0-23-live-2026-11-15-03.json",
+    "r0-23-live-2026-11-15-04.json",
+    "r0-23-live-2026-11-15-05.json",
+    "r0-23-live-2026-11-15-06.json",
+    "r0-23-live-2026-11-15-07.json"
+  ],
+  "priorProviderDispatches": 20,
+  "priorUnknownCostReserveUSD": 0.25,
+  "priorKnownCostReserveUSD": 0.25,
+  "priorKnownRateEstimateUSD": 0.0375795,
+  "priorCostReconciliation": "The inactive legacy key was rejected with 401. Its ledger remains unknown; a separate conservative reserve is withheld from this continuation's budget, without asserting zero billing.",
+  "preexistingApplicationIDs": [
+    "f97c74c307e64504b6debe87c94e5592",
+    "a03dd873-2d74-483b-b1b8-d68ca8a7ba5b",
+    "a03b42e4-b24d-48a4-b802-c538eb5cca33",
+    "a03004e8-27ad-473d-a884-943f31d6affe",
+    "a0345b28-d0b9-4d5a-affc-22063cb66bb7"
+  ],
+  "deploymentAttempts": [
+    {
+      "exitCode": 0,
+      "partialContainerSettings": false
+    }
+  ],
+  "deployed": {
+    "worker": "aboiteau-r0-23-20261115-c4389b",
+    "bucket": "aboiteau-r0-23-20261115-c4389b-checkpoints",
+    "url": "https://aboiteau-r0-23-20261115-c4389b.chester-hill-solutions.workers.dev",
+    "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-metadata-candidate@sha256:4fe5c456f39903be5cbba5027a5d00f1961ac37fb63c7e6a3493c09af2903f24"
+  },
+  "nativeQualified": true,
+  "brokerQualification": {
+    "kind": "synthetic-task-adapter",
+    "passed": true,
+    "externalProviderCalls": 0,
+    "transport": "mocked-cross-do-broker-http-sse",
+    "toolPlane": "simulated",
+    "contractObservations": [
+      {
+        "keys": [
+          "max_tokens",
+          "messages",
+          "model",
+          "stream",
+          "temperature",
+          "tools"
+        ],
+        "accepted": true,
+        "rejection": null
+      },
+      {
+        "keys": [
+          "max_tokens",
+          "messages",
+          "model",
+          "stream",
+          "temperature",
+          "tools"
+        ],
+        "accepted": true,
+        "rejection": null
+      },
+      {
+        "keys": [
+          "max_tokens",
+          "messages",
+          "model",
+          "stream",
+          "temperature",
+          "tools"
+        ],
+        "accepted": true,
+        "rejection": null
+      },
+      {
+        "keys": [
+          "max_tokens",
+          "messages",
+          "model",
+          "stream",
+          "temperature",
+          "tools"
+        ],
+        "accepted": true,
+        "rejection": null
+      },
+      {
+        "keys": [
+          "max_tokens",
+          "messages",
+          "model",
+          "stream",
+          "temperature",
+          "tools"
+        ],
+        "accepted": true,
+        "rejection": null
+      },
+      {
+        "keys": [
+          "max_tokens",
+          "messages",
+          "model",
+          "stream",
+          "temperature",
+          "tools"
+        ],
+        "accepted": true,
+        "rejection": null
+      }
+    ],
+    "bridgeObservations": [
+      {
+        "stage": "construct-request"
+      },
+      {
+        "stage": "dispatch-cross-do"
+      },
+      {
+        "stage": "received-status",
+        "status": 200
+      },
+      {
+        "stage": "construct-request"
+      },
+      {
+        "stage": "dispatch-cross-do"
+      },
+      {
+        "stage": "received-status",
+        "status": 200
+      },
+      {
+        "stage": "construct-request"
+      },
+      {
+        "stage": "dispatch-cross-do"
+      },
+      {
+        "stage": "received-status",
+        "status": 200
+      },
+      {
+        "stage": "construct-request"
+      },
+      {
+        "stage": "dispatch-cross-do"
+      },
+      {
+        "stage": "received-status",
+        "status": 200
+      },
+      {
+        "stage": "construct-request"
+      },
+      {
+        "stage": "dispatch-cross-do"
+      },
+      {
+        "stage": "received-status",
+        "status": 200
+      },
+      {
+        "stage": "construct-request"
+      },
+      {
+        "stage": "dispatch-cross-do"
+      },
+      {
+        "stage": "received-status",
+        "status": 200
+      }
+    ],
+    "broker": {
+      "scope": {
+        "id": "r0-23-20261115-c4389b",
+        "worker": "aboiteau-r0-23-20261115-c4389b",
+        "bucket": "aboiteau-r0-23-20261115-c4389b-checkpoints",
+        "accountID": "ad5ec479b9a421faa2ed06c3d1c2b23a",
+        "canonicalModel": "opencode/deepseek-v4.1-flash",
+        "model": "deepseek-v4.1-flash",
+        "baseURL": "https://opencode.ai/inference/openai/v1",
+        "endpoint": "https://opencode.ai/inference/openai/v1/chat/completions",
+        "authorizedTotalProviderBudgetUSD": 5,
+        "priorUnknownCostReserveUSD": 0.25,
+        "priorKnownCostReserveUSD": 0.25,
+        "providerBudgetUSD": 4.5,
+        "maxCallsPerAttempt": 16,
+        "maxCallsTotal": 64,
+        "contextTokens": 32768,
+        "maxOutputTokens": 4096,
+        "temperature": 0,
+        "requestTimeoutMs": 60000,
+        "taskDeadlineMs": 600000,
+        "grantLifetimeMs": 2700000,
+        "inputUSDPerMillion": 0.3,
+        "outputUSDPerMillion": 1.2,
+        "tasks": [
+          "L1",
+          "Q1"
+        ],
+        "providerDocs": "https://opencode.ai/docs/console/models/"
+      },
+      "calls": [
+        {
+          "attemptID": "r0-23-00b6cc5ba243-l1-cold-1",
+          "status": "complete",
+          "inputTokens": 10,
+          "outputTokens": 1,
+          "estimatedUSD": 0.0000042000000000000004
+        },
+        {
+          "attemptID": "r0-23-00b6cc5ba243-l1-cold-1",
+          "status": "complete",
+          "inputTokens": 10,
+          "outputTokens": 1,
+          "estimatedUSD": 0.0000042000000000000004
+        },
+        {
+          "attemptID": "r0-23-00b6cc5ba243-l1-cold-1",
+          "status": "complete",
+          "inputTokens": 10,
+          "outputTokens": 1,
+          "estimatedUSD": 0.0000042000000000000004
+        },
+        {
+          "attemptID": "r0-23-00b6cc5ba243-l1-cold-1",
+          "status": "complete",
+          "inputTokens": 10,
+          "outputTokens": 1,
+          "estimatedUSD": 0.0000042000000000000004
+        },
+        {
+          "attemptID": "r0-23-00b6cc5ba243-l1-cold-1",
+          "status": "complete",
+          "inputTokens": 10,
+          "outputTokens": 1,
+          "estimatedUSD": 0.0000042000000000000004
+        },
+        {
+          "attemptID": "r0-23-00b6cc5ba243-l1-cold-1",
+          "status": "complete",
+          "inputTokens": 10,
+          "outputTokens": 1,
+          "estimatedUSD": 0.0000042000000000000004
+        }
+      ],
+      "refusals": [],
+      "synthetic": true,
+      "externalProviderCalls": 0
+    },
+    "receipt": {
+      "schemaVersion": 1,
+      "identity": {
+        "id": "synthetic-task-wiring",
+        "taskID": "PROBE",
+        "condition": "cold",
+        "repetition": 1,
+        "protocolSHA256": "synthetic-only",
+        "configSHA256": "synthetic-only"
+      },
+      "phase": "done",
+      "startedAt": 1794758180864,
+      "readyAt": 1794758180864,
+      "runningAt": 1794758180864,
+      "finishedAt": 1794758184007,
+      "operationID": "synthetic-task-wiring",
+      "submission": "accepted",
+      "tools": [
+        {
+          "id": "task-tool-0",
+          "name": "write",
+          "inputSHA256": "1d20d5346d00c4769a2b2abc9b39656ddefb9a91cc8e7f245e2d33cb10fab9eb",
+          "status": "done",
+          "output": "written",
+          "outputBytes": 7
+        },
+        {
+          "id": "task-tool-1",
+          "name": "read",
+          "inputSHA256": "c70f914dc4468a94aab2c7dfd6cbd52efbdabbdce9256ae2b4834707d432758e",
+          "status": "done",
+          "output": "alpha\n",
+          "outputBytes": 6
+        },
+        {
+          "id": "task-tool-2",
+          "name": "edit",
+          "inputSHA256": "e96a9fe474ec6261892aaa335323bdce844569c2207a2074ae722eace014ac08",
+          "status": "done",
+          "output": "edited",
+          "outputBytes": 6
+        },
+        {
+          "id": "task-tool-3",
+          "name": "shell",
+          "inputSHA256": "e0b8ab050c65efe966b43e0e675d7c96327d5c53057b290004068e0ac8aec0c6",
+          "status": "done",
+          "output": "simulated-shell-success",
+          "outputBytes": 23
+        },
+        {
+          "id": "task-tool-4",
+          "name": "read",
+          "inputSHA256": "c70f914dc4468a94aab2c7dfd6cbd52efbdabbdce9256ae2b4834707d432758e",
+          "status": "done",
+          "output": "beta\n",
+          "outputBytes": 5
+        }
+      ],
+      "modelCalls": [
+        {
+          "id": 0,
+          "finished": true,
+          "inputTokens": 10,
+          "outputTokens": 1
+        },
+        {
+          "id": 1,
+          "finished": true,
+          "inputTokens": 10,
+          "outputTokens": 1
+        },
+        {
+          "id": 2,
+          "finished": true,
+          "inputTokens": 10,
+          "outputTokens": 1
+        },
+        {
+          "id": 3,
+          "finished": true,
+          "inputTokens": 10,
+          "outputTokens": 1
+        },
+        {
+          "id": 4,
+          "finished": true,
+          "inputTokens": 10,
+          "outputTokens": 1
+        },
+        {
+          "id": 5,
+          "finished": true,
+          "inputTokens": 10,
+          "outputTokens": 1
+        }
+      ],
+      "result": {
+        "status": "done",
+        "text": "R0_23_TASK_ADAPTER_COMPLETE"
+      },
+      "failure": null,
+      "cleanup": "pending",
+      "cleanupCoordinatorDisposed": null,
+      "modelUSD": null,
+      "oraclePassed": null
+    },
+    "httpStatus": 200
+  },
+  "brokerQualified": true,
+  "brokerQualificationCleanup": {
+    "runtimeStopped": true,
+    "coordinatorDisposed": true,
+    "cleanupRecorded": true,
+    "stopFenceRecorded": true,
+    "providerStop": "unproven",
+    "receiptRetained": true,
+    "alarmsDisabled": true,
+    "httpStatus": 200
+  },
+  "evaluatorQualification": [
+    {
+      "taskID": "L1",
+      "mode": "base",
+      "value": {
+        "id": "r0-23-00b6cc5ba243-l1-cold-1",
+        "taskID": "L1",
+        "publicTestsPassed": true,
+        "oraclePassed": false,
+        "runtimeStopped": true,
+        "providerCalls": 0,
+        "phase": "complete",
+        "diagnostics": {
+          "copiedFiles": 4,
+          "retainedAgentTest": null,
+          "publicExitCode": 0,
+          "oracleExitCode": 1,
+          "failure": "command_failed"
+        },
+        "httpStatus": 200
+      }
+    },
+    {
+      "taskID": "L1",
+      "mode": "reference",
+      "value": {
+        "id": "r0-23-00b6cc5ba243-l1-cold-1",
+        "taskID": "L1",
+        "publicTestsPassed": true,
+        "oraclePassed": true,
+        "runtimeStopped": true,
+        "providerCalls": 0,
+        "phase": "complete",
+        "diagnostics": {
+          "copiedFiles": 4,
+          "retainedAgentTest": null,
+          "publicExitCode": 0,
+          "oracleExitCode": 0,
+          "failure": null
+        },
+        "httpStatus": 200
+      }
+    },
+    {
+      "taskID": "Q1",
+      "mode": "base",
+      "value": {
+        "id": "r0-23-00b6cc5ba243-q1-cold-1",
+        "taskID": "Q1",
+        "publicTestsPassed": true,
+        "oraclePassed": false,
+        "runtimeStopped": true,
+        "providerCalls": 0,
+        "phase": "complete",
+        "diagnostics": {
+          "copiedFiles": 3,
+          "retainedAgentTest": null,
+          "publicExitCode": 0,
+          "oracleExitCode": 1,
+          "failure": "command_failed"
+        },
+        "httpStatus": 200
+      }
+    },
+    {
+      "taskID": "Q1",
+      "mode": "reference",
+      "value": {
+        "id": "r0-23-00b6cc5ba243-q1-cold-1",
+        "taskID": "Q1",
+        "publicTestsPassed": true,
+        "oraclePassed": true,
+        "runtimeStopped": true,
+        "providerCalls": 0,
+        "phase": "complete",
+        "diagnostics": {
+          "copiedFiles": 3,
+          "retainedAgentTest": null,
+          "publicExitCode": 0,
+          "oracleExitCode": 0,
+          "failure": null
+        },
+        "httpStatus": 200
+      }
+    }
+  ],
+  "evaluatorQualified": true,
+  "aboiteauPreparation": [
+    {
+      "taskID": "L1",
+      "value": {
+        "accepted": true,
+        "receipt": {
+          "schemaVersion": 1,
+          "identity": {
+            "id": "r0-23-00b6cc5ba243-l1-cold-1",
+            "taskID": "L1",
+            "protocolSHA256": "00b6cc5ba24314714b8183e6aae09aa8033629cc48d2103222809120d15b89cd",
+            "condition": "cold",
+            "repetition": 1
+          },
+          "phase": "prepared",
+          "preparedAt": 1794758198776
+        },
+        "httpStatus": 201
+      }
+    },
+    {
+      "taskID": "Q1",
+      "value": {
+        "accepted": true,
+        "receipt": {
+          "schemaVersion": 1,
+          "identity": {
+            "id": "r0-23-00b6cc5ba243-q1-cold-1",
+            "taskID": "Q1",
+            "protocolSHA256": "00b6cc5ba24314714b8183e6aae09aa8033629cc48d2103222809120d15b89cd",
+            "condition": "cold",
+            "repetition": 1
+          },
+          "phase": "prepared",
+          "preparedAt": 1794758200881
+        },
+        "httpStatus": 201
+      }
+    }
+  ],
+  "aboiteauPrepared": true,
+  "providerReadiness": {
+    "ready": true,
+    "configReady": true,
+    "credentialReady": true,
+    "workspaceReady": true,
+    "httpStatus": 200
+  },
+  "providerUsage": {
+    "scope": {
+      "id": "r0-23-20261115-c4389b",
+      "worker": "aboiteau-r0-23-20261115-c4389b",
+      "bucket": "aboiteau-r0-23-20261115-c4389b-checkpoints",
+      "accountID": "ad5ec479b9a421faa2ed06c3d1c2b23a",
+      "canonicalModel": "opencode/deepseek-v4.1-flash",
+      "model": "deepseek-v4.1-flash",
+      "baseURL": "https://opencode.ai/inference/openai/v1",
+      "endpoint": "https://opencode.ai/inference/openai/v1/chat/completions",
+      "authorizedTotalProviderBudgetUSD": 5,
+      "priorUnknownCostReserveUSD": 0.25,
+      "priorKnownCostReserveUSD": 0.25,
+      "providerBudgetUSD": 4.5,
+      "maxCallsPerAttempt": 16,
+      "maxCallsTotal": 64,
+      "contextTokens": 32768,
+      "maxOutputTokens": 4096,
+      "temperature": 0,
+      "requestTimeoutMs": 60000,
+      "taskDeadlineMs": 600000,
+      "grantLifetimeMs": 2700000,
+      "inputUSDPerMillion": 0.3,
+      "outputUSDPerMillion": 1.2,
+      "tasks": [
+        "L1",
+        "Q1"
+      ],
+      "providerDocs": "https://opencode.ai/docs/console/models/"
+    },
+    "calls": [
+      {
+        "attemptID": "r0-23-00b6cc5ba243-l1-cold-1",
+        "status": "complete",
+        "inputTokens": 1787,
+        "outputTokens": 125,
+        "estimatedUSD": 0.0006861
+      },
+      {
+        "attemptID": "r0-23-00b6cc5ba243-l1-cold-1",
+        "status": "complete",
+        "inputTokens": 2292,
+        "outputTokens": 176,
+        "estimatedUSD": 0.0008988
+      },
+      {
+        "attemptID": "r0-23-00b6cc5ba243-l1-cold-1",
+        "status": "complete",
+        "inputTokens": 2852,
+        "outputTokens": 1160,
+        "estimatedUSD": 0.0022475999999999998
+      },
+      {
+        "attemptID": "r0-23-00b6cc5ba243-l1-cold-1",
+        "status": "complete",
+        "inputTokens": 4024,
+        "outputTokens": 760,
+        "estimatedUSD": 0.0021192
+      },
+      {
+        "attemptID": "r0-23-00b6cc5ba243-l1-cold-1",
+        "status": "complete",
+        "inputTokens": 4991,
+        "outputTokens": 866,
+        "estimatedUSD": 0.0025365
+      },
+      {
+        "attemptID": "r0-23-00b6cc5ba243-l1-cold-1",
+        "status": "complete",
+        "inputTokens": 6069,
+        "outputTokens": 198,
+        "estimatedUSD": 0.0020583000000000003
+      },
+      {
+        "attemptID": "r0-23-00b6cc5ba243-l1-cold-1",
+        "status": "complete",
+        "inputTokens": 6626,
+        "outputTokens": 148,
+        "estimatedUSD": 0.0021654
+      },
+      {
+        "attemptID": "r0-23-00b6cc5ba243-l1-cold-1",
+        "status": "complete",
+        "inputTokens": 6852,
+        "outputTokens": 218,
+        "estimatedUSD": 0.0023171999999999997
+      },
+      {
+        "attemptID": "aboiteau-r0-23-00b6cc5ba243-l1-cold-1",
+        "status": "complete",
+        "inputTokens": 5428,
+        "outputTokens": 89,
+        "estimatedUSD": 0.0017352
+      },
+      {
+        "attemptID": "aboiteau-r0-23-00b6cc5ba243-l1-cold-1",
+        "status": "complete",
+        "inputTokens": 5758,
+        "outputTokens": 122,
+        "estimatedUSD": 0.0018738
+      },
+      {
+        "attemptID": "aboiteau-r0-23-00b6cc5ba243-l1-cold-1",
+        "status": "complete",
+        "inputTokens": 6265,
+        "outputTokens": 869,
+        "estimatedUSD": 0.0029223
+      },
+      {
+        "attemptID": "aboiteau-r0-23-00b6cc5ba243-l1-cold-1",
+        "status": "complete",
+        "inputTokens": 7152,
+        "outputTokens": 369,
+        "estimatedUSD": 0.0025884000000000002
+      },
+      {
+        "attemptID": "aboiteau-r0-23-00b6cc5ba243-l1-cold-1",
+        "status": "complete",
+        "inputTokens": 7620,
+        "outputTokens": 388,
+        "estimatedUSD": 0.0027516
+      },
+      {
+        "attemptID": "aboiteau-r0-23-00b6cc5ba243-q1-cold-1",
+        "status": "complete",
+        "inputTokens": 5400,
+        "outputTokens": 70,
+        "estimatedUSD": 0.001704
+      },
+      {
+        "attemptID": "aboiteau-r0-23-00b6cc5ba243-q1-cold-1",
+        "status": "complete",
+        "inputTokens": 5715,
+        "outputTokens": 168,
+        "estimatedUSD": 0.0019161
+      },
+      {
+        "attemptID": "aboiteau-r0-23-00b6cc5ba243-q1-cold-1",
+        "status": "complete",
+        "inputTokens": 6467,
+        "outputTokens": 676,
+        "estimatedUSD": 0.0027513
+      },
+      {
+        "attemptID": "aboiteau-r0-23-00b6cc5ba243-q1-cold-1",
+        "status": "complete",
+        "inputTokens": 7161,
+        "outputTokens": 97,
+        "estimatedUSD": 0.0022646999999999997
+      },
+      {
+        "attemptID": "aboiteau-r0-23-00b6cc5ba243-q1-cold-1",
+        "status": "complete",
+        "inputTokens": 7314,
+        "outputTokens": 592,
+        "estimatedUSD": 0.0029046
+      },
+      {
+        "attemptID": "aboiteau-r0-23-00b6cc5ba243-q1-cold-1",
+        "status": "complete",
+        "inputTokens": 7991,
+        "outputTokens": 51,
+        "estimatedUSD": 0.0024584999999999997
+      },
+      {
+        "attemptID": "aboiteau-r0-23-00b6cc5ba243-q1-cold-1",
+        "status": "complete",
+        "inputTokens": 8395,
+        "outputTokens": 184,
+        "estimatedUSD": 0.0027393
+      },
+      {
+        "attemptID": "r0-23-00b6cc5ba243-q1-cold-1",
+        "status": "complete",
+        "inputTokens": 1759,
+        "outputTokens": 120,
+        "estimatedUSD": 0.0006716999999999999
+      },
+      {
+        "attemptID": "r0-23-00b6cc5ba243-q1-cold-1",
+        "status": "complete",
+        "inputTokens": 2110,
+        "outputTokens": 161,
+        "estimatedUSD": 0.0008262
+      },
+      {
+        "attemptID": "r0-23-00b6cc5ba243-q1-cold-1",
+        "status": "complete",
+        "inputTokens": 2695,
+        "outputTokens": 1006,
+        "estimatedUSD": 0.0020157
+      },
+      {
+        "attemptID": "r0-23-00b6cc5ba243-q1-cold-1",
+        "status": "complete",
+        "inputTokens": 3713,
+        "outputTokens": 608,
+        "estimatedUSD": 0.0018435
+      },
+      {
+        "attemptID": "r0-23-00b6cc5ba243-q1-cold-1",
+        "status": "complete",
+        "inputTokens": 4404,
+        "outputTokens": 77,
+        "estimatedUSD": 0.0014136
+      },
+      {
+        "attemptID": "r0-23-00b6cc5ba243-q1-cold-1",
+        "status": "complete",
+        "inputTokens": 4610,
+        "outputTokens": 445,
+        "estimatedUSD": 0.001917
+      },
+      {
+        "attemptID": "r0-23-00b6cc5ba243-q1-cold-1",
+        "status": "complete",
+        "inputTokens": 5313,
+        "outputTokens": 297,
+        "estimatedUSD": 0.0019502999999999996
+      }
+    ],
+    "refusals": [],
+    "httpStatus": 200
+  }
+}

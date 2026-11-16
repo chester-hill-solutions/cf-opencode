@@ -1,0 +1,192 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-15T23:49:30.756463+00:00",
+  "status": "implemented, deployed and verified for the isolated internal canary",
+  "requirement": "Usable without repositories for disposable work and net-new persistent work; repositories optional forever.",
+  "contract": {
+    "defaultRetention": "persistent",
+    "name": "optional friendly label scoped to the thread",
+    "profileMetadataCalls": "no runtime or provider execution",
+    "disposable": "recoverable while active, explicit guarded discard only",
+    "promotion": "change metadata in place; preserve native workspace, files and session",
+    "automaticTTL": false,
+    "cleanupOnIdleOrTurnEnd": false,
+    "discardDeduplication": "durable request/expected-incarnation tuple and receipt outside cleared workspace state",
+    "privacyScope": "working files/internal session/checkpoints removed; Slack messages, provider logs and financial/control records retained",
+    "discardStates": [
+      "prepared (frozen request, no maintenance fence)",
+      "pending (safe cleanup in progress/uncertain, new work fenced)",
+      "complete (historical receipt; successor preserved)"
+    ],
+    "durableControlIntake": "Small permanent eventID/time records survive workspace cleanup; no command payload/name stored in intake tombstones."
+  },
+  "verification": {
+    "local": "passed",
+    "liveControlSmoke": {
+      "verified": true,
+      "channel": "C0A5YNXLP6C",
+      "threadTS": "1794786475.162329",
+      "ownedEmptyThreadOnly": true,
+      "initial": {
+        "schemaVersion": 1,
+        "profileID": "995b4465-ec40-8f00-846e-f56977331f3e",
+        "revision": 1,
+        "retention": "persistent",
+        "name": null,
+        "status": "active"
+      },
+      "disposable": {
+        "schemaVersion": 1,
+        "profileID": "995b4465-ec40-8f00-846e-f56977331f3e",
+        "revision": 2,
+        "retention": "disposable",
+        "name": "retention-proof-cd80caee-temp",
+        "status": "active"
+      },
+      "kept": {
+        "schemaVersion": 1,
+        "profileID": "995b4465-ec40-8f00-846e-f56977331f3e",
+        "revision": 3,
+        "retention": "persistent",
+        "name": "retention-proof-cd80caee-kept",
+        "status": "active"
+      },
+      "target": {
+        "schemaVersion": 1,
+        "profileID": "995b4465-ec40-8f00-846e-f56977331f3e",
+        "revision": 4,
+        "retention": "disposable",
+        "name": "retention-proof-cd80caee-discard-target",
+        "status": "active"
+      },
+      "discard": {
+        "schemaVersion": 1,
+        "requestID": "97359c3f-7012-81da-aa21-dba957c891c7",
+        "expectedProfileID": "995b4465-ec40-8f00-846e-f56977331f3e",
+        "expectedRevision": 4,
+        "status": "complete",
+        "createdAt": 1794786478121,
+        "completedAt": 1794786478363
+      },
+      "successor": {
+        "schemaVersion": 1,
+        "profileID": "78662941-c92a-4c28-a959-a5ee12f447c5",
+        "revision": 1,
+        "retention": "persistent",
+        "name": null,
+        "status": "active"
+      },
+      "later": {
+        "schemaVersion": 1,
+        "profileID": "78662941-c92a-4c28-a959-a5ee12f447c5",
+        "revision": 2,
+        "retention": "persistent",
+        "name": "retention-proof-cd80caee-later-work",
+        "status": "active"
+      },
+      "oldSlackReplaySafe": true,
+      "oldCoreReplaySafe": true,
+      "noRuntime": true,
+      "noModel": true,
+      "noFiles": true,
+      "botReplies": [
+        {
+          "ts": "1794786475.162329",
+          "text": "Owned disposable lifecycle control verification. New empty workspace only: naming, keep, explicit discard and stale-replay checks. No model, runtime or user files."
+        },
+        {
+          "ts": "1794786476.523439",
+          "text": "Workspace: retention-proof-cd80caee-temp\nRetention: disposable.\nRecovery checkpoints remain in use until explicit `!workspace discard`. Finishing work or going idle does not discard it.\nDurable projects, scripts, analysis, documents and prototypes may start blank and remain repository-free permanently. Keeping work requires no git initialization, commit or remote.\nExisting files and session state were preserved. No runtime or model was started by this command."
+        },
+        {
+          "ts": "1794786477.089669",
+          "text": "Workspace: retention-proof-cd80caee-kept\nRetention: persistent (the default).\nFiles and sessions are retained when work finishes or goes idle. Promotion to persistent preserves existing work.\nDurable projects, scripts, analysis, documents and prototypes may start blank and remain repository-free permanently. Keeping work requires no git initialization, commit or remote.\nExisting files and session state were preserved. No runtime or model was started by this command."
+        },
+        {
+          "ts": "1794786477.652479",
+          "text": "Workspace: retention-proof-cd80caee-discard-target\nRetention: disposable.\nRecovery checkpoints remain in use until explicit `!workspace discard`. Finishing work or going idle does not discard it.\nDurable projects, scripts, analysis, documents and prototypes may start blank and remain repository-free permanently. Keeping work requires no git initialization, commit or remote.\nExisting files and session state were preserved. No runtime or model was started by this command."
+        },
+        {
+          "ts": "1794786478.490359",
+          "text": "Disposable workspace discarded. Slack conversation and financial records are retained."
+        },
+        {
+          "ts": "1794786479.325989",
+          "text": "Workspace: retention-proof-cd80caee-later-work\nRetention: persistent (the default).\nFiles and sessions are retained when work finishes or goes idle. Promotion to persistent preserves existing work.\nDurable projects, scripts, analysis, documents and prototypes may start blank and remain repository-free permanently. Keeping work requires no git initialization, commit or remote.\nExisting files and session state were preserved. No runtime or model was started by this command."
+        }
+      ]
+    },
+    "nativePersistencePriorReceipt": "workspace-first-2026-11-15.json",
+    "focusedLifecycleWorkerTests": 14,
+    "focusedSlackWorkerTests": 15,
+    "pureTests": 43,
+    "pureAssertions": 214,
+    "fullTypes": "passed; source/Worker types rechecked after admission correction",
+    "postAdmissionFixSourceAndWorkerTypes": "passed",
+    "initialFullWorkerRun": {
+      "passed": 464,
+      "failed": 2,
+      "cause": "new eager maintenance gate changed existing reset/delete admission serialization; fixed and original tests pass unchanged"
+    },
+    "fullWorkerRerun": {
+      "passed": 466,
+      "failed": 0,
+      "files": 73
+    },
+    "slackPermalink": {
+      "verified": true,
+      "channel": "C0A5YNXLP6C",
+      "threadTS": "1794786475.162329",
+      "messageTS": "1794786478.490359",
+      "permalink": "https://teamnatelib.slack.com/archives/C0A5YNXLP6C/p1794786478490359?thread_ts=1794786475.162329&cid=C0A5YNXLP6C"
+    },
+    "deployedSourceMatchesWorkspace": true,
+    "newProviderExecutionRequested": false,
+    "runtimePreparedForLiveControlSmoke": false,
+    "userWorkspacesDiscarded": false
+  },
+  "scope": {
+    "worker": "cf-opencode-arfin-canary-20261115",
+    "channel": "C0A5YNXLP6C",
+    "userWorkspacesDiscarded": false,
+    "providerExecutionRequestedForThisQualification": false
+  },
+  "nonGoals": [
+    "multi-thread shared project catalogue",
+    "automatic expiry scheduler",
+    "repository requirement",
+    "new execution harness"
+  ],
+  "sourceSHA256": {
+    "src/workspace-profile.ts": "9934f214714f79661e5224079ec3a48a46fe028a422dc2eaa3c240d1f952d74e",
+    "src/conversation/workspace-lifecycle.ts": "8407d128b37ec2d9d77894fb326952c749597c34be36dfbeeeed10803e623cfa",
+    "src/conversation.ts": "6c88501e637c91a79e25764ff6fe84b25b66619cdea65fce2912dfd37c1b4234",
+    "src/state.ts": "c1028eb5dc5f9add3d799ad5b9f83b9d972144eaa13d0e99ee54d48bfa177a53",
+    "src/index.ts": "0ee1177326e5b758b0ec7914b64f1e8595e24950302c0703e72ada6c3d5915a9",
+    "src/conversation/runtime-access.ts": "bb2a3790bc1b21cbe57319c259d51eddfd9e958a4faf271e5c17b3be91aee211",
+    "src/conversation/admissions.ts": "ffd219c7739445ed3daeabc7cd669967e8be781de6d4b290e3515170cc09f8fc",
+    "src/conversation/slack-adapter.ts": "d5db994742c08fb2dedb681f378e8594b69e567c2ce0417a5ac4423ac88e52c3",
+    "src/slack-workspace-commands.ts": "8f0953e0ba33dd72bc7ff59969642f1e769517963fc201950af04d19ce597b05",
+    "src/slack-commands.ts": "b1068f21069122bcd40235588fde09f1376b8d42a95e41eefcb6fae09c4cc959",
+    "test/workspace-lifecycle.test.ts": "8227443c8e79e4c70face6bc9b39140e8ec678c8f8b66e02a4b62b94bd90e77c",
+    "test/slack-workspace-repository.test.ts": "afb25b1433045c5369676d8fbfe1d71eaf7206f5de726b20e1b944b330c08635",
+    "test/conversation-slack-adapter.test.ts": "a62fe9b71a103a501139011d103325a4cf0e7c4448d4ec72df95ec64a721f676",
+    "tests/slack-workspace-commands.test.ts": "97dcd30733f2162a9366b56b2a5b7f0e9302b513785c324f1873417145149c43",
+    "tests/slack-commands.test.ts": "f574731df7014443e5e76bced72040e868a11ee2a6e09662d5ff6d1a2bb2c971"
+  },
+  "intentionalLimits": [
+    "No automatic TTL or shared multi-thread project catalogue.",
+    "Disposable work uses normal existing recovery checkpoints until explicit successful discard.",
+    "At-most-once Slack control intake can require a new command event after an early failure; old event never retargets later work.",
+    "Small request/alias/control-event metadata is retained; workspace discard is not trace/provider/Slack erasure."
+  ],
+  "deployedCanaryVersion": "229d8fbb-1fda-41d1-9d19-60ad256d58e1",
+  "containerRollout": "none",
+  "durableObjectCodeUpdate": "deferred 30s; known canary conversations observed idle",
+  "operationalNotes": [
+    "Initial full run caught two legacy reset/delete serialization regressions. Queue admission was restored to wait under the admission lock and recheck maintenance after cleanup; the unchanged original tests pass.",
+    "Prepared refusal records do not create a maintenance fence; publishing pending cleanup follows safety/usage preflight.",
+    "Small permanent control-intake tombstones close the failed-read-before-POST stale-command case and survive workspace reset.",
+    "Live qualification used one new owned empty Slack thread only; no runtime, provider, repository or user files were used."
+  ]
+}
