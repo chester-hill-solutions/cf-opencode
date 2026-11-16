@@ -383,6 +383,7 @@ independent design, fixtures and security checks can proceed.
 | **W3** | **R1-4e** | Opt-in MCP connector for agent offload | M | R1-4b | `MCP_ENABLED` (default off) with `MCP_TOKEN ?? API_TOKEN`; Streamable HTTP at `/mcp`; a stateless `createMcpHandler` server with tools `submit`/`status`/`wait`/`read`/`cancel`/`questions`/`answer` reusing the public contract through the client shared with R1-4c; `submit` returns a turn immediately and `wait` is bounded; no credential, digest, queue id, R2 key or reservation id in any tool result; shared conformance fixtures; the route is added outside `handleApi` so the lint ratchet does not grow |
 | **W4** | **SL-1.2/1.5** | Turn, memory and cost evidence; 2 vs 3 GiB decision | M | — | Turn latency and RSS on a representative repo; cost per active hour; OOM alert; chosen default recorded |
 | **W4** | **SL-1.4/SL-3.x/SL-4.x** | Prewarm, measured boot wins, restore path | M | SL-A | No-provider-spend prewarm with capacity respect; each boot/restore change kept only with before/after numbers; security tests unchanged |
+| **W4** | **INFRA-1** | Publish the static guards and RatchetStrap; consume by version | M | RatchetStrap #262 | The Callcaster guards and `ratchet-strap` are consumed from their registries with lockfile integrity; `tools/vendor` and the tarball override are gone; CI holds registry credentials; improvements arrive as version bumps instead of re-vendored copies |
 | **W4** | **SL-6.1** | Workspace-authority ADR | S | — | One authoritative writer chosen with recovery story; no dual-writer integration before it |
 | **W4** | **SL-7.x** | Runbook, canary and cost dashboard | M | SL-1.2 | Docs match code; canary + rollback proven; per-start/active-hour/turn cost visible |
 | **W4** | **SL-5.x** | Bounded Computer spike | L | C0, SL-A, SL-6.1 | Gate SL-C evidence: workerd host boots, bundle fits, file ops measured, no credential/token leak, gap report; then stop or continue to SL-D |
@@ -632,6 +633,12 @@ operators as unstable, recovery inspection in turn status while the operator
 explicit steer, explicit interrupt with follow-up). The §7 acceptance matrix is the
 review target. The record is bounded status, not an exactly-once receipt.
 
+**R1-4c — reference CLI location (decided).**
+The conformance client lives at `tools/cli` in this repository, not as a
+published package: it exercises the public HTTP/SSE surface with the same CI and
+fixtures as the service, and publishing can follow if external teams need it. It
+is also the evidence that keeps R1-4e optional rather than load-bearing.
+
 **R1-4e — opt-in MCP connector.**
 Expose the caller contract as a Streamable-HTTP MCP server at `/mcp` so another
 agent (OpenCode, Claude Code, Codex) can offload a turn and read the result.
@@ -660,8 +667,8 @@ reply the conversation still retains.
 `MCP_TOKEN ?? API_TOKEN`; seven tools over the existing conversation routes, so
 an MCP result cannot differ from an HTTP one. `read` reads the turn-correlated
 event log rather than a stored baseline field. Still open for this row:
-deployment with the two env values and a conformance run against a deployed
-endpoint. The connector remains optional G1-C evidence — a deployment without
+deployment with `MCP_ENABLED=1` and a separate `MCP_TOKEN` in **staging**, then
+one conformance session against that endpoint. The connector remains optional G1-C evidence — a deployment without
 MCP must still pass that gate.
 
 **R0-15 — one storage cutover, on the current artifacts.**
