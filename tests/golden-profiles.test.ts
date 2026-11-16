@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { readFileSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import {
   CHS_PROFILES,
   GOLDEN_PROFILES,
@@ -20,6 +20,8 @@ type Coverage = {
   gates?: string[]
   /** ESLint rule ids that prove the profile in this repository. */
   rules?: string[]
+  /** Test files that carry the profile's evidence. */
+  evidence?: string[]
   reason?: string
 }
 
@@ -34,8 +36,9 @@ const PROFILE_COVERAGE: Record<GoldenProfileId, Coverage> = {
   web: { status: "on", gates: ["check:client-bundle"] },
   ui: {
     status: "partial",
-    gates: ["check:client-bundle"],
-    reason: "@aboiteau/ui is the design system; it has no mechanical adoption gate yet",
+    gates: ["test"],
+    evidence: ["tests/ui-kit.test.ts"],
+    reason: "the registry and theme contract are tested; page adoption is review-only",
   },
   quality: {
     status: "on",
@@ -49,7 +52,15 @@ const PROFILE_COVERAGE: Record<GoldenProfileId, Coverage> = {
   },
   vault: {
     status: "partial",
-    reason: "the vault is vendored; the G1–G13 profile has no local gate yet",
+    gates: ["test", "check:lint-ratchet"],
+    evidence: [
+      "tests/vault.test.ts",
+      "tests/archive-crypto.test.ts",
+      "tests/archive-policy.test.ts",
+      "tests/secret-read-policy.test.ts",
+      "test/checkpoint-encryption.test.ts",
+    ],
+    reason: "ciphertext, tenant keys, secret-read allowlist and baseline rules are tested; no single G1–G13 gate",
   },
 }
 
@@ -91,6 +102,9 @@ describe("RatchetStrap golden profiles", () => {
       for (const gate of coverage.gates ?? []) {
         expect(manifest.scripts[gate], `${id} gate ${gate} is missing`).toBeDefined()
         expect(runsInCi(gate), `${id} gate ${gate} is not in ci:local`).toBe(true)
+      }
+      for (const file of coverage.evidence ?? []) {
+        expect(existsSync(new URL(`../${file}`, import.meta.url)), `${id} evidence ${file} is missing`).toBe(true)
       }
     }
   })
