@@ -1,6 +1,6 @@
 # R1-4a caller contract — inventory and frozen proposal
 
-> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is the contract proposal awaiting sign-off; its six decisions and acceptance matrix are folded into roadmap W3. The roadmap controls sequencing and gate status.
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is the contract proposal awaiting sign-off; its seven decisions and acceptance matrix are folded into roadmap W3. The roadmap controls sequencing and gate status.
 
 Status: inventory complete, contract proposed 2026-11-14. Awaiting API/product
 sign-off before implementation. No code changed, no live resources touched.
@@ -102,7 +102,9 @@ admission, event, usage and recovery machinery.
 
 ```jsonc
 POST /api/conversations/:key/messages
-{ "text": "…", "user": "…", "idempotencyKey": "…" }
+{ "text": "…", "user": "…", "idempotencyKey": "…",
+  "delivery": "queue" | "steer" | "interrupt",   // default: queue
+  "replaceQueue": false }                        // interrupt only
 
 200 { "ok": true, "replayed": false,
       "turn": { "id": "turn_…", "state": "accepted" | "queued",
@@ -178,18 +180,34 @@ never resends a prompt.
 
 ## 6. Decisions to lock
 
-1. Turn id format (`turn_` + UUID) and retention: 50 turns or 72 h per
-   conversation, whichever ends last, with explicit expiry in the response.
-2. Whether `queued` is surfaced as a separate state or `accepted` plus
-   `queuePosition` (proposal: separate state, one queued follow-up only).
-3. Source of the configuration fingerprint: settings version + selected image
-   digest + applied flags, recorded at dispatch, `null` when unknown.
-4. Questions: polling `GET /questions` only, or also an SSE `question` frame
-   (proposal: both; the frame is the fast path, polling is the recovery path).
-5. Whether `GET /api/conversations/:key` keeps returning raw state during the
-   migration window (proposal: keep for operators, document as unstable).
-6. Reuse of `recovery` GET vs folding its snapshot into turn status (proposal:
-   turn status for callers, `recovery` stays operator-only).
+The packet below is the sign-off target. Each row states what exists today, the
+choice to lock and the recommendation. Delivery modes are the seventh decision
+added by R0-20; the earlier "one queued follow-up" wording is superseded.
+
+| # | Decision | Current behaviour | Recommendation |
+|---|---|---|---|
+| D1 | Turn identity and retention | No turn reference; `sessionID` spans turns, `turnBaseline` disappears at the next turn, `idempotencyKey` is client-owned and expires | `turn_<uuid>`; retain 50 turns or 72 h per conversation, whichever ends last; return an explicit `replayWindow`; an expired key starts a new turn, never a silent duplicate |
+| D2 | Queued state | Durable FIFO queue, bound 10; `202 {ok:true,queued:true}` | A distinct `queued` state with `queuePosition`; multiple entries allowed within the bound; no budget hold while queued. Supersedes the one-follow-up proposal |
+| D3 | Configuration fingerprint | `settingsVersion` exists; runtime identity is not recorded per turn | Settings version + selected image digest + applied flags, captured at dispatch; `null` when unknown, never fabricated |
+| D4 | Questions transport | Slack-only pending forms; an HTTP caller stalls until timeout | Both: an SSE `question` frame is the fast path, `GET /questions` is the recovery path; unreadable state is `503`, never `[]`; stale/foreign answers are rejected |
+| D5 | Raw GET during migration | `GET /api/conversations/:key` returns raw `ConversationState` | Keep it operator-facing and documented unstable; `/turns/:id` is the caller API; remove the raw route after callers migrate |
+| D6 | Recovery visibility | `/recovery` is privileged and exposes snapshot IDs | Turn status carries `{checkpointKey, verifiedAt, restored}`; `/recovery` stays operator-only; callers never receive snapshot IDs |
+| D7 | Delivery modes | `delivery: queue \| steer \| interrupt` and `replaceQueue` are implemented in R0-20 | Lock as implemented: queue is the default durable FIFO (bound 10, no hold); steer joins the active turn without a new hold; interrupt settles before the follow-up; `replaceQueue` is explicit; Slack and HTTP agree; an ambiguous interrupt never duplicates |
+
+### Sign-off
+
+- [ ] D1 turn identity and retention
+- [ ] D2 queued state
+- [ ] D3 configuration fingerprint
+- [ ] D4 questions transport
+- [ ] D5 raw GET migration
+- [ ] D6 recovery visibility
+- [ ] D7 delivery modes
+
+Signed by: ____________________  Date: ____________
+
+No implementation starts until all seven are locked. The §7 acceptance matrix is
+the review target; the record is bounded status, not an exactly-once receipt.
 
 ## 7. Acceptance matrix
 
