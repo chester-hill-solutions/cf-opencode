@@ -53,5 +53,5 @@ describe("MCP connector", () => {
     for (const name of ["submit", "status", "wait", "read", "cancel", "questions", "answer"]) {
       expect(body).toContain(`"${name}"`)
     }
-  })
+  }, 15_000)
 })

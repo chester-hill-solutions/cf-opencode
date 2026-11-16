@@ -19,8 +19,14 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
+      # GitHub Packages needs an explicit token even inside Actions: GITHUB_TOKEN
+      # cannot read these packages unless they are linked to the repository.
       - run: bun install --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
       - run: bun install --cwd runtime/opencode --frozen-lockfile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
       - name: Run the local CI gate
         env:
           QUALITY_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
