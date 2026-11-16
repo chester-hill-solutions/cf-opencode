@@ -1,5 +1,7 @@
 # Active local Stow branch: implications for Aboiteau
 
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is retained as a read-only Stow-side inventory; no work here is scheduled, and the roadmap wins on any disagreement.
+
 Inspected read-only on 2026-11-12 UTC: `/Users/ladmin/WebProjects/stow`, branch `codex/npm-v0.3.7`, HEAD `68132194`, including uncommitted and untracked sources. This assessment concerns that working tree, not remote main or a released binary. No tests were run and no Stow files were modified. Existing recorded verification is identified separately below.
 
 **Planning follow-up:** the user requested consumer work in both repositories.

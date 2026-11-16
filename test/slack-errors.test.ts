@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
 import { usageLogResponse } from "./helpers/usage-log"
+import { driveConversationJobs } from "./helpers/conversation-jobs"
 
 /**
  * A failed turn must be visible in the thread. Error events used to go to SSE
@@ -102,10 +103,10 @@ describe("Slack failure delivery", () => {
 
   it("posts a turn error to the Slack thread", async () => {
     const stub = env.CONVERSATION.getByName("C1:slack-error")
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDurableObject(stub, async (instance, state) => {
       instance.transport = fakeContainer()
       const posts: Array<{ method: string; body: Record<string, unknown> }> = []
-      ;(instance as unknown as { slack: unknown }).slack = async (
+      ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async (
         method: string,
         body: Record<string, unknown>,
       ) => {
@@ -124,7 +125,7 @@ describe("Slack failure delivery", () => {
         }),
       )
       await response.text()
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["turn:observe"])
       return posts
     })
 
@@ -140,7 +141,7 @@ describe("Slack failure delivery", () => {
       const counters = { prompts: 0 }
       instance.transport = fakeContainer(true, counters)
       const posts: string[] = []
-      ;(instance as unknown as { slack: unknown }).slack = async (
+      ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async (
         _method: string,
         body: Record<string, unknown>,
       ) => {
@@ -159,7 +160,7 @@ describe("Slack failure delivery", () => {
       )
       const state = await (await instance.fetch(new Request("https://conversation/state"))).json() as {
         phase?: string
-        queued?: unknown
+        queue?: unknown[]
         budgetReservation?: { dispatched?: boolean }
       }
       return { status: response.status, state, prompts: counters.prompts, posts }
@@ -170,7 +171,7 @@ describe("Slack failure delivery", () => {
     expect(result.status).toBe(200)
     expect(result.prompts).toBe(1)
     expect(result.state.phase).toBe("running")
-    expect(result.state.queued).toBeUndefined()
+    expect(result.state.queue).toEqual([])
     expect(result.state.budgetReservation).toMatchObject({ dispatched: true })
     expect(result.posts.some((text) => text.includes("outcome is unknown"))).toBe(true)
     expect(usage.reservedUSD).toBe(0.1)
@@ -190,7 +191,7 @@ describe("Slack failure delivery", () => {
       const counters = { prompts: 0 }
       instance.transport = fakeContainer(false, counters)
       const posts: string[] = []
-      ;(instance as unknown as { slack: unknown }).slack = async (
+      ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async (
         _method: string,
         body: Record<string, unknown>,
       ) => {
@@ -219,7 +220,7 @@ describe("Slack failure delivery", () => {
     const stub = env.CONVERSATION.getByName("C1:immediate-provider-error")
     let idleAt = 0
     let promptCount = 0
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDurableObject(stub, async (instance, runtime) => {
       instance.transport = (port) => ({
         async fetch(input) {
           const request = input instanceof Request ? input : new Request(input)
@@ -259,7 +260,7 @@ describe("Slack failure delivery", () => {
         method: "POST", body: JSON.stringify({ text: "hello" }),
       }))
       await response.text()
-      await instance.alarm()
+      await driveConversationJobs(instance, runtime.storage, ["turn:observe"])
       const state = await (await instance.fetch(new Request("https://conversation/state"))).json() as {
         phase?: string
         runStartedAt?: number

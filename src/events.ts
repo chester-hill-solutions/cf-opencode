@@ -8,6 +8,7 @@
 export type ConversationEvent =
   | { type: "assistant"; text: string }
   | { type: "settled" }
+  | { type: "steered"; sessionID: string }
   | { type: "permission"; requestID: string; action?: string; resources?: string[] }
   | { type: "error"; message: string }
   | { type: "reset" }

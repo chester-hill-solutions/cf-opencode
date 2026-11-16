@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { archiveWorkspace, workspaceFingerprint } from "../control-server"
@@ -107,6 +107,70 @@ describe("workspaceFingerprint", () => {
     writeFileSync(join(dir, "a.txt"), "two, with a longer body")
     const edited = await workspaceFingerprint(dir)
     expect(edited).not.toBe(baseline)
+  })
+
+  test("detects same-size non-Git content edits with identical timestamps", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cf-opencode-fingerprint-equal-"))
+    dirs.push(dir)
+    mkdirSync(join(dir, "native", ".stow"), { recursive: true })
+    const file = join(dir, "native", ".stow", "index.json"), time = new Date("2020-01-01T00:00:00Z")
+    const content = Buffer.alloc(256 * 1024, "a")
+    writeFileSync(file, content); utimesSync(file, time, time)
+    const before = statSync(file), baseline = await workspaceFingerprint(dir)
+    content[content.length - 1] = 98
+    writeFileSync(file, content); utimesSync(file, time, time)
+    const after = statSync(file)
+    expect(after.size).toBe(before.size)
+    expect(after.mtimeMs).toBe(before.mtimeMs)
+    expect(await workspaceFingerprint(dir)).not.toBe(baseline)
+  })
+
+  test("hashes non-Git symlink targets without reading escaped or dangling destinations", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cf-opencode-fingerprint-links-"))
+    const outside = mkdtempSync(join(tmpdir(), "cf-opencode-fingerprint-outside-"))
+    dirs.push(dir, outside)
+    const target = join(outside, "private.txt"), link = join(dir, "link")
+    writeFileSync(target, "first")
+    symlinkSync(target, link)
+    const baseline = await workspaceFingerprint(dir)
+    writeFileSync(target, "different external contents")
+    expect(await workspaceFingerprint(dir)).toBe(baseline)
+    rmSync(link); symlinkSync("missing-a", link)
+    const dangling = await workspaceFingerprint(dir)
+    expect(dangling).not.toBe(baseline)
+    rmSync(link); symlinkSync("missing-b", link)
+    expect(await workspaceFingerprint(dir)).not.toBe(dangling)
+  })
+
+  test("fixed unprivileged fingerprint helper emits only its digest without starting the control server", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cf-opencode-fingerprint-helper-"))
+    dirs.push(dir)
+    writeFileSync(join(dir, "notes.txt"), "workspace content")
+    const result = Bun.spawnSync([process.execPath, "--no-env-file", "--no-install", "--config=/dev/null", join(import.meta.dir, "../control-server.ts"), "--non-git-workspace-fingerprint", dir], {
+      env: { PATH: process.env.PATH, HOME: "/nonexistent", CONTROL_TOKEN: "synthetic-not-forwarded-in-production" },
+      stdout: "pipe", stderr: "pipe", timeout: 5_000,
+    })
+    if (process.getuid?.() === 0) {
+      expect(result.exitCode).toBe(1)
+      expect(result.stdout.toString()).toBe("")
+    } else {
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout.toString()).toBe(await workspaceFingerprint(dir) + "\n")
+      expect(result.stderr.toString()).toBe("")
+    }
+  })
+
+  test("includes executable modes and empty directories in non-Git archive identity", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cf-opencode-fingerprint-mode-"))
+    dirs.push(dir)
+    const file = join(dir, "script.sh")
+    writeFileSync(file, "exit 0\n"); chmodSync(file, 0o644)
+    const baseline = await workspaceFingerprint(dir)
+    chmodSync(file, 0o755)
+    const executable = await workspaceFingerprint(dir)
+    expect(executable).not.toBe(baseline)
+    mkdirSync(join(dir, "empty"))
+    expect(await workspaceFingerprint(dir)).not.toBe(executable)
   })
 
   test("fingerprints root .stow metadata in Git and non-Git workspaces", async () => {

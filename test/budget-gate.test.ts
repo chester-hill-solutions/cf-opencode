@@ -74,7 +74,7 @@ describe("daily budget admission", () => {
       const fake = fakeContainer()
       instance.transport = fake.transport
       const posts: string[] = []
-      ;(instance as unknown as { slack: unknown }).slack = async (_method: string, body: Record<string, unknown>) => {
+      ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async (_method: string, body: Record<string, unknown>) => {
         posts.push(String(body.text ?? ""))
         return { ok: true }
       }

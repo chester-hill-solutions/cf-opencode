@@ -57,15 +57,62 @@ describe("tenancy account seeds", () => {
     const seen = { body: "" }
     await runInDurableObject(stub, async (instance) => {
       instance.transport = fakeContainer(seen).transport
-      // The DO learns its key from the Worker's header.
-      await instance.fetch(
-        new Request("https://conversation/state", {
-          headers: { "x-conversation-key": key },
-        }),
-      )
+      // A cold alarm/runtime preparation has the named DO identity even
+      // before the first Worker-forwarded request arrives.
       await (instance as unknown as { ensureReady(): Promise<unknown> }).ensureReady()
     })
 
     expect(seen.body).toBe("agent-credentials")
+  })
+
+  it("does not let a forwarded key replace the canonical DO tenant", async () => {
+    const isolatedAgent = { tenantID: "tenant-identity", agentID: "agent-identity" }
+    const canonical = conversationKey(isolatedAgent, "C9:1")
+    await env.CHECKPOINTS.put(LEGACY, "legacy-credentials")
+    await env.CHECKPOINTS.put(
+      `tenants/${isolatedAgent.tenantID}/agents/${isolatedAgent.agentID}/account/state.tar.gz`,
+      "canonical-credentials",
+    )
+    const stub = env.CONVERSATION.getByName(canonical)
+    const seen = { body: "" }
+    const result = await runInDurableObject(stub, async (instance) => {
+      instance.transport = fakeContainer(seen).transport
+      const mismatch = await instance.fetch(new Request("https://conversation/state", {
+        headers: { "x-conversation-key": "another-tenant" },
+      }))
+      await (instance as unknown as { ensureReady(): Promise<unknown> }).ensureReady()
+      return { status: mismatch.status }
+    })
+    expect(result.status).toBe(400)
+    expect(seen.body).toBe("canonical-credentials")
+  })
+
+  it("recognizes onboarding by DO name without a forwarded request header", async () => {
+    const stub = env.CONVERSATION.getByName("onboarding")
+    const exempt = await runInDurableObject(stub, async (instance) => {
+      const context = (instance as unknown as { ctx: object }).ctx
+      Object.defineProperty(context, "container", {
+        configurable: true,
+        value: { running: true },
+      })
+      return (instance as unknown as { nativeLeaseEnabled(): boolean }).nativeLeaseEnabled()
+    })
+    expect(exempt).toBe(false)
+  })
+
+  it("blocks runtime preparation when the DO has no named or forwarded identity", async () => {
+    const stub = env.CONVERSATION.get(env.CONVERSATION.newUniqueId())
+    const seen = { body: "" }
+    const error = await runInDurableObject(stub, async (instance) => {
+      instance.transport = fakeContainer(seen).transport
+      try {
+        await (instance as unknown as { ensureReady(): Promise<unknown> }).ensureReady()
+        return undefined
+      } catch (caught) {
+        return caught instanceof Error ? caught.message : String(caught)
+      }
+    })
+    expect(error).toBe("conversation identity unavailable; runtime preparation is blocked")
+    expect(seen.body).toBe("")
   })
 })

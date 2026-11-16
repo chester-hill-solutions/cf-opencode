@@ -111,7 +111,7 @@ async function sendImage(stub: ReturnType<typeof env.CONVERSATION.getByName>, op
     } else {
       delete (instance as unknown as { env: { SLACK_BOT_TOKEN?: string } }).env.SLACK_BOT_TOKEN
     }
-    ;(instance as unknown as { slack: unknown }).slack = async (_method: string, body: Record<string, unknown>) => {
+    ;(instance as unknown as { slackAdapter: { slack: unknown } }).slackAdapter.slack = async (_method: string, body: Record<string, unknown>) => {
       posts.push(String(body.text ?? ""))
       return { ok: true }
     }
@@ -190,7 +190,7 @@ describe("Slack image routing", () => {
       expect(result.calls.filter((call) => call.path.endsWith("/prompt"))).toHaveLength(0)
       expect(result.fetches).toHaveLength(0)
       expect(result.state?.budgetReservation).toBeUndefined()
-      expect(result.state?.queued).toBeUndefined()
+      expect(result.state?.queue).toEqual([])
       expect(result.posts.join(" ")).toContain(key === "nonvision" ? "can't read images" : "couldn't confirm")
       if (key === "nonvision") expect(result.posts.join(" ")).toContain("p/vision")
     }
@@ -214,7 +214,7 @@ describe("Slack image routing", () => {
     expect(capacity.fetches).toHaveLength(0)
     expect(capacity.calls.filter((call) => call.path.endsWith("/prompt"))).toHaveLength(0)
     expect(capacity.state?.budgetReservation).toBeUndefined()
-    expect(capacity.state?.queued).toBeUndefined()
+    expect(capacity.state?.queue).toEqual([])
     expect(capacity.posts.join(" ")).toContain("couldn't start the session")
   })
 
@@ -300,7 +300,7 @@ describe("Slack image routing", () => {
     const result = await sendImage(stub, { eventID: "busy-image", text: "please describe" })
     expect(result.calls).toHaveLength(0)
     expect(result.fetches).toHaveLength(0)
-    expect(result.state?.queued).toBeUndefined()
+    expect(result.state?.queue).toEqual([])
     expect(result.state?.budgetReservation).toEqual({ reservationID: "keep-existing", dispatched: true })
     expect(result.posts.join(" ")).toContain("didn't send or queue this image")
   })
@@ -310,7 +310,7 @@ describe("Slack image routing", () => {
     const result = await sendImage(stub, { eventID: "spoofed", text: "caption", downloadBytes: new Uint8Array([0xff, 0xd8, 0xff, 1, 2]) })
     expect(result.calls.filter((call) => call.path.endsWith("/prompt"))).toHaveLength(0)
     expect(result.state?.budgetReservation).toBeUndefined()
-    expect(result.state?.queued).toBeUndefined()
+    expect(result.state?.queue).toEqual([])
     expect(result.posts.join(" ")).toContain("did not match")
   })
 
@@ -320,7 +320,7 @@ describe("Slack image routing", () => {
     expect(result.fetches).toHaveLength(0)
     expect(result.calls.filter((call) => call.path.endsWith("/prompt"))).toHaveLength(0)
     expect(result.state?.budgetReservation).toBeUndefined()
-    expect(result.state?.queued).toBeUndefined()
+      expect(result.state?.queue).toEqual([])
     expect(result.posts.join(" ")).toContain("Slack file access is not configured")
   })
 

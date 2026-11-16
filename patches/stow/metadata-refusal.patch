@@ -1,0 +1,23 @@
+--- a/internal/s3api/dispatch.go
++++ b/internal/s3api/dispatch.go
+@@ -81,6 +81,20 @@
+ 
+ func (s *Server) dispatchObject(ctx context.Context, w http.ResponseWriter, r *http.Request, route routeInfo) {
+ 	bucket, key := route.bucket, route.key
++	q := r.URL.Query()
++	// These object properties are not represented by the v0.4.0 store model.
++	// Refuse them before selecting any mutation path instead of acknowledging
++	// a write whose requested metadata cannot be recovered.
++	setsObjectMetadata := r.Method == http.MethodPut ||
++		r.Method == http.MethodPost && q.Has("uploads")
++	if setsObjectMetadata {
++		for _, header := range []string{"Cache-Control", "Content-Disposition", "Content-Encoding"} {
++			if len(r.Header.Values(header)) != 0 {
++				writeError(w, r, s3Error{Code: "NotImplemented", Message: header + " object metadata is not supported", Resource: resourcePath(bucket, key), StatusCode: http.StatusNotImplemented})
++				return
++			}
++		}
++	}
+ 	if s.dispatchMultipartObject(ctx, w, r, route) {
+ 		return
+ 	}

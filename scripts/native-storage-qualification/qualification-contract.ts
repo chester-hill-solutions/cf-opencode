@@ -1,3 +1,5 @@
+import { CONTAINER_CASE_IDS, MATRIX_VERSION, projectMatrix, type CaseResult } from "./matrix"
+
 export type SafeProbeResult = {
   mode: "first" | "restored"
   ok: boolean
@@ -9,6 +11,8 @@ export type SafeProbeResult = {
   agentUID: number
   controllerSHA256: string
   binarySHA256: string
+  matrixVersion: number
+  matrix: CaseResult[]
 }
 
 export type BucketListPage = {
@@ -36,11 +40,13 @@ export async function onlyWhenQualificationBucketEmpty<T>(
 export function projectSafeProbe(value: unknown): SafeProbeResult | undefined {
   if (!isRecord(value)) return undefined
   const result = value
+  const matrix = projectMatrix(result.matrix, CONTAINER_CASE_IDS)
   if ((result.mode !== "first" && result.mode !== "restored") || typeof result.ok !== "boolean" ||
     typeof result.workspaceID !== "string" || typeof result.directFileToS3GetMatches !== "boolean" ||
     typeof result.s3PutToWorkspaceFileMatches !== "boolean" || typeof result.metadataTypeMatches !== "boolean" ||
     typeof result.ephemeralSentinelAbsent !== "boolean" || typeof result.agentUID !== "number" ||
-    typeof result.controllerSHA256 !== "string" || typeof result.binarySHA256 !== "string") {
+    typeof result.controllerSHA256 !== "string" || typeof result.binarySHA256 !== "string" ||
+    result.matrixVersion !== MATRIX_VERSION || !matrix) {
     return undefined
   }
   return {
@@ -54,5 +60,7 @@ export function projectSafeProbe(value: unknown): SafeProbeResult | undefined {
     agentUID: result.agentUID,
     controllerSHA256: result.controllerSHA256,
     binarySHA256: result.binarySHA256,
+    matrixVersion: MATRIX_VERSION,
+    matrix,
   }
 }

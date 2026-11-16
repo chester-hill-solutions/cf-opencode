@@ -11,6 +11,7 @@ import { decideSecretRead } from "./secret-read-policy"
 import { evaluateAlerts } from "./alerts"
 import { decideContainerLease } from "./leases"
 import type { Env } from "./env"
+import { parseCheckCollectorOwner, sameCheckCollectorOwner, type CheckCollectorOwner } from "./workspace-check-collector"
 import type { VaultKeyValueStorage } from "@chester-hill-solutions/vault/core"
 import {
   operatorCoverageKey,
@@ -58,6 +59,48 @@ export class Settings extends DurableObject<Env> {
 
   private async handle(request: Request): Promise<Response> {
     const url = new URL(request.url)
+    if (url.pathname === "/slack/canary-thread" && request.method === "POST") {
+      const body = await request.json() as { action?: unknown; channel?: unknown; threadTs?: unknown }
+      if (!body || typeof body !== "object" || Object.keys(body).length !== 3 ||
+        (body.action !== "claim" && body.action !== "lookup") || typeof body.channel !== "string" || !/^[A-Z0-9]{1,64}$/.test(body.channel) ||
+        typeof body.threadTs !== "string" || !/^\d{1,20}\.\d{1,20}$/.test(body.threadTs)) return Response.json({ error: "invalid thread ownership" }, { status: 400 })
+      const key = `slackCanaryThread:${body.channel}:${body.threadTs}`
+      const stored = await this.ctx.storage.get<unknown>(key)
+      if (stored !== undefined) {
+        const row = stored as Record<string, unknown>
+        if (!row || typeof row !== "object" || Array.isArray(row) || Object.keys(row).sort().join(",") !== "channel,claimedAt,threadTs" ||
+          row.channel !== body.channel || row.threadTs !== body.threadTs || !Number.isSafeInteger(row.claimedAt) || (row.claimedAt as number) < 0) {
+          return Response.json({ error: "thread ownership unavailable" }, { status: 503 })
+        }
+        return Response.json({ owned: true })
+      }
+      if (body.action === "claim") await this.ctx.storage.put(key, { channel: body.channel, threadTs: body.threadTs, claimedAt: Date.now() })
+      return Response.json({ owned: body.action === "claim" })
+    }
+    if (url.pathname === "/check-conversations" && request.method === "GET") {
+      const cursor = url.searchParams.get("cursor") ?? ""
+      if (cursor && !/^[A-Za-z0-9:.\\_-]{1,256}$/.test(cursor)) return Response.json({ error: "invalid cursor" }, { status: 400 })
+      const rows = await this.ctx.storage.list<{ key: string }>({ prefix: "conversation:", limit: 10,
+        ...(cursor ? { startAfter: `conversation:${cursor}` } : {}) })
+      const conversations = [...rows.values()]
+      return Response.json({ conversations, nextCursor: rows.size === 10 ? conversations.at(-1)!.key : null })
+    }
+    if (url.pathname === "/check-collector-owner" && request.method === "GET") {
+      return Response.json({ owner: await this.ctx.storage.get("checkCollectorOwner") ?? null })
+    }
+    if ((url.pathname === "/check-collector-owner/acquire" || url.pathname === "/check-collector-owner/release") && request.method === "POST") {
+      let candidate: CheckCollectorOwner
+      try { candidate = parseCheckCollectorOwner(await request.json()) } catch { return Response.json({ error: "invalid owner" }, { status: 400 }) }
+      const owner = await this.ctx.storage.get<CheckCollectorOwner>("checkCollectorOwner")
+      if (url.pathname.endsWith("/acquire")) {
+        if (owner && !sameCheckCollectorOwner(owner, candidate)) return Response.json({ error: "collector owner unresolved" }, { status: 409 })
+        if (!owner) await this.ctx.storage.put("checkCollectorOwner", candidate)
+        return Response.json({ owner: owner ?? candidate })
+      }
+      // An old completion can never release another attempt's slot.
+      if (owner && sameCheckCollectorOwner(owner, candidate)) await this.ctx.storage.delete("checkCollectorOwner")
+      return Response.json({ ok: true })
+    }
     if (url.pathname === "/get") return Response.json(await this.current())
 
     if (url.pathname === "/put" && request.method === "POST") {

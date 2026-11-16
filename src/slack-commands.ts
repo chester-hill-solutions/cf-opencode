@@ -19,6 +19,9 @@ import {
   type Form,
   type FormAnswer,
 } from "./slack-forms"
+import type { TurnObservation } from "./turn-observation"
+import { parseWorkspaceRepositoryBinding } from "./workspace-repository"
+import { handleSlackWorkspaceCommand, readSlackWorkspaceProfile, type SlackWorkspaceCommandServices } from "./slack-workspace-commands"
 
 export interface SlackCommandServices {
   getState(): Promise<{
@@ -27,7 +30,9 @@ export interface SlackCommandServices {
     modelOverride?: string
     lastTurnError?: string
     settlementError?: string
-    queued?: unknown
+    workspaceRepository?: unknown
+    queue?: Array<{ id?: string; text: string; enqueuedAt?: number }>
+    turnObservation?: TurnObservation
   }>
   getDefaultModel(): Promise<string>
   getModels(): Promise<ModelSummary[]>
@@ -36,7 +41,8 @@ export interface SlackCommandServices {
   switchModel(ref: string): Promise<void>
   selectSession(id: string): Promise<void>
   newSession(): Promise<void>
-  stop(): Promise<string>
+  steer(text: string): Promise<string>
+  stop(followUp?: string): Promise<string>
   leave(): Promise<string>
   listForms(sessionID: string): Promise<Form[]>
   answerForm(sessionID: string, formID: string, answer: FormAnswer): Promise<void>
@@ -44,6 +50,7 @@ export interface SlackCommandServices {
   usageText(): Promise<string>
   reply(text: string): Promise<void>
   setupUrl: string
+  workspace?: SlackWorkspaceCommandServices
 }
 
 const SESSION_DIRECTORY = "/workspace"
@@ -54,20 +61,44 @@ const HELP = [
   "• Mention me to start a session; mention me in a thread to engage it before its follow-up replies. DMs are one continuous session.",
   "• `!help` — show commands",
   "• `!status` — show this conversation's session and pending work",
+  "• Messages without a command queue while a turn is active.",
   "• `!model` — list enabled models; `!model provider/model#variant` switches this conversation",
   "• `!sessions` — list recent sessions; `!session 2` or an id switches to one",
   "• `!answer` — show the waiting question; `!answer <value>` answers it",
   "• `!cancel` — dismiss the waiting question",
-  "• `!stop` — interrupt the running session",
+  "• `!steer <text>` — add guidance to the active turn",
+  "• `!stop` — interrupt the active turn and clear queued follow-ups",
+  "• `!stop <text>` — interrupt and use the text as the follow-up message",
   "• `!new` — start a fresh session",
   "• `!leave` — detach this thread; in DMs, use `!new` for a fresh session",
   "• `!usage` — show usage information",
+  "• Workspace first — durable projects, scripts, analysis, documents and prototypes may start blank and remain repository-free permanently. Keeping work requires no git initialization, commit or remote.",
+  "• `!workspace` — show retention and name; persistent is the default",
+  "• `!workspace persistent [name]` / `!workspace disposable [name]` — name or change retention in place; files and session are preserved",
+  "• `!workspace discard` — explicitly discard a disposable workspace. Disposable work keeps recovery checkpoints until then; finish/idle never auto-discards it.",
+  "• A repository is optional. If requested, use a public checkout in a new subfolder and carry over chosen files, preserving originals and checking conflicts.",
+  "• `!repo [GitHub URL base working]` — inspect this workspace, or register an optional root repository before work starts",
+  "• `!check` / `!check [\"bun\",\"test\",...]` — request isolated checks on a registered root's committed snapshot; nested agent checkouts are not eligible",
+  "• `!checks` — inspect this thread's check requests and results",
   "• `!setup` / `!connect` — open account setup",
   "• Images — one PNG or JPEG up to 5 MiB; the selected model must support images. If the bot is busy, resend when it is ready.",
 ].join("\n")
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function boundedSlackText(text: string, limit: number): string {
+  return mrkdwnEscape(text.slice(0, limit)).replace(/[`*_~|]/g, (char) => {
+    switch (char) {
+      case "`": return "ˋ"
+      case "*": return "＊"
+      case "_": return "＿"
+      case "~": return "～"
+      case "|": return "｜"
+      default: return char
+    }
+  })
 }
 
 function currentDirectorySession<T extends { parentID?: string; location?: { directory?: string } }>(session: T): boolean {
@@ -116,6 +147,11 @@ export async function handleSlackCommand(text: string, services: SlackCommandSer
 
   const reply = (message: string) => services.reply(message)
   try {
+    if (["workspace", "repo", "check", "checks"].includes(name)) {
+      try { await reply(await handleSlackWorkspaceCommand(name, args, services.workspace) ?? "Workspace control unavailable.") }
+      catch { await reply("Workspace control could not be completed. Use `!workspace`, `!repo` or `!checks` to inspect retained state before retrying.") }
+      return true
+    }
     if (name === "help") {
       await reply(HELP)
       return true
@@ -147,8 +183,18 @@ export async function handleSlackCommand(text: string, services: SlackCommandSer
       await reply(await services.leave())
       return true
     }
+    if (name === "steer") {
+      const guidance = args.trim()
+      if (!guidance) {
+        await reply("Use `!steer <text>` to add guidance to the active turn.")
+        return true
+      }
+      await reply(await services.steer(guidance))
+      return true
+    }
     if (name === "stop") {
-      await reply(await services.stop())
+      const followUp = args.trim()
+      await reply(await (followUp ? services.stop(followUp) : services.stop()))
       return true
     }
     if (name === "model") {
@@ -228,12 +274,42 @@ export async function handleSlackCommand(text: string, services: SlackCommandSer
     if (name === "status") {
       const state = await services.getState()
       const model = state.modelOverride || await services.getDefaultModel().catch(() => undefined)
+      let workspace = "Workspace: general; a repository is optional."
+      if (state.workspaceRepository !== undefined) {
+        try {
+          const binding = parseWorkspaceRepositoryBinding(state.workspaceRepository)
+          workspace = `Registered root (${binding.status}): ${mrkdwnEscape(binding.repository)}`
+        } catch { workspace = "Root repository status is unavailable; inspect it with `!repo`." }
+      }
+      const retention: string[] = []
+      if (services.workspace?.workspace) {
+        try {
+          const profile = await readSlackWorkspaceProfile(services.workspace.workspace)
+          retention.push(`Retention: ${profile.retention}${profile.name ? ` — ${mrkdwnEscape(profile.name)}` : ""}${profile.status === "discarding" ? " (discard pending)" : ""}.`)
+        } catch { retention.push("Workspace retention status is unavailable; inspect `!workspace` before making changes.") }
+      }
       const lines = [
         state.sessionID ? `Session \`${state.sessionID}\`` : "No session mapped here yet.",
         `Phase: ${state.phase ?? "idle"}`,
+        workspace,
+        ...retention,
         ...(model ? [`Model: \`${model}\``] : []),
       ]
-      if (state.queued) lines.push("⏳ A message is queued.")
+      const queue = state.queue ?? []
+      if (queue.length) {
+        lines.push(`⏳ ${queue.length} message${queue.length === 1 ? "" : "s"} queued.`)
+        const head = queue[0]
+        if (head) {
+          const id = typeof head.id === "string" ? ` [${boundedSlackText(head.id, 80)}]` : ""
+          const queueText = typeof head.text === "string" ? head.text : "(message text unavailable)"
+          const boundedText = queueText.length > 180 ? `${queueText.slice(0, 177)}…` : queueText
+          lines.push(`Next: ${boundedSlackText(boundedText, 180)}${id}`)
+        }
+      }
+      if (state.turnObservation?.overdue) {
+        const minutes = Math.round(state.turnObservation.thresholdMs / 60_000)
+        lines.push(`⚠️ Turn exceeded the ${minutes}-minute observation threshold. This reports elapsed time only; execution is not automatically stopped.`)
+      }
       if (state.lastTurnError) lines.push(`⚠️ Last turn error: ${state.lastTurnError}`)
       if (state.settlementError) lines.push(`⚠️ Settlement error: ${state.settlementError}`)
       if (!state.sessionID) {

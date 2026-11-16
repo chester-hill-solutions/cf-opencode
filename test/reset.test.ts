@@ -146,9 +146,9 @@ describe("conversation reset", () => {
       let finishCleanup!: () => void
       const cleanupEntered = new Promise<void>((resolve) => { enterCleanup = resolve })
       const cleanupGate = new Promise<void>((resolve) => { finishCleanup = resolve })
-      const lifecycle = instance as unknown as { deleteCheckpoints(): Promise<void> }
-      const originalCleanup = lifecycle.deleteCheckpoints.bind(instance)
-      lifecycle.deleteCheckpoints = async () => {
+      const lifecycle = instance as unknown as { checkpoints: { deleteAll(): Promise<void> } }
+      const originalCleanup = lifecycle.checkpoints.deleteAll.bind(lifecycle.checkpoints)
+      lifecycle.checkpoints.deleteAll = async () => {
         enterCleanup()
         await cleanupGate
         await originalCleanup()
@@ -200,7 +200,7 @@ describe("conversation recycle", () => {
   it("refuses to recycle when the checkpoint fails", async () => {
     const stub = env.CONVERSATION.getByName("C1:recycle-checkpoint")
     const result = await runInDurableObject(stub, async (instance) => {
-      ;(instance as unknown as { checkpoint(): Promise<boolean> }).checkpoint = async () => false
+      ;(instance as unknown as { checkpoints: { capture(): Promise<boolean> } }).checkpoints.capture = async () => false
       const response = await instance.fetch(
         new Request("https://conversation/recycle", { method: "POST" }),
       )

@@ -1,0 +1,247 @@
+{
+  "schemaVersion": 1,
+  "kind": "prepared-comparison",
+  "protocolSHA256": "b5200b1bb5d6bc373d0a38befcafe5de2331fe93789be8344011e76b7f968c9b",
+  "fixtureSHA256": {
+    "ledger": "a175ef567a0c552e16d8e64c11bb98a3f9349485d21663c43c50afa7458b5396",
+    "queue": "e153c8f04423007cb85d9d822b04b0eb8018f2c51374505421dc91fdce1e1668"
+  },
+  "sourceSHA256": {
+    "fixtures.ts": "8791deb1bf25dc85bb54aaa25f10efadb97ab9b1a9648ccba888ae3efa2c85c9",
+    "protocol.ts": "0b9b35c0865043d4ab482957174174ddc1abf26c546e6713ed079b32dd7b82c5",
+    "oracle.ts": "02b2cf3f516e62152c87eb445130978b06db446861cb321169425a9ff5258c47",
+    "prepare.ts": "3e06c3f74cb142a9bb86b1353521444d84e2dd332cdb1451b5960b95311110a9",
+    "results.ts": "9bb92452348e6698d6b2188a1674a6472430850b4b3c4f64fc0fd72d4e69ded7",
+    "cli.ts": "1c7f21320400625fc8c524fcfc8e00e94bbf512d286fcfb66f7eefd270b5bda2",
+    "baseline/worker.ts": "eef09394d0b93169374eaee992a9f2ccc26f9097322e8b94fa82e3064e1cfd62",
+    "baseline/linux.ts": "0cbc3da4aea66d4db2f348f14a609dca12d5a51e77830895856d8a5a26f23c00",
+    "baseline/provider.ts": "c1a8051843117ba058c388abc1cf3cd268450f47c474bfdf9526d26b2e64ecd3",
+    "baseline/package.json": "c4d7f4b7171b775ae33e116689e037bfbdbe332c863f638777b8fb5b398138a4",
+    "baseline/bun.lock": "623a135e5a7e66c7c3c8f698f3a70a050e11d593e08cd7dd6af09cbf54dcae97",
+    "baseline/wrangler.template.jsonc": "10e951bf929d23928a6ac6de2d726267a01e0b8175347b4dbed346eef1b3822f",
+    "../../src/control-auth.ts": "6b30d7c78667a72f8886585b6481a0a0d2b65d9a6dd1f81fbd3d3505434d7b2f"
+  },
+  "nativeArtifact": {
+    "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-metadata-candidate@sha256:4fe5c456f39903be5cbba5027a5d00f1961ac37fb63c7e6a3493c09af2903f24",
+    "stowVersion": "0.4.0",
+    "stowPatch": "metadata-refusal.2",
+    "stowSourceCommit": "3bb3e890bbe56f11dd783c2ccfb9bd2813156919",
+    "stowPatchSHA256": "054b8b091a052189af1d4e17d2464b9a2a95b5fa55421a8f3b9358c326c7d014",
+    "controllerSHA256": "0ec5e1e2dff12951041e837cab3aa877701f1d02359f6ecc8650e1cf20c8cace",
+    "binarySHA256": "39615975e58008a60a94b0c696e9ee46aa8dba77e1899e5297dcb4f5010e3174",
+    "profile": "custom-1cpu-2gib",
+    "instance": {
+      "vcpu": 1,
+      "memoryMib": 2048,
+      "diskMb": 8192
+    }
+  },
+  "baselineDependencies": {
+    "@ai-sdk/provider": "3.0.8",
+    "@opencode/sdk": "2.2.5",
+    "@opencode/plugin": "2.2.5",
+    "agents": "0.33.0"
+  },
+  "protocol": {
+    "schemaVersion": 1,
+    "id": "r0-23-v1",
+    "scope": "Authored diagnostic coding suite, not population-level model accuracy or a completed G0 representative-workload qualification.",
+    "arms": [
+      "aboiteau",
+      "opencode-harness-linux"
+    ],
+    "strata": {
+      "product": "Compare complete configurations; pin and disclose system prompts, tools, policies and runtime differences.",
+      "matched": "Unrated until the same model endpoint/settings, runtime version, tool schemas/behavior, system instructions and permissions are proved equivalent."
+    },
+    "repetitions": {
+      "ordinary": 3,
+      "conditions": [
+        "cold",
+        "warm"
+      ],
+      "faults": 3,
+      "modelTurnDeadlineMs": 900000
+    },
+    "order": "Pair by task/condition/repetition; alternate the arm that goes first. Fresh fixture repo per attempt. Warm trials prime only runtime/provider connectivity with no model turn; do not leak prior task solutions.",
+    "metrics": [
+      "acceptedTask",
+      "oraclePassed",
+      "publicTestsPassed",
+      "wallMs",
+      "firstOutputMs",
+      "restoreMs",
+      "checkpointMs",
+      "modelUSD",
+      "containerUSD",
+      "storageUSD",
+      "operatorSeconds",
+      "interventions",
+      "duplicateEffects",
+      "unknownUsage",
+      "lostFiles"
+    ],
+    "decision": {
+      "minAcceptedFraction": 0.9,
+      "minRelativeBenefit": 0.2,
+      "maxAcceptedFractionRegression": 0.05,
+      "maxMedianLatencyRegression": 0.1,
+      "maxCostRegression": 0.1,
+      "catastrophicViolationsAllowed": 0,
+      "p95MinimumSamples": 20,
+      "rule": "Reuse/reduce is a candidate only with no accounting/security/false-recovery violations, <=5 percentage-point task acceptance regression and >=20% measured cost or intervention reduction, without >10% regression in the other measured cost/latency metric. Missing costs, task equivalence or insufficient samples mean inconclusive; no automatic migration."
+    },
+    "execution": {
+      "phase": "preparation",
+      "model": null,
+      "providerEndpoint": null,
+      "temperature": null,
+      "maxOutputTokens": null,
+      "stagingAccount": null,
+      "spendBudgetUSD": null,
+      "deploymentNames": [],
+      "runEligible": false
+    },
+    "faults": [
+      {
+        "id": "F1",
+        "task": "L5",
+        "trigger": "Disconnect the client after durable acceptance, before the first tool result.",
+        "success": "Reconnect using the saved operation/event cursor; observe the original operation and oracle result without resubmitting the prompt."
+      },
+      {
+        "id": "F2",
+        "task": "Q1",
+        "trigger": "Evict only the coordinator DO after a recorded tool-start boundary; preserve its container.",
+        "success": "Recover the same accepted operation and files; count every model/tool restart, repeated effect and intervention."
+      },
+      {
+        "id": "F3",
+        "task": "L5",
+        "trigger": "Destroy the disposable container after a verified recovery point and a later recorded edit.",
+        "success": "Name the actual restored recovery point and lost bytes; report unsupported recovery or lost edits truthfully, never call restored history task success."
+      },
+      {
+        "id": "F4",
+        "task": "Q2",
+        "trigger": "Drop the first prompt-acceptance response after server-side durable acceptance; retry using the same operation identity and payload.",
+        "success": "No second accepted operation or duplicate external effect; an ambiguous outcome remains explicit."
+      },
+      {
+        "id": "F5",
+        "task": "L5",
+        "trigger": "Fail checkpoint publication after task output exists, before a successful checkpoint receipt.",
+        "success": "No false checkpoint success or unsafe deletion; preserve the prior checkpoint and report unsaved work/intervention explicitly."
+      }
+    ],
+    "tasks": [
+      {
+        "id": "L1",
+        "repo": "ledger",
+        "prompt": "Fix parseLines(text) in src/index.ts to accept a single leading UTF-8 BOM, LF or CRLF, blank/whitespace-only lines and a final line without a newline. Preserve parsed order. Malformed nonblank JSON must throw an Error whose message includes the physical 1-based line number. Do not silently skip malformed records. Keep the existing API and basic tests passing.",
+        "checks": [
+          "BOM/CRLF/blank/final-line parsing",
+          "physical malformed-line number"
+        ]
+      },
+      {
+        "id": "L2",
+        "repo": "ledger",
+        "prompt": "Make parseAmount(value:string) convert a decimal currency string into exact integer cents without floating-point rounding. Allow an optional leading minus, digits, and optionally one or two fractional digits. Reject empty, whitespace, plus signs, exponents, nonfinite values, more than two fractional digits and results outside the safe-integer range. Return positive zero for negative zero. Keep the existing API and basic tests passing.",
+        "checks": [
+          "exact signed cents",
+          "syntax and safe-integer boundaries",
+          "no negative zero"
+        ]
+      },
+      {
+        "id": "L3",
+        "repo": "ledger",
+        "prompt": "Harden summarize(rows) in src/index.ts. Currency labels such as __proto__, constructor and toString must be ordinary independent keys. Reject an empty/non-string currency, non-safe-integer cents or an overflowing total. Preserve the Record<string,number> API, do not mutate inputs and keep basic tests passing.",
+        "checks": [
+          "prototype-like keys",
+          "invalid amounts/labels",
+          "overflow and input immutability"
+        ]
+      },
+      {
+        "id": "L4",
+        "repo": "ledger",
+        "prompt": "Make mergeLedgers(left,right) merge by nonempty string id in first-seen order. Identical duplicates (same id, currency and cents) collapse to one; conflicting duplicates throw before returning a result. Do not mutate or alias input records: editing a returned record must not edit an input record. Keep basic tests passing.",
+        "checks": [
+          "order and deduplication",
+          "conflict/invalid id rejection",
+          "no input alias"
+        ]
+      },
+      {
+        "id": "L5",
+        "repo": "ledger",
+        "prompt": "Fix src/cli.ts so a failed input read, malformed JSON or invalid summary leaves an existing output file byte-for-byte intact. Compute and validate before publishing, then write to a unique temporary sibling and rename it into place. Clean up the temporary file on success or failure. Valid input still writes the summary plus newline. Keep basic tests passing.",
+        "checks": [
+          "failed input preserves old output",
+          "success atomically publishes summary",
+          "temporary-file cleanup"
+        ]
+      },
+      {
+        "id": "Q1",
+        "repo": "queue",
+        "prompt": "Fix WorkQueue so a rejected or synchronously throwing task frees its slot and later tasks keep running. Each returned promise must settle exactly once, active/pending counts must return to zero, and the concurrency bound must still hold. Keep the API and existing tests passing.",
+        "checks": [
+          "async reject and sync throw release slot",
+          "later task completion",
+          "zero final counts"
+        ]
+      },
+      {
+        "id": "Q2",
+        "repo": "queue",
+        "prompt": "Implement run(work,{priority?:number}) scheduling in WorkQueue. Higher priority queued work starts first; equal priorities preserve FIFO order; omitted priority means zero. Never preempt a running task. Keep the API and existing tests passing.",
+        "checks": [
+          "descending priority",
+          "stable FIFO ties",
+          "running task not preempted"
+        ]
+      },
+      {
+        "id": "Q3",
+        "repo": "queue",
+        "prompt": "Implement run(work,{signal?:AbortSignal}) queued cancellation in WorkQueue. Pre-aborted or aborted-while-queued work must reject with name AbortError and never execute; canceling one job must leave others intact. After work starts, aborting its signal must not interrupt it or release its slot early. Remove queued abort listeners when the job starts or is canceled. Keep existing tests passing.",
+        "checks": [
+          "pre-abort and queued abort",
+          "other work preserved",
+          "active abort does not free slot"
+        ]
+      },
+      {
+        "id": "Q4",
+        "repo": "queue",
+        "prompt": "Add setConcurrency(value:number):void to WorkQueue and validate the constructor's concurrency. Accept only integers 1 through 16; reject invalid values without changing the current limit. Increasing the limit starts waiting tasks immediately. Decreasing it leaves running jobs intact and starts no more until active work is below the new limit. Keep existing tests passing.",
+        "checks": [
+          "validation and unchanged limit on refusal",
+          "increase drains",
+          "decrease preserves active jobs"
+        ]
+      },
+      {
+        "id": "Q5",
+        "repo": "queue",
+        "prompt": "Add onIdle():Promise<void> to WorkQueue. It resolves only after both active and pending work are empty, supports multiple waiters, resolves immediately for an idle queue, and works again after another batch is enqueued. Keep existing tests passing.",
+        "checks": [
+          "multiple waiters",
+          "pending work included",
+          "repeated batches"
+        ]
+      }
+    ]
+  },
+  "executionReady": false,
+  "blockedBy": [
+    "model-endpoint/settings/budget not selected",
+    "equivalent native baseline tools not runtime-qualified",
+    "staging identities and cleanup receipts not frozen",
+    "real-task provider and fault-injection adapters not qualified"
+  ],
+  "measuredAttempts": []
+}

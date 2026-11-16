@@ -1,0 +1,76 @@
+{
+  "observedAt": "2026-11-14T19:54:31.629Z",
+  "kind": "offline storage qualification harness preparation",
+  "sourceBase": "dca482dc83effc7041ba9c3316d28a8ed107bf3f",
+  "result": "PREPARATION_ONLY",
+  "artifact": {
+    "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-shape-ab@sha256:2cd03c57e7458d337fde892cb6a729969e5dd55d6e3f61d01f0ac67068fcc2ba",
+    "stowVersion": "0.4.0",
+    "controllerSHA256": "0ec5e1e2dff12951041e837cab3aa877701f1d02359f6ecc8650e1cf20c8cace",
+    "binarySHA256": "6f0f247912de4c4d5d296a3176fe291b7c29717498f5778d920949d4025420b6",
+    "profile": "custom-1cpu-2gib",
+    "instance": {
+      "vcpu": 1,
+      "memoryMib": 2048,
+      "diskMb": 8192
+    }
+  },
+  "checks": [
+    {
+      "command": "bun run qualification:preflight",
+      "result": "pass",
+      "contractTests": 6,
+      "wranglerVersion": "4.158.0",
+      "typeGeneration": "pass",
+      "deployDryRun": "pass",
+      "bundleKiB": 652.83,
+      "gzipKiB": 129.91
+    },
+    {
+      "command": "bun run typecheck",
+      "result": "pass"
+    },
+    {
+      "command": "bun run check:config",
+      "result": "pass"
+    },
+    {
+      "command": "bun run test",
+      "result": "pass",
+      "bunTests": 407,
+      "runtimeTests": 5
+    },
+    {
+      "command": "bun run test:workers",
+      "result": "pass",
+      "tests": 351,
+      "files": 58
+    },
+    {
+      "command": "bun run build:ui",
+      "result": "pass"
+    },
+    {
+      "command": "git diff --check",
+      "result": "pass"
+    }
+  ],
+  "observedResources": null,
+  "observedResourcesReason": "ContainerInfo exposes image and labels only; requested resources are checked but are not independently measured",
+  "remoteDigestAvailability": "not rechecked",
+  "resourcesCreated": false,
+  "productionChanged": false,
+  "providerPrompts": 0,
+  "liveRecoveryQualified": false,
+  "productGateClosed": false,
+  "sourceSHA256": {
+    "package.json": "97ad63d62381dfd34b47de652ce867b2930cc0d62182f063f49d635e5d8f4d31",
+    "scripts/native-storage-qualification/artifact.ts": "fe46f1cf46dd4426b2bfaf62e2ac38e63f41da3899170a3c0ee0eb27110ff003",
+    "scripts/native-storage-qualification/container-probe.ts": "02e8c9a60f5d18024d99e5ca2a0dce0ce5c261569df6c49e4da17251d928d0b7",
+    "scripts/native-storage-qualification/worker.ts": "ac88fb74f0705a6081092432747a55a107eff6239612828180f563dfaeec3989",
+    "scripts/native-storage-qualification/preflight.ts": "d44a37c43a09903a0a5fcc483a6dbbee0412fcd49e289e3dd211fe70f8aa3682",
+    "scripts/native-storage-qualification/tsconfig.json": "e435376df3510c77b36b05b6c4b12666651d1b8ca6e9cb2589f6513eb10ab29c",
+    "scripts/native-storage-qualification/qualification-contract.test.ts": "6fc7486f936814a1d2a0b4273db257598a68e5093454130c7a886f582f898acb",
+    "scripts/native-storage-qualification/wrangler.template.jsonc": "8f504c726124f30aef487096e7952372209f61e471cb705da9672cff5657119f"
+  }
+}

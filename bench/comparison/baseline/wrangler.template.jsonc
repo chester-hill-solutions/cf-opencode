@@ -1,0 +1,41 @@
+{
+  "$schema": "../../../node_modules/wrangler/config-schema.json",
+  "name": "aboiteau-r0-23-disposable-baseline",
+  "account_id": "__SET_APPROVED_STAGING_ACCOUNT__",
+  "main": "worker.ts",
+  "compatibility_date": "2026-11-14",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": { "BENCH_TASK_CONFIG": "", "WORKSPACE_REPO": "", "OPENCODE_MODEL": "opencode/deepseek-v4.1-flash", "POLL_SECONDS": "2", "EVENTED_FRESH_CONVERSATIONS": "true", "IDLE_CLOSE_SECONDS": "120", "CONTAINER_INSTANCE_PROFILE": "custom-1cpu-2gib" },
+  "containers": [{ "class_name": "LinuxBaselineProbe", "scheduling_policy": "durable_object", "images": {
+    "evented": { "image": "__SET_QUALIFIED_IMAGE_DIGEST__" }
+  }}, { "class_name": "TaskBaseline", "scheduling_policy": "durable_object", "images": {
+    "evented": { "image": "__SET_QUALIFIED_IMAGE_DIGEST__" }
+  }}, { "class_name": "NativeQualification", "scheduling_policy": "durable_object", "images": { "evented": { "image": "__SET_QUALIFIED_IMAGE_DIGEST__" } } },
+    { "class_name": "SmokeConversation", "scheduling_policy": "durable_object", "images": { "evented": { "image": "__SET_QUALIFIED_IMAGE_DIGEST__" } } },
+    { "class_name": "SmokeEvaluator", "scheduling_policy": "durable_object", "images": { "evented": { "image": "__SET_QUALIFIED_IMAGE_DIGEST__" } } }],
+  "r2_buckets": [{ "binding": "CHECKPOINTS", "bucket_name": "__SET_DISPOSABLE_SMOKE_BUCKET__" }],
+  "durable_objects": { "bindings": [
+    { "class_name": "SyntheticHarnessProbe", "name": "SYNTHETIC" },
+    { "class_name": "LinuxBaselineProbe", "name": "BASELINE" },
+    { "class_name": "TaskBaseline", "name": "TASKS" },
+    { "class_name": "SyntheticTaskProbe", "name": "TASK_PROBE" },
+    { "class_name": "NativeQualification", "name": "NATIVE" },
+    { "class_name": "SmokeProvider", "name": "SMOKE_PROVIDER" },
+    { "class_name": "SyntheticSmokeProvider", "name": "SYNTHETIC_SMOKE_PROVIDER" },
+    { "class_name": "SmokeConversation", "name": "CONVERSATION" },
+    { "class_name": "Settings", "name": "SETTINGS" },
+    { "class_name": "SmokeEvaluator", "name": "EVALUATOR" }
+  ] },
+  "exports": {
+    "SyntheticHarnessProbe": { "type": "durable-object", "storage": "sqlite" },
+    "LinuxBaselineProbe": { "type": "durable-object", "storage": "sqlite" },
+    "TaskBaseline": { "type": "durable-object", "storage": "sqlite" },
+    "SyntheticTaskProbe": { "type": "durable-object", "storage": "sqlite" },
+    "NativeQualification": { "type": "durable-object", "storage": "sqlite" },
+    "SmokeProvider": { "type": "durable-object", "storage": "sqlite" },
+    "SyntheticSmokeProvider": { "type": "durable-object", "storage": "sqlite" },
+    "SmokeConversation": { "type": "durable-object", "storage": "sqlite" },
+    "Settings": { "type": "durable-object", "storage": "sqlite" },
+    "SmokeEvaluator": { "type": "durable-object", "storage": "sqlite" }
+  }
+}

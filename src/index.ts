@@ -16,9 +16,13 @@ import { bearerAuthorized } from "./control-auth"
 import { enforceRateLimit } from "./rate-limit"
 import { logEvent } from "./log"
 import { parseObjectJson } from "./http-json"
+import { validateOpencodeKey } from "./opencode-key-validation"
+import { handleCheckCollector } from "./workspace-check-collector"
+import { handleSlackCanaryRoute } from "./slack-canary"
 
 export { Conversation } from "./conversation"
 export { Settings } from "./settings-do"
+export { ProviderEgress } from "./provider-egress-entrypoint"
 
 const DECISIONS = {
   oc_perm_once: "once",
@@ -56,6 +60,7 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url)
     if (url.pathname === "/health") return new Response("ok")
+    if (url.pathname.startsWith("/api/check-collector/")) return handleCheckCollector(request, env)
 
     // GitHub redirects the browser here without our bearer token; the OAuth
     // state value is the credential, and it is single-use.
@@ -80,6 +85,30 @@ export default {
       body,
     })
     if (!valid) return new Response("invalid signature", { status: 401 })
+
+    const canaryRoute = (kind: string | null, claim: boolean) => handleSlackCanaryRoute(body, kind, {
+      channel: env.SLACK_CANARY_CHANNEL,
+      newThreads: claim ? env.SLACK_CANARY_NEW_THREADS : "false",
+      startTS: env.SLACK_CANARY_START_TS,
+      botUserID: env.SLACK_BOT_USER_ID,
+      async ownership(action, channel, threadTs) {
+        const response = await settingsDo(env, "/slack/canary-thread", { action, channel, threadTs })
+        if (!response.ok) throw new Error("Canary ownership unavailable")
+        const result: unknown = await response.json()
+        if (!result || typeof result !== "object" || Array.isArray(result) ||
+          Object.keys(result).length !== 1 || !("owned" in result) || typeof result.owned !== "boolean") {
+          throw new Error("Invalid canary ownership acknowledgement")
+        }
+        return result.owned
+      },
+    })
+    if (url.pathname === "/slack/canary-route") return canaryRoute(url.searchParams.get("kind"), true)
+    if (env.SLACK_CANARY_CHANNEL && ["/slack/events", "/slack/interactivity"].includes(url.pathname)) {
+      // Delegation cannot dispatch outside a previously claimed canary thread.
+      const decision = await canaryRoute(url.pathname === "/slack/events" ? "events" : "interactivity", false)
+      if (!decision.ok) return decision
+      if ((await decision.json() as { route: string }).route !== "canary") return new Response("ok")
+    }
 
     if (url.pathname === "/slack/events") {
       let payload: SlackEventEnvelope
@@ -231,9 +260,8 @@ export default {
 }
 
 /**
- * Conversation DO handle that carries the key with every call. Durable Objects
- * cannot look up their own name, and the DO needs it to exempt admin traffic
- * from the container cap.
+ * Conversation DO handle that carries the key with every call. The DO checks
+ * this forwarded value against its canonical id name before routing or seeding.
  */
 function conversationStub(env: Env, key: string) {
   const stub = env.CONVERSATION.getByName(key)
@@ -341,6 +369,48 @@ async function handleApi(
 
   const conversation = conversationStub(env, key)
   const suffix = parts.slice(3)
+  if (suffix.length === 2 && suffix[0] === "workspace" && ["profile", "discard"].includes(suffix[1]!)) {
+    const allowed = suffix[1] === "profile" ? ["GET", "PUT"] : ["GET", "POST"]
+    if (!allowed.includes(request.method)) return new Response("method not allowed", { status: 405, headers: { allow: allowed.join(", ") } })
+    return conversation.fetch(`https://conversation/workspace/${suffix[1]}${url.search}`, { method: request.method,
+      ...(request.method === "GET" ? {} : { headers: { "content-type": "application/json" }, body: request.body }) })
+  }
+  if (suffix.length === 2 && suffix[0] === "providers" && suffix[1] === "repair") {
+    if (request.method !== "GET" && request.method !== "POST") return new Response("method not allowed", { status: 405, headers: { allow: "GET, POST" } })
+    return conversation.fetch(`https://conversation/providers/repair${url.search}`, { method: request.method,
+      ...(request.method === "POST" ? { headers: { "content-type": "application/json" }, body: request.body } : {}) })
+  }
+
+  if (suffix[0] === "workspace" && suffix[1] === "checks") {
+    // The DO owns strict routing and bounded parsing; preserve the body stream.
+    return conversation.fetch(`https://conversation/${suffix.join("/")}`, {
+      method: request.method,
+      ...(request.method === "GET" || request.method === "HEAD" ? {} : {
+        headers: { "content-type": "application/json" }, body: request.body,
+      }),
+    })
+  }
+
+  if (suffix.length === 2 && suffix[0] === "workspace" && suffix[1] === "repository") {
+    if (request.method !== "GET" && request.method !== "PUT") {
+      return Response.json({ error: "method not allowed" }, { status: 405, headers: { allow: "GET, PUT" } })
+    }
+    if (request.method === "GET") return conversation.fetch("https://conversation/workspace/repository")
+    const parsed = await parseObjectJson(request)
+    if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 })
+    // Selection records intent only; it never registers or starts execution.
+    return conversation.fetch("https://conversation/workspace/repository", {
+      method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(parsed.value),
+    })
+  }
+
+  if (suffix.length === 2 && suffix[0] === "workspace" && suffix[1] === "preflight") {
+    if (request.method !== "GET") {
+      return Response.json({ error: "method not allowed" }, { status: 405, headers: { allow: "GET" } })
+    }
+    // Inspection must not register a conversation or admit execution.
+    return conversation.fetch("https://conversation/workspace/preflight")
+  }
 
   if (suffix.length === 1 && suffix[0] === "recovery") {
     if (request.method === "GET") {
@@ -447,8 +517,15 @@ async function handleApi(
     if (typeof body.text !== "string" || !body.text.trim()) {
       return Response.json({ error: "empty message" }, { status: 400 })
     }
+    if ((body.delivery !== undefined && !["queue", "steer", "interrupt"].includes(body.delivery as string)) ||
+      (body.replaceQueue !== undefined && typeof body.replaceQueue !== "boolean") ||
+      (body.delivery === "steer" && body.replaceQueue !== undefined)) {
+      return Response.json({ error: "invalid delivery options" }, { status: 400 })
+    }
     recordConversation()
     const message: MessageRequest = {
+      ...(body.delivery !== undefined ? { delivery: body.delivery as MessageRequest["delivery"] } : {}),
+      ...(body.replaceQueue !== undefined ? { replaceQueue: body.replaceQueue as boolean } : {}),
       text: body.text,
       transport: "http",
       ...(body.user ? { user: body.user as string } : {}),
@@ -599,6 +676,10 @@ async function handleOnboarding(
     if (request.method === "POST" && path.startsWith("/integrations/")) {
       const parsed = await parseObjectJson(request.clone())
       if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 })
+      if (path === "/integrations/opencode/connect/key") {
+        const validation = await validateOpencodeKey(parsed.value.key)
+        if (!validation.ok) return Response.json({ error: validation.error, code: validation.code }, { status: validation.status })
+      }
     }
     const conversation = conversationStub(env, ONBOARDING_KEY)
     const body =

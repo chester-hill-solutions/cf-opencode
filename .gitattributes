@@ -1,0 +1,2 @@
+patches/stow/*.patch -whitespace
+scripts/slack-canary-release/legacy-router.patch -whitespace

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
 import type { CredentialEntry } from "@opencode/client"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
+import { runtimeCache } from "./helpers/runtime-cache"
 
 type CredentialPayload = {
   id: string
@@ -55,10 +56,8 @@ function fakeContainer(options: {
 }
 
 function installTransport(instance: unknown, transport: (port: number) => { fetch(input: Request | string | URL): Promise<Response> }) {
-  const internals = instance as { ready: boolean; opencodePort?: unknown; opencodeGeneration?: string; transport: typeof transport }
-  internals.ready = false
-  internals.opencodePort = undefined
-  internals.opencodeGeneration = undefined
+  runtimeCache(instance).invalidate()
+  const internals = instance as { transport: typeof transport }
   internals.transport = transport
 }
 
@@ -153,9 +152,7 @@ describe("legacy provider credential synchronization", () => {
     // Model a restore from an older credential-free archive in a new runtime.
     targetCredentials.splice(0)
     await runInDurableObject(target, async (instance) => {
-      const internals = instance as unknown as { ready: boolean; opencodePort?: unknown }
-      internals.ready = false
-      internals.opencodePort = undefined
+      runtimeCache(instance).invalidate()
       instance.transport = fakeContainer({ credentials: targetCredentials, created, generation: "runtime-two" })
     })
     expect((await openModels(target, "provider-sync-new-generation")).status).toBe(200)
@@ -166,7 +163,7 @@ describe("legacy provider credential synchronization", () => {
   it("exposes credentials only from the onboarding key", async () => {
     const stub = env.CONVERSATION.getByName("provider-sync-guard")
     const response = await stub.fetch("https://conversation/provider-credentials", {
-      headers: { "x-conversation-key": "ordinary-conversation" },
+      headers: { "x-conversation-key": "provider-sync-guard" },
     })
     expect(response.status).toBe(403)
   })

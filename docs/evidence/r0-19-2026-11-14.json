@@ -1,0 +1,44 @@
+{
+  "observedAt": "2026-11-14T19:28:26.787Z",
+  "sourceRevision": "39a42d59683c806b1b15c3ff000c948b94b314ee",
+  "probeSHA256": "85d333a2dedc50903a57a4cc31c2ba48b1a75ce523c7c39964eef81cac0e5482",
+  "image": {
+    "requested": "cf-opencode-shape-ab:stow040-3d71de1",
+    "id": "sha256:dc0856170d9a60aa1f9c9766435031ddfdf9e2688f5c9b8b0cec2d08153ad630",
+    "platform": "linux/amd64"
+  },
+  "conditions": {
+    "network": "none",
+    "volumes": [],
+    "credentials": "synthetic only",
+    "identity": "1001:1001",
+    "providerCalls": 0
+  },
+  "commands": {
+    "literal": "cat /var/lib/aboiteau/state/config/opencode/opencode.json",
+    "find": "find /var/lib/aboiteau -name opencode.json -exec cat {} \\;",
+    "repo": "bun test credential-probe.test.ts"
+  },
+  "policy": {
+    "literal": "deny",
+    "find": "allow",
+    "repo": "allow"
+  },
+  "policyEvaluation": "host, pinned OpenCode matcher; image policy/entrypoint/runtime lock SHA256 verified",
+  "reads": {
+    "find": {
+      "exitCode": 1,
+      "recoveredSyntheticCredential": true
+    },
+    "repositoryCode": {
+      "exitCode": 0,
+      "recoveredSyntheticCredential": true
+    }
+  },
+  "artifactFiles": {
+    "/app/entrypoint.sh": "3b83aee13df4acf266736da93140baf75472ec6edb549e1d6e66cf288786585f",
+    "/app/src/permissions.ts": "1b713e1de2cd2d28dc779e21879fab89946ff8ca02cff9f8652df4f998d003a9",
+    "/app/runtime/opencode/bun.lock": "d965226a19c2137d0812434bd9479df68d670565e69a1dde424c949b636ddb54"
+  },
+  "finding": "KNOWN_OPEN_G1"
+}

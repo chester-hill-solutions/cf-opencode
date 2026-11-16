@@ -1,0 +1,860 @@
+{
+  "kind": "live Cloudflare/R2 fixed recovery matrix",
+  "result": "KNOWN_OPEN_R0_15_METADATA",
+  "sourceBase": "b93274769032ede40e80ea219b5fcdb46c9b6b86",
+  "workerVersion": "734594db-dcc0-4d06-b515-a4fabfc1016c",
+  "boundary": {
+    "authorizedBy": "User: computer busy; better off doing live tests",
+    "recordedAt": "2026-11-14T20:43:22.289606+00:00",
+    "account": "ad5ec479b9a421faa2ed06c3d1c2b23a",
+    "worker": "aboiteau-storage-matrix-20261114",
+    "bucket": "aboiteau-storage-matrix-20261114",
+    "limits": {
+      "instances": 1,
+      "vcpu": 1,
+      "memoryMib": 2048,
+      "diskMb": 8192,
+      "idleSeconds": 300,
+      "runWindowSeconds": 1800,
+      "operationalBudgetUSD": 1,
+      "hardBillingCap": false,
+      "providerPrompts": 0,
+      "externalTestRequestsAtMost": 100
+    },
+    "costActualUSD": null,
+    "pricingSource": "https://developers.cloudflare.com/containers/platform/pricing/",
+    "maximumContainerComputeEstimateUSD": 0.046032192,
+    "productionResources": false,
+    "resourcesCreated": true,
+    "startedAt": "2026-11-14T20:48:43.159074+00:00",
+    "sourceBase": "b93274769032ede40e80ea219b5fcdb46c9b6b86",
+    "sourceSHA256": {
+      "scripts/native-storage-qualification/artifact.ts": "fe46f1cf46dd4426b2bfaf62e2ac38e63f41da3899170a3c0ee0eb27110ff003",
+      "scripts/native-storage-qualification/build-probe.ts": "1fc55b1272dd67a63d82a98381c08433f29687709fa44c99d6bb81643c9aa50d",
+      "scripts/native-storage-qualification/container-probe.ts": "9f63f5c092dc4330ef061aca20d68a40f4e6f62b160c1b6fad7dd4068aa06e6c",
+      "scripts/native-storage-qualification/local-matrix.ts": "7a0d7746a8ff551a6b3055a64ed293f36d786c910771c8f178b7abf4375f3401",
+      "scripts/native-storage-qualification/matrix-probe.ts": "5ee3f4356760305573ab4407ed584384999190106b265f0bcdeacd1c240241dc",
+      "scripts/native-storage-qualification/matrix.ts": "4050e35403870086d862363a56c02cf594ad1af3f4d5d364e7ffa71189ee8c76",
+      "scripts/native-storage-qualification/preflight.ts": "d44a37c43a09903a0a5fcc483a6dbbee0412fcd49e289e3dd211fe70f8aa3682",
+      "scripts/native-storage-qualification/qualification-contract.test.ts": "765ebc86e82ef746facba0b5d8a3c685ef5bb192b6ca10e480549037db67b504",
+      "scripts/native-storage-qualification/qualification-contract.ts": "df38298e6c1461fe24b681e0e41cefe5ec1eadb13664c17660b20d99295edf46",
+      "scripts/native-storage-qualification/registry-probe.ts": "e5fe1f2e7205e6b99d88bc137c9b5d3ca82853aeec8e346b25b92b6c175eea96",
+      "scripts/native-storage-qualification/s3-probe-client.test.ts": "8c46ed77ef3e1deffd1c22496c08708e9e75030c98224ab340e803b2d0aa517d",
+      "scripts/native-storage-qualification/s3-probe-client.ts": "98b6d915aca360087980bf71e8c45eb98a9d8c00d2255c1438586b64196c2bb6",
+      "scripts/native-storage-qualification/session-probe.ts": "fad0886914f7bdcbd78a77b457afc37f934a67d47f0be267470c1deca167617e",
+      "scripts/native-storage-qualification/worker.ts": "8b226ee262bc49518958d7898a3e4b3ae204bfee200a8dd0107cfcfe9356049c"
+    },
+    "probeSHA256": "5126e032fd4d7c73ca4805668941654fd49b7d6bb259889c24df80177a83b407",
+    "deadlineAt": "2026-11-14T21:18:43.188328+00:00"
+  },
+  "imageAvailability": {
+    "beforeRepublish": {
+      "image": "ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-shape-ab/manifests/sha256:2cd03c57e7458d337fde892cb6a729969e5dd55d6e3f61d01f0ac67068fcc2ba",
+      "httpStatus": "404",
+      "exitCode": 0,
+      "digest": []
+    },
+    "afterRepublish": {
+      "httpStatus": "200",
+      "digest": [
+        "sha256:2cd03c57e7458d337fde892cb6a729969e5dd55d6e3f61d01f0ac67068fcc2ba"
+      ]
+    },
+    "cachedImageID": "sha256:dc0856170d9a60aa1f9c9766435031ddfdf9e2688f5c9b8b0cec2d08153ad630",
+    "rebuilt": false
+  },
+  "caseCounts": {
+    "preserved": 14,
+    "failed": 1,
+    "refused_before_mutation": 2
+  },
+  "actions": [
+    {
+      "observedAt": "2026-11-14T20:49:15.305656+00:00",
+      "action": "prepare",
+      "httpStatus": "200",
+      "curlExitCode": 0,
+      "durationMs": 12652,
+      "body": {
+        "ok": true,
+        "stage": "prepared",
+        "workspaceID": "ws_f0e10879b3d8cfc5",
+        "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-shape-ab@sha256:2cd03c57e7458d337fde892cb6a729969e5dd55d6e3f61d01f0ac67068fcc2ba",
+        "stowVersion": "0.4.0",
+        "runtime": {
+          "profile": "custom-1cpu-2gib",
+          "requested": {
+            "vcpu": 1,
+            "memoryMib": 2048,
+            "diskMb": 8192
+          },
+          "observed": null
+        },
+        "preparationPassed": false,
+        "matrix": [
+          {
+            "id": "key-natural",
+            "disposition": "prepared",
+            "reason": "awaiting_cold_restore",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "listedExactKey": true,
+              "filesystemBytes": true
+            }
+          },
+          {
+            "id": "key-spaces",
+            "disposition": "prepared",
+            "reason": "awaiting_cold_restore",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "listedExactKey": true,
+              "filesystemBytes": true
+            }
+          },
+          {
+            "id": "key-unicode",
+            "disposition": "prepared",
+            "reason": "awaiting_cold_restore",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "listedExactKey": true,
+              "filesystemBytes": true
+            }
+          },
+          {
+            "id": "key-percent",
+            "disposition": "prepared",
+            "reason": "awaiting_cold_restore",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "listedExactKey": true,
+              "filesystemBytes": true
+            }
+          },
+          {
+            "id": "key-punctuation",
+            "disposition": "prepared",
+            "reason": "awaiting_cold_restore",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "listedExactKey": true
+            }
+          },
+          {
+            "id": "key-double-slash",
+            "disposition": "prepared",
+            "reason": "awaiting_cold_restore",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "listedExactKey": true
+            }
+          },
+          {
+            "id": "key-dot-segment",
+            "disposition": "prepared",
+            "reason": "awaiting_cold_restore",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "listedExactKey": true
+            }
+          },
+          {
+            "id": "key-traversal",
+            "disposition": "prepared",
+            "reason": "awaiting_cold_restore",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "listedExactKey": true
+            }
+          },
+          {
+            "id": "key-reserved-stow",
+            "disposition": "prepared",
+            "reason": "awaiting_cold_restore",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "listedExactKey": true
+            }
+          },
+          {
+            "id": "key-reserved-git",
+            "disposition": "prepared",
+            "reason": "awaiting_cold_restore",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "listedExactKey": true
+            }
+          },
+          {
+            "id": "object-metadata",
+            "disposition": "failed",
+            "reason": "metadata_mismatch",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "contentType": true,
+              "cacheControl": false,
+              "contentDisposition": false,
+              "contentEncoding": false,
+              "userMetadata": true
+            }
+          },
+          {
+            "id": "unfinished-multipart",
+            "disposition": "prepared",
+            "reason": "awaiting_cold_restore"
+          },
+          {
+            "id": "git-state",
+            "disposition": "prepared",
+            "reason": "awaiting_cold_restore"
+          },
+          {
+            "id": "background-writer",
+            "disposition": "prepared",
+            "reason": "awaiting_cold_restore"
+          }
+        ],
+        "sessionResult": {
+          "id": "opencode-session",
+          "disposition": "prepared",
+          "reason": "awaiting_cold_restore"
+        }
+      }
+    },
+    {
+      "observedAt": "2026-11-14T20:49:43.894255+00:00",
+      "action": "recycle",
+      "httpStatus": "200",
+      "curlExitCode": 0,
+      "durationMs": 2174,
+      "body": {
+        "ok": true,
+        "stage": "checkpointed",
+        "manifest": {
+          "workspace": {
+            "key": "workspaces/6f687ce790a3d22e6d7f476e7966d0fefb1498722a619b3720f3f9b68b981ba8/workspace-1794689382133.tar.gz",
+            "size": 14924,
+            "encrypted": true
+          },
+          "state": {
+            "key": "workspaces/6f687ce790a3d22e6d7f476e7966d0fefb1498722a619b3720f3f9b68b981ba8/state-1794689382133.tar.gz",
+            "size": 881435,
+            "encrypted": true
+          }
+        }
+      }
+    },
+    {
+      "observedAt": "2026-11-14T20:50:18.279287+00:00",
+      "action": "verify",
+      "httpStatus": "200",
+      "curlExitCode": 0,
+      "durationMs": 14997,
+      "body": {
+        "ok": false,
+        "qualificationPassed": false,
+        "stage": "failed",
+        "workspaceID": "ws_f0e10879b3d8cfc5",
+        "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-shape-ab@sha256:2cd03c57e7458d337fde892cb6a729969e5dd55d6e3f61d01f0ac67068fcc2ba",
+        "controllerSHA256": "0ec5e1e2dff12951041e837cab3aa877701f1d02359f6ecc8650e1cf20c8cace",
+        "binarySHA256": "6f0f247912de4c4d5d296a3176fe291b7c29717498f5778d920949d4025420b6",
+        "stowVersion": "0.4.0",
+        "runtime": {
+          "profile": "custom-1cpu-2gib",
+          "requested": {
+            "vcpu": 1,
+            "memoryMib": 2048,
+            "diskMb": 8192
+          },
+          "observed": null
+        },
+        "markerSHA256": {
+          "directFile": "1dced4e5bb9bc82240a5fcb67647776e9c111d8f3ebd2a1cbe4e8b85734e56e2",
+          "s3Object": "acf7abc0e9a5ce298d4f9b1f43dc4c068125dedf80df944372391bb4d5bce738",
+          "metadata": "58d4a6aac63ad5784cc7c6c719f4f15c3e22d91108119adbf7cffb0ed46eb75e"
+        },
+        "manifest": {
+          "workspace": {
+            "key": "workspaces/6f687ce790a3d22e6d7f476e7966d0fefb1498722a619b3720f3f9b68b981ba8/workspace-1794689382133.tar.gz",
+            "size": 14924,
+            "encrypted": true
+          },
+          "state": {
+            "key": "workspaces/6f687ce790a3d22e6d7f476e7966d0fefb1498722a619b3720f3f9b68b981ba8/state-1794689382133.tar.gz",
+            "size": 881435,
+            "encrypted": true
+          }
+        },
+        "firstProbe": {
+          "ok": true,
+          "workspaceID": "ws_f0e10879b3d8cfc5",
+          "directFileToS3GetMatches": true,
+          "s3PutToWorkspaceFileMatches": true,
+          "metadataTypeMatches": true,
+          "ephemeralSentinelAbsent": true,
+          "agentUID": 1001,
+          "controllerSHA256": "0ec5e1e2dff12951041e837cab3aa877701f1d02359f6ecc8650e1cf20c8cace",
+          "binarySHA256": "6f0f247912de4c4d5d296a3176fe291b7c29717498f5778d920949d4025420b6",
+          "matrixVersion": 1,
+          "matrix": [
+            {
+              "id": "key-natural",
+              "disposition": "prepared",
+              "reason": "awaiting_cold_restore",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "listedExactKey": true,
+                "filesystemBytes": true
+              }
+            },
+            {
+              "id": "key-spaces",
+              "disposition": "prepared",
+              "reason": "awaiting_cold_restore",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "listedExactKey": true,
+                "filesystemBytes": true
+              }
+            },
+            {
+              "id": "key-unicode",
+              "disposition": "prepared",
+              "reason": "awaiting_cold_restore",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "listedExactKey": true,
+                "filesystemBytes": true
+              }
+            },
+            {
+              "id": "key-percent",
+              "disposition": "prepared",
+              "reason": "awaiting_cold_restore",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "listedExactKey": true,
+                "filesystemBytes": true
+              }
+            },
+            {
+              "id": "key-punctuation",
+              "disposition": "prepared",
+              "reason": "awaiting_cold_restore",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "listedExactKey": true
+              }
+            },
+            {
+              "id": "key-double-slash",
+              "disposition": "prepared",
+              "reason": "awaiting_cold_restore",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "listedExactKey": true
+              }
+            },
+            {
+              "id": "key-dot-segment",
+              "disposition": "prepared",
+              "reason": "awaiting_cold_restore",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "listedExactKey": true
+              }
+            },
+            {
+              "id": "key-traversal",
+              "disposition": "prepared",
+              "reason": "awaiting_cold_restore",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "listedExactKey": true
+              }
+            },
+            {
+              "id": "key-reserved-stow",
+              "disposition": "prepared",
+              "reason": "awaiting_cold_restore",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "listedExactKey": true
+              }
+            },
+            {
+              "id": "key-reserved-git",
+              "disposition": "prepared",
+              "reason": "awaiting_cold_restore",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "listedExactKey": true
+              }
+            },
+            {
+              "id": "object-metadata",
+              "disposition": "failed",
+              "reason": "metadata_mismatch",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "contentType": true,
+                "cacheControl": false,
+                "contentDisposition": false,
+                "contentEncoding": false,
+                "userMetadata": true
+              }
+            },
+            {
+              "id": "unfinished-multipart",
+              "disposition": "prepared",
+              "reason": "awaiting_cold_restore"
+            },
+            {
+              "id": "git-state",
+              "disposition": "prepared",
+              "reason": "awaiting_cold_restore"
+            },
+            {
+              "id": "background-writer",
+              "disposition": "prepared",
+              "reason": "awaiting_cold_restore"
+            }
+          ]
+        },
+        "restoredProbe": {
+          "ok": true,
+          "workspaceID": "ws_f0e10879b3d8cfc5",
+          "directFileToS3GetMatches": true,
+          "s3PutToWorkspaceFileMatches": true,
+          "metadataTypeMatches": true,
+          "ephemeralSentinelAbsent": true,
+          "agentUID": 1001,
+          "controllerSHA256": "0ec5e1e2dff12951041e837cab3aa877701f1d02359f6ecc8650e1cf20c8cace",
+          "binarySHA256": "6f0f247912de4c4d5d296a3176fe291b7c29717498f5778d920949d4025420b6",
+          "matrixVersion": 1,
+          "matrix": [
+            {
+              "id": "key-natural",
+              "disposition": "preserved",
+              "reason": "bytes_restored",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "listedExactKey": true,
+                "filesystemBytes": true
+              }
+            },
+            {
+              "id": "key-spaces",
+              "disposition": "preserved",
+              "reason": "bytes_restored",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "listedExactKey": true,
+                "filesystemBytes": true
+              }
+            },
+            {
+              "id": "key-unicode",
+              "disposition": "preserved",
+              "reason": "bytes_restored",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "listedExactKey": true,
+                "filesystemBytes": true
+              }
+            },
+            {
+              "id": "key-percent",
+              "disposition": "preserved",
+              "reason": "bytes_restored",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "listedExactKey": true,
+                "filesystemBytes": true
+              }
+            },
+            {
+              "id": "key-punctuation",
+              "disposition": "preserved",
+              "reason": "bytes_restored",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "listedExactKey": true
+              }
+            },
+            {
+              "id": "key-double-slash",
+              "disposition": "preserved",
+              "reason": "bytes_restored",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "listedExactKey": true
+              }
+            },
+            {
+              "id": "key-dot-segment",
+              "disposition": "preserved",
+              "reason": "bytes_restored",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "listedExactKey": true
+              }
+            },
+            {
+              "id": "key-traversal",
+              "disposition": "preserved",
+              "reason": "bytes_restored",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "listedExactKey": true
+              }
+            },
+            {
+              "id": "key-reserved-stow",
+              "disposition": "preserved",
+              "reason": "bytes_restored",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "listedExactKey": true
+              }
+            },
+            {
+              "id": "key-reserved-git",
+              "disposition": "preserved",
+              "reason": "bytes_restored",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "listedExactKey": true
+              }
+            },
+            {
+              "id": "object-metadata",
+              "disposition": "failed",
+              "reason": "metadata_mismatch",
+              "httpStatus": 200,
+              "checks": {
+                "bytes": true,
+                "contentType": true,
+                "cacheControl": false,
+                "contentDisposition": false,
+                "contentEncoding": false,
+                "userMetadata": true
+              }
+            },
+            {
+              "id": "unfinished-multipart",
+              "disposition": "preserved",
+              "reason": "bytes_restored",
+              "httpStatus": 200
+            },
+            {
+              "id": "git-state",
+              "disposition": "preserved",
+              "reason": "bytes_restored"
+            },
+            {
+              "id": "background-writer",
+              "disposition": "preserved",
+              "reason": "bytes_restored"
+            }
+          ]
+        },
+        "matrixVersion": 1,
+        "matrix": [
+          {
+            "id": "key-natural",
+            "disposition": "preserved",
+            "reason": "bytes_restored",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "listedExactKey": true,
+              "filesystemBytes": true
+            }
+          },
+          {
+            "id": "key-spaces",
+            "disposition": "preserved",
+            "reason": "bytes_restored",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "listedExactKey": true,
+              "filesystemBytes": true
+            }
+          },
+          {
+            "id": "key-unicode",
+            "disposition": "preserved",
+            "reason": "bytes_restored",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "listedExactKey": true,
+              "filesystemBytes": true
+            }
+          },
+          {
+            "id": "key-percent",
+            "disposition": "preserved",
+            "reason": "bytes_restored",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "listedExactKey": true,
+              "filesystemBytes": true
+            }
+          },
+          {
+            "id": "key-punctuation",
+            "disposition": "preserved",
+            "reason": "bytes_restored",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "listedExactKey": true
+            }
+          },
+          {
+            "id": "key-double-slash",
+            "disposition": "preserved",
+            "reason": "bytes_restored",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "listedExactKey": true
+            }
+          },
+          {
+            "id": "key-dot-segment",
+            "disposition": "preserved",
+            "reason": "bytes_restored",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "listedExactKey": true
+            }
+          },
+          {
+            "id": "key-traversal",
+            "disposition": "preserved",
+            "reason": "bytes_restored",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "listedExactKey": true
+            }
+          },
+          {
+            "id": "key-reserved-stow",
+            "disposition": "preserved",
+            "reason": "bytes_restored",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "listedExactKey": true
+            }
+          },
+          {
+            "id": "key-reserved-git",
+            "disposition": "preserved",
+            "reason": "bytes_restored",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "listedExactKey": true
+            }
+          },
+          {
+            "id": "object-metadata",
+            "disposition": "failed",
+            "reason": "metadata_mismatch",
+            "httpStatus": 200,
+            "checks": {
+              "bytes": true,
+              "contentType": true,
+              "cacheControl": false,
+              "contentDisposition": false,
+              "contentEncoding": false,
+              "userMetadata": true
+            }
+          },
+          {
+            "id": "unfinished-multipart",
+            "disposition": "preserved",
+            "reason": "bytes_restored",
+            "httpStatus": 200
+          },
+          {
+            "id": "git-state",
+            "disposition": "preserved",
+            "reason": "bytes_restored"
+          },
+          {
+            "id": "background-writer",
+            "disposition": "preserved",
+            "reason": "bytes_restored"
+          },
+          {
+            "id": "opencode-session",
+            "disposition": "preserved",
+            "reason": "bytes_restored"
+          },
+          {
+            "id": "registry-missing",
+            "disposition": "refused_before_mutation",
+            "reason": "registry_refused",
+            "httpStatus": 409
+          },
+          {
+            "id": "registry-mismatch",
+            "disposition": "refused_before_mutation",
+            "reason": "registry_refused",
+            "httpStatus": 503
+          }
+        ],
+        "writerCapture": {
+          "startedAt": 1794689382133,
+          "expiresAt": 1794689412112,
+          "mode": "active",
+          "quiesced": false,
+          "exercised": true,
+          "attempts": [
+            {
+              "status": 200,
+              "runtimeRunning": false,
+              "manifestUnchanged": false,
+              "durationMs": 1460
+            }
+          ]
+        },
+        "syntheticSessionCreated": true,
+        "providerPrompts": 0,
+        "snapshotUsed": false
+      }
+    },
+    {
+      "observedAt": "2026-11-14T20:50:47.470102+00:00",
+      "action": "cleanup",
+      "httpStatus": "200",
+      "curlExitCode": 0,
+      "durationMs": 947,
+      "body": {
+        "ok": true,
+        "runtimeStopped": true,
+        "qualificationR2ObjectsRemaining": 0
+      }
+    }
+  ],
+  "productionChanged": false,
+  "providerPrompts": 0,
+  "productGateClosed": false,
+  "qualificationPassed": false,
+  "actualCostUSD": null,
+  "cleanup": {
+    "runtimeStopped": true,
+    "checkpointObjectsRemaining": 0,
+    "workerDeleted": true,
+    "containerApplicationDeleted": true,
+    "bucketDeleted": true,
+    "temporarySecretsDeleted": true,
+    "imageTagRetained": true,
+    "localTestContainersRemoved": true,
+    "workerEndpointHTTPStatus": 404,
+    "bucketAbsenceAPIErrorCode": 10006,
+    "containerApplicationID": "9c98efa10c0a487fbf200460baa4f31a",
+    "applicationAbsentFromPostCleanupList": true,
+    "otherPreexistingApplicationsRetained": true,
+    "confirmedAt": "2026-11-14T20:54:23.998277+00:00"
+  },
+  "limitations": [
+    "One synthetic matrix run; no repeatability, throughput or arbitrary-repository claim.",
+    "Requested custom shape checked; independently observed allocations unavailable.",
+    "Metadata failure observed before capture and carried forward; full final metadata HEAD is not remeasured for the failed preparation case.",
+    "Account-seed isolation and production retained/reset data migration are outside this fixed matrix.",
+    "No process-memory or external-effect replay claimed."
+  ],
+  "checks": [
+    {
+      "command": "bun run typecheck",
+      "result": "pass"
+    },
+    {
+      "command": "bun run check:config",
+      "result": "pass"
+    },
+    {
+      "command": "bun run build:ui",
+      "result": "pass"
+    },
+    {
+      "command": "bun run test",
+      "result": "pass",
+      "bunTests": 412,
+      "runtimeTests": 5,
+      "limit": "Final writer-progress guard subsequently passed fixture typing/contracts; no heavy full-suite repeat after user requested live testing."
+    },
+    {
+      "command": "bun run test:workers",
+      "result": "failed",
+      "passed": 345,
+      "failed": 6,
+      "testFiles": 58,
+      "timeoutFailures": 5,
+      "assertionFailures": 1,
+      "cause": "Host contention suspected, not diagnosed; no green gate claimed."
+    },
+    {
+      "command": "bun run qualification:preflight",
+      "result": "pass",
+      "contractTests": 11,
+      "limit": "Before the final writer-progress guard; final fixture typing/contracts and concrete live-config dry-run passed afterward."
+    },
+    {
+      "command": "final fixture tsc + bun test scripts/native-storage-qualification/*.test.ts",
+      "result": "pass",
+      "tests": 11
+    },
+    {
+      "command": "wrangler deploy --dry-run with concrete isolated live config",
+      "result": "pass"
+    },
+    {
+      "command": "git diff --check",
+      "result": "pass"
+    }
+  ]
+}

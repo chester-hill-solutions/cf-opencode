@@ -22,6 +22,8 @@ const COUNTERS: Array<[string, string]> = [
   ["capacity.rejected", "Container capacity rejections"],
   ["turn.failed", "Failed turns"],
   ["turn.timedout", "Timed-out turns"],
+  ["settlement.paused", "Paused settlements (inspect conversation settlementError; holds remain reserved)"],
+  ["slack.form.failed", "Failed Slack question deliveries (check bot scopes and channel access)"],
   ["checkpoint.failed", "Failed checkpoints"],
   ["snapshot.failed", "Failed snapshots"],
 ]

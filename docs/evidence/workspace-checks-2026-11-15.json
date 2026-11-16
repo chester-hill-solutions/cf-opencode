@@ -1,0 +1,772 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-15T20:02:18.424847+00:00",
+  "sourceHEAD": "ec5f6b44f1457ab9b8bc7e600b169ac3e9c7d1b2",
+  "workingTreeModified": true,
+  "sourceSHA256": {
+    ".dockerignore": "6ad7afcb79a9730cbac05116589c434b3eee3ce57e7da0c491742d55ebd39d76",
+    "Dockerfile": "4cae1dc1a9afd83e612878982d166f3f58daa0a3eb9f32d8f30392e5ec833fee",
+    "control-server.ts": "d3fe5b5fefd227c44340229d56722fdc097b337873caced5c211d0012487b2cb",
+    "entrypoint.sh": "3b83aee13df4acf266736da93140baf75472ec6edb549e1d6e66cf288786585f",
+    "control-lifecycle.ts": "3de4676efa9edeec3e5d2cac5aec1a78a9c5c8a81d3dd11a4887c9a7e4c38c93",
+    "stow-workspace.ts": "b3d824995ee1672be49e449bdbd0a24253a734862e5767fe8660e2cf01f69317",
+    "workspace-preflight.ts": "53c82e31486de625ab6c299a9560b55aacfc5d5f4ef9efef3e76e085431b25df",
+    "workspace-repository.ts": "60c061ea1cf938f95f81cb904fc2e0c00cb18c29bbb77dc2098b301201991085",
+    "workspace-check-snapshot.ts": "0a759daaedb15ee6741ca63b6b9f96a78d3779494a4fc9d7ecf1638bb8584276",
+    "src/permissions.ts": "1b713e1de2cd2d28dc779e21879fab89946ff8ca02cff9f8652df4f998d003a9",
+    "src/control-auth.ts": "6b30d7c78667a72f8886585b6481a0a0d2b65d9a6dd1f81fbd3d3505434d7b2f",
+    "src/tar.ts": "b794d6916315cd81fbace6ccf910d2f271b44e36aa4967a458e58cff2bda6aba",
+    "src/accounting-policy.ts": "efc873596610954c44528db6727cb7dbc19c6b52f29e3d19512adde7c029d21a",
+    "src/workspace-preflight.ts": "a5af1639e09379a869f7bb4dba92b9dce1033de77c9c1d8145dcd9dfdda7909b",
+    "src/workspace-repository.ts": "169490d76ebf7ee95b98882e900833eacc93ce7eff419e0da51035ecb5254396",
+    "src/workspace-check.ts": "e3316d25d6db3c7308fe8d97e090e0091d62f2c462fd82b2d92c455ce6102d35",
+    "src/workspace-check-snapshot.ts": "d3ca25aa15e5cfa1fcdb48100e3ea217aec41bf6d533c8afecdbd154513af9db",
+    "src/index.ts": "9a4ba92f3633e59e198584a9657caed37b3f512274762436740d6b39443e1467",
+    "src/conversation.ts": "bc708fc9f0b2b79f1f0e77dafb012157cd5c18b9d72923a71bf42b0d577fccc2",
+    "src/conversation/workspace-checks.ts": "f779ae1303b6062f5245df69a766339677091700575c9a9a0569945c389ce866",
+    "src/conversation/readiness.ts": "4975f6ff672f465a25ad2c952cec7778748982454cd47a55605720a59db18987",
+    "src/conversation/runtime.ts": "f313c1dab2671944997b95b84e1420dd9c64bedb6df837edd1a5a03a9ddad4a3",
+    "src/conversation/images.ts": "130fb40f3970bc4312e9d6aa467daf10e4ff204ae0ea90d787f24702e297da5a",
+    "src/state.ts": "7b8dfe29e6ca23624f16cd24aef18cbcf192cdc316770725ae3498a261bbfd7d",
+    "scripts/workspace-repository.ts": "8d09c0fdb87d3c9a7d5ecf8f568ac0d53e5ae5cb146339e97801389e17f9dd14",
+    "scripts/workspace-check.ts": "58b216e5053fe3a169b0e5eb7f9c290c7db65f23918f1425036a5fa7665e58d4",
+    "scripts/workspace-check-docker.ts": "04846c73cb3c528631b91d2196ec487d615f3a5458c37dfc1f178c77dc3d1d38",
+    "scripts/lib/workspace-api.ts": "5f2a3be58e378dfd0bedd9bd99a6841decf99feaf517b481d8061924bfd71d05",
+    "runtime/check/Dockerfile": "32ffeb98b00134c27842c5690909cbb82c227019ff5160399d0c02c9911bf83a",
+    "runtime/check/bootstrap.ts": "36567287955196542d59314740b79161556aab02a05d9e0f1bcda1af7e299d1a",
+    "runtime/opencode/package.json": "fe89ba2e21af17d70d53ac69d0570663fe9ee43e559483d2d68831ea01368bf6",
+    "runtime/opencode/bun.lock": "d965226a19c2137d0812434bd9479df68d670565e69a1dde424c949b636ddb54",
+    "runtime/opencode/server.ts": "ea4e282c7cbd9c21552b825abffe0efbb85e356ce0e431887fef05adf22df283",
+    "runtime/opencode/options.ts": "81bd889f50bcfd3fbae2eedf9ac84819329cd7a5f9e9e81f6d6a84cfc4238c07",
+    "patches/stow/metadata-refusal.patch": "054b8b091a052189af1d4e17d2464b9a2a95b5fa55421a8f3b9358c326c7d014",
+    "patches/stow/metadata-refusal_test.go": "d61ed0777098559d94af448196b9f45623f0aadc364c1f6f5e6ef01809188588"
+  },
+  "testSHA256": {
+    "tests/workspace-check.test.ts": "dbb89728efb8ec320c78c836cec247529b9df22ba81ed9fa227deccbd0830426",
+    "tests/workspace-check-cli.test.ts": "76762135a59494ad62488ae5939f60edce2a2212a22081b33fe8af3409243aa0",
+    "tests/workspace-check-docker.test.ts": "c493334eecd91762b86148eb289d971e68dd0fb914c4ef02b1fa5bada00a6410",
+    "tests/workspace-check-snapshot.test.ts": "310feb0af8897b354454dff6cf32bce9489ba63901f171b9d525dd1b95cbb064",
+    "tests/fixtures/workspace-check.ts": "a404a191f88324558f4a68629b35d830d82861e3a0258a505ca73f4ee8a1ad08",
+    "test/workspace-checks.test.ts": "531b46aa4b96985cdd87b41b8c85a4da7cd6ebee5913a563062355bccfba3dee",
+    "tests/control-preflight.test.ts": "9cc9262282eefb2d04b0885ac90494b073450d416c8fb3bf0d596b34ae7c72a5",
+    "tests/workspace-repository-control.test.ts": "d09fa23f88eb171d63945101df49553d9bc59b0c6c96e45e94f3d4820bab2c11"
+  },
+  "verification": "passed locally: final project gate, native arm64 checker controls and six-case real control-export/reference-CLI/Docker-checker smoke; public API fixture and separately tested Worker warm-only guard explicitly scoped",
+  "providerExecutionRequested": false,
+  "deployed": false,
+  "images": [
+    {
+      "id": "sha256:818cd6b2642d51c388b9624c77a1ee9960ce1f7951d78b1bb1488f0dd3a168c9",
+      "tags": [
+        "aboiteau-checks-agent:20261115"
+      ],
+      "sizeBytes": 493069841,
+      "platform": "linux/amd64",
+      "created": "2026-11-15T19:28:00.107742678Z"
+    },
+    {
+      "id": "sha256:ab1a310bc84fd09174a4e32c09a2561c857134a3769b0d390745fd88889b3d3a",
+      "tags": [
+        "aboiteau-check:20261115"
+      ],
+      "sizeBytes": 170443953,
+      "platform": "linux/amd64",
+      "created": "2026-11-15T19:28:02.608008179Z"
+    },
+    {
+      "id": "sha256:416095926dcfb1c8e255691117c3c5504579e875bbb58fc3657fc2469076c516",
+      "tags": [
+        "aboiteau-check-arm64:20261115"
+      ],
+      "sizeBytes": 192324884,
+      "platform": "linux/arm64",
+      "created": "2026-11-15T19:30:17.974224506Z"
+    }
+  ],
+  "tests": {
+    "bunUnitAndQualification": 557,
+    "bunRuntime": 5,
+    "bunTotal": 562,
+    "workers": 409,
+    "workerFiles": 66
+  },
+  "architectureControls": [
+    {
+      "artifact": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-checker-sanity-kElC3z/summary.json",
+      "sha256": "310f4fe02e5e06417ede88d2e69caf5956d3c290e110b7b652efb23c421aea50",
+      "summary": {
+        "imageID": "sha256:ab1a310bc84fd09174a4e32c09a2561c857134a3769b0d390745fd88889b3d3a",
+        "passed": false,
+        "results": [
+          {
+            "case": "pass",
+            "passed": false,
+            "outcome": "oom",
+            "exitCode": 137,
+            "cleanupConfirmed": true,
+            "receipt": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-checker-sanity-kElC3z/pass/receipt.json"
+          }
+        ]
+      }
+    },
+    {
+      "artifact": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-checker-sanity-6Tk4t2/summary.json",
+      "sha256": "edbd382b66443e79213e5a365030ffb6a9b3edc3e93c70b8a5baa5ad2673011d",
+      "summary": {
+        "imageID": "sha256:ab1a310bc84fd09174a4e32c09a2561c857134a3769b0d390745fd88889b3d3a",
+        "passed": false,
+        "results": [
+          {
+            "case": "pass",
+            "passed": false,
+            "outcome": "oom",
+            "exitCode": 137,
+            "cleanupConfirmed": true,
+            "receipt": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-checker-sanity-6Tk4t2/pass/receipt.json"
+          }
+        ]
+      }
+    },
+    {
+      "artifact": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-checker-sanity-LJIs4O/summary.json",
+      "sha256": "ea122f862a9f332ef1998bb16037ec64f65f0477fdcaea058056e9ce9072a9a5",
+      "summary": {
+        "imageID": "sha256:416095926dcfb1c8e255691117c3c5504579e875bbb58fc3657fc2469076c516",
+        "passed": true,
+        "results": [
+          {
+            "case": "pass",
+            "passed": true,
+            "outcome": "passed",
+            "exitCode": 0,
+            "cleanupConfirmed": true,
+            "receipt": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-checker-sanity-LJIs4O/pass/receipt.json"
+          },
+          {
+            "case": "fake-success-failure",
+            "passed": true,
+            "outcome": "failed",
+            "exitCode": 7,
+            "cleanupConfirmed": true,
+            "receipt": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-checker-sanity-LJIs4O/fake-success-failure/receipt.json"
+          },
+          {
+            "case": "timeout",
+            "passed": true,
+            "outcome": "timeout",
+            "exitCode": null,
+            "cleanupConfirmed": true,
+            "receipt": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-checker-sanity-LJIs4O/timeout/receipt.json"
+          }
+        ]
+      }
+    }
+  ],
+  "preOptimizationSourceSHA256": {
+    ".dockerignore": "6ad7afcb79a9730cbac05116589c434b3eee3ce57e7da0c491742d55ebd39d76",
+    "Dockerfile": "4cae1dc1a9afd83e612878982d166f3f58daa0a3eb9f32d8f30392e5ec833fee",
+    "control-server.ts": "eacf5a04e519296581882295d21b498fa16717c145d4e6ae1ce0940ed93777d3",
+    "entrypoint.sh": "3b83aee13df4acf266736da93140baf75472ec6edb549e1d6e66cf288786585f",
+    "control-lifecycle.ts": "3de4676efa9edeec3e5d2cac5aec1a78a9c5c8a81d3dd11a4887c9a7e4c38c93",
+    "stow-workspace.ts": "b3d824995ee1672be49e449bdbd0a24253a734862e5767fe8660e2cf01f69317",
+    "workspace-preflight.ts": "53c82e31486de625ab6c299a9560b55aacfc5d5f4ef9efef3e76e085431b25df",
+    "workspace-repository.ts": "42128b048b57e92af28c4ed69568f8eeaff8aab74359ac17530374c829ba3ca3",
+    "workspace-check-snapshot.ts": "0a759daaedb15ee6741ca63b6b9f96a78d3779494a4fc9d7ecf1638bb8584276",
+    "src/permissions.ts": "1b713e1de2cd2d28dc779e21879fab89946ff8ca02cff9f8652df4f998d003a9",
+    "src/control-auth.ts": "6b30d7c78667a72f8886585b6481a0a0d2b65d9a6dd1f81fbd3d3505434d7b2f",
+    "src/tar.ts": "b794d6916315cd81fbace6ccf910d2f271b44e36aa4967a458e58cff2bda6aba",
+    "src/accounting-policy.ts": "efc873596610954c44528db6727cb7dbc19c6b52f29e3d19512adde7c029d21a",
+    "src/workspace-preflight.ts": "a5af1639e09379a869f7bb4dba92b9dce1033de77c9c1d8145dcd9dfdda7909b",
+    "src/workspace-repository.ts": "169490d76ebf7ee95b98882e900833eacc93ce7eff419e0da51035ecb5254396",
+    "src/workspace-check.ts": "e3316d25d6db3c7308fe8d97e090e0091d62f2c462fd82b2d92c455ce6102d35",
+    "src/workspace-check-snapshot.ts": "d3ca25aa15e5cfa1fcdb48100e3ea217aec41bf6d533c8afecdbd154513af9db",
+    "src/index.ts": "9a4ba92f3633e59e198584a9657caed37b3f512274762436740d6b39443e1467",
+    "src/conversation.ts": "ae523f47723bf3d41858126ae7a3f9e4dcc01b6065e1815a0c660fb6ee2f46d1",
+    "src/conversation/workspace-checks.ts": "d58aa8bc7d924904802c954af3588a43611008a39cfffde7e5caf293a89c950b",
+    "src/conversation/readiness.ts": "4975f6ff672f465a25ad2c952cec7778748982454cd47a55605720a59db18987",
+    "src/conversation/runtime.ts": "f313c1dab2671944997b95b84e1420dd9c64bedb6df837edd1a5a03a9ddad4a3",
+    "src/conversation/images.ts": "130fb40f3970bc4312e9d6aa467daf10e4ff204ae0ea90d787f24702e297da5a",
+    "src/state.ts": "7b8dfe29e6ca23624f16cd24aef18cbcf192cdc316770725ae3498a261bbfd7d",
+    "scripts/workspace-repository.ts": "8d09c0fdb87d3c9a7d5ecf8f568ac0d53e5ae5cb146339e97801389e17f9dd14",
+    "scripts/workspace-check.ts": "58b216e5053fe3a169b0e5eb7f9c290c7db65f23918f1425036a5fa7665e58d4",
+    "scripts/workspace-check-docker.ts": "04846c73cb3c528631b91d2196ec487d615f3a5458c37dfc1f178c77dc3d1d38",
+    "scripts/lib/workspace-api.ts": "5f2a3be58e378dfd0bedd9bd99a6841decf99feaf517b481d8061924bfd71d05",
+    "runtime/check/Dockerfile": "32ffeb98b00134c27842c5690909cbb82c227019ff5160399d0c02c9911bf83a",
+    "runtime/check/bootstrap.ts": "36567287955196542d59314740b79161556aab02a05d9e0f1bcda1af7e299d1a",
+    "runtime/opencode/package.json": "fe89ba2e21af17d70d53ac69d0570663fe9ee43e559483d2d68831ea01368bf6",
+    "runtime/opencode/bun.lock": "d965226a19c2137d0812434bd9479df68d670565e69a1dde424c949b636ddb54",
+    "runtime/opencode/server.ts": "ea4e282c7cbd9c21552b825abffe0efbb85e356ce0e431887fef05adf22df283",
+    "runtime/opencode/options.ts": "81bd889f50bcfd3fbae2eedf9ac84819329cd7a5f9e9e81f6d6a84cfc4238c07",
+    "patches/stow/metadata-refusal.patch": "054b8b091a052189af1d4e17d2464b9a2a95b5fa55421a8f3b9358c326c7d014",
+    "patches/stow/metadata-refusal_test.go": "d61ed0777098559d94af448196b9f45623f0aadc364c1f6f5e6ef01809188588"
+  },
+  "preOptimizationChecks": [
+    {
+      "check": "typecheck",
+      "exitCode": 0,
+      "seconds": 13.78,
+      "log": "/tmp/aboiteau-workspace-check-final-gate/typecheck.log",
+      "logSHA256": "a16b13054bc70b4f530216fee4dc7e681cc9b4d1fa2945b057a93f8f8b27f5ee"
+    },
+    {
+      "check": "config",
+      "exitCode": 0,
+      "seconds": 0.04,
+      "log": "/tmp/aboiteau-workspace-check-final-gate/config.log",
+      "logSHA256": "628ac0c1e5187e00e17d2f545df11824f8be6bf30336841ebc492cb28d046d0a"
+    },
+    {
+      "check": "unit",
+      "exitCode": 0,
+      "seconds": 25.69,
+      "log": "/tmp/aboiteau-workspace-check-final-gate/unit.log",
+      "logSHA256": "ec4596beb3e6da96b10cc421245d20d01d17989d39d2a0616a3b8546d23cc436"
+    },
+    {
+      "check": "workers",
+      "exitCode": 0,
+      "seconds": 20.39,
+      "log": "/tmp/aboiteau-workspace-check-final-gate/workers.log",
+      "logSHA256": "da30f6aafafd309c3e4b5e3012bdb5877aeb3f15b2577df5bc0d2137e187e44b"
+    },
+    {
+      "check": "ui",
+      "exitCode": 0,
+      "seconds": 0.9,
+      "log": "/tmp/aboiteau-workspace-check-final-gate/ui.log",
+      "logSHA256": "c0175770185231b2e785eb7541884dc8beebe9e579704721f749b7aa35f24460"
+    },
+    {
+      "check": "diff",
+      "exitCode": 0,
+      "seconds": 0.03,
+      "log": "/tmp/aboiteau-workspace-check-final-gate/diff.log",
+      "logSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "preOptimizationIntegratedRuns": [
+    {
+      "summary": {
+        "schemaVersion": 1,
+        "runID": "87c43aec-22cd-4a65-8e98-303f53679152",
+        "evidenceDirectory": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-check-smoke-MHoaD7",
+        "api": "synthetic authenticated loopback fixture; production Worker covered separately",
+        "mode": "committed_only",
+        "cases": [
+          {
+            "name": "pass",
+            "cliExitCode": 0,
+            "outcome": "passed",
+            "commandExitCode": 0,
+            "cleanupConfirmed": true,
+            "freshness": {
+              "before": "matched",
+              "after": "matched"
+            },
+            "receipt": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-check-smoke-MHoaD7/pass/receipt.json",
+            "stdoutSHA256": "d6684989b8dd63b37d2f1954270826fbe1bd89a8debd12bcacf03ed1c6140ef6",
+            "stderrSHA256": "c405f9f423491131a20ec5b36eec3baff95ec94d22cc7453ece8d28a5bbab999"
+          },
+          {
+            "name": "nonzero",
+            "cliExitCode": 2,
+            "outcome": "failed",
+            "commandExitCode": 7,
+            "cleanupConfirmed": true,
+            "freshness": {
+              "before": "matched",
+              "after": "matched"
+            },
+            "receipt": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-check-smoke-MHoaD7/nonzero/receipt.json",
+            "stdoutSHA256": "5154ab3482136bf21bff626f639819bb75a37e9520dec293ed9148d43a836efa",
+            "stderrSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "name": "fake-pass",
+            "cliExitCode": 2,
+            "outcome": "failed",
+            "commandExitCode": 7,
+            "cleanupConfirmed": true,
+            "freshness": {
+              "before": "matched",
+              "after": "matched"
+            },
+            "receipt": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-check-smoke-MHoaD7/fake-pass/receipt.json",
+            "stdoutSHA256": "8d07f598818d8e660ed47d76cf555b0c59ef494b6e1da153185493a29d576dab",
+            "stderrSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "name": "hang",
+            "cliExitCode": 2,
+            "outcome": "not_run",
+            "commandExitCode": null,
+            "cleanupConfirmed": true,
+            "freshness": {
+              "before": "unknown",
+              "after": "unknown"
+            },
+            "receipt": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-check-smoke-MHoaD7/hang/receipt.json",
+            "stdoutSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderrSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        ],
+        "agentImageID": "sha256:818cd6b2642d51c388b9624c77a1ee9960ce1f7951d78b1bb1488f0dd3a168c9",
+        "checkerImageID": "sha256:416095926dcfb1c8e255691117c3c5504579e875bbb58fc3657fc2469076c516",
+        "agentPlatform": "linux/amd64",
+        "daemonArchitecture": "aarch64",
+        "studioBefore": "8fd750f3c29aa01548a2232abc129a5edf9dc42b11f5ec1ae8fec06b65ead0e9 2026-11-15T17:58:45.608984542Z",
+        "commit": "09ac1fc411dbd876d3ef8844e80c2408e1a87cbb",
+        "tree": "8037b9039750becc6faad5c5825ad1af96720fa8",
+        "sourceSHA256": "bb0d0abe3dbe20a8ca0f2a53fafcb9d207e5ba530e79c4651fc6a35bfab9e7bc",
+        "fileCount": 9,
+        "passed": false,
+        "error": "Expected values to be strictly equal:\n+ actual - expected\n\n+ 'not_run'\n- 'timeout'\n",
+        "sourceLogSHA256": "27b7af0a7da77629c85d035c63b87edacdc8e30d133047dfc48c2200d88f4dd4",
+        "sourceCleanupConfirmed": true,
+        "studioAfter": "8fd750f3c29aa01548a2232abc129a5edf9dc42b11f5ec1ae8fec06b65ead0e9 2026-11-15T17:58:45.608984542Z",
+        "processExitCode": 1
+      },
+      "summarySHA256": "8c5773bfc2e9f46760bcd1e7272321828f81e5f1dd4b5284462f36883d59924b",
+      "log": "/tmp/aboiteau-workspace-check-integrated-smoke.log",
+      "logSHA256": "1aaec4645ed2096531917614b0ecaa3df86723f560b1659a4a61eedd35bae558"
+    },
+    {
+      "summary": {
+        "schemaVersion": 1,
+        "runID": "644b4f3c-3c42-4a4a-9e1c-02f899738df4",
+        "evidenceDirectory": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-check-smoke-hHsqIM",
+        "api": "synthetic authenticated loopback fixture; production Worker covered separately",
+        "mode": "committed_only",
+        "cases": [
+          {
+            "name": "pass",
+            "cliExitCode": 0,
+            "outcome": "passed",
+            "commandExitCode": 0,
+            "cleanupConfirmed": true,
+            "freshness": {
+              "before": "matched",
+              "after": "matched"
+            },
+            "receipt": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-check-smoke-hHsqIM/pass/receipt.json",
+            "stdoutSHA256": "d6684989b8dd63b37d2f1954270826fbe1bd89a8debd12bcacf03ed1c6140ef6",
+            "stderrSHA256": "2aa45a86fddf885dbace1000dd3a7dcc05ac07c64e94ade0412d90dde0b9284f"
+          },
+          {
+            "name": "nonzero",
+            "cliExitCode": 2,
+            "outcome": "failed",
+            "commandExitCode": 7,
+            "cleanupConfirmed": true,
+            "freshness": {
+              "before": "matched",
+              "after": "matched"
+            },
+            "receipt": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-check-smoke-hHsqIM/nonzero/receipt.json",
+            "stdoutSHA256": "5154ab3482136bf21bff626f639819bb75a37e9520dec293ed9148d43a836efa",
+            "stderrSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "name": "fake-pass",
+            "cliExitCode": 2,
+            "outcome": "failed",
+            "commandExitCode": 7,
+            "cleanupConfirmed": true,
+            "freshness": {
+              "before": "matched",
+              "after": "unknown"
+            },
+            "receipt": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-check-smoke-hHsqIM/fake-pass/receipt.json",
+            "stdoutSHA256": "8d07f598818d8e660ed47d76cf555b0c59ef494b6e1da153185493a29d576dab",
+            "stderrSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
+          {
+            "name": "hang",
+            "cliExitCode": 2,
+            "outcome": "not_run",
+            "commandExitCode": null,
+            "cleanupConfirmed": true,
+            "freshness": {
+              "before": "unknown",
+              "after": "unknown"
+            },
+            "receipt": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-check-smoke-hHsqIM/hang/receipt.json",
+            "stdoutSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "stderrSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          }
+        ],
+        "agentImageID": "sha256:818cd6b2642d51c388b9624c77a1ee9960ce1f7951d78b1bb1488f0dd3a168c9",
+        "checkerImageID": "sha256:416095926dcfb1c8e255691117c3c5504579e875bbb58fc3657fc2469076c516",
+        "agentPlatform": "linux/amd64",
+        "daemonArchitecture": "aarch64",
+        "studioBefore": "8fd750f3c29aa01548a2232abc129a5edf9dc42b11f5ec1ae8fec06b65ead0e9 2026-11-15T17:58:45.608984542Z",
+        "commit": "ae7e73ba9200c214db7acb8ebbfb4d69cc2ddd36",
+        "tree": "8037b9039750becc6faad5c5825ad1af96720fa8",
+        "sourceSHA256": "568759fe6ace3750ae9b8260e927991311bd834da36e57bed8ee81acdbece1b8",
+        "fileCount": 9,
+        "passed": false,
+        "failedCase": "hang",
+        "error": "Expected values to be strictly equal:\n+ actual - expected\n\n+ 'not_run'\n- 'timeout'\n",
+        "pendingProxyReadsAtCleanup": 0,
+        "sourceState": "{\"Status\":\"running\",\"Running\":true,\"Paused\":false,\"Restarting\":false,\"OOMKilled\":false,\"Dead\":false,\"Pid\":41562,\"ExitCode\":0,\"Error\":\"\",\"StartedAt\":\"2026-11-15T19:39:09.998067085Z\",\"FinishedAt\":\"0001-01-01T00:00:00Z\"}",
+        "sourceMemory": "/sys/fs/cgroup/memory.events\nlow 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n/sys/fs/cgroup/memory.current\n1082867712\n/sys/fs/cgroup/memory.peak\n2099957760",
+        "sourceLogSHA256": "27b7af0a7da77629c85d035c63b87edacdc8e30d133047dfc48c2200d88f4dd4",
+        "sourceCleanupConfirmed": true,
+        "studioAfter": "8fd750f3c29aa01548a2232abc129a5edf9dc42b11f5ec1ae8fec06b65ead0e9 2026-11-15T17:58:45.608984542Z",
+        "processExitCode": 1
+      },
+      "summarySHA256": "2a8dbffc2bf75ba3f3ed0feb1478b109b7f4845aca5dacbc2d8cd6b0baf56248",
+      "log": "/tmp/aboiteau-workspace-check-instrumented-smoke.log",
+      "logSHA256": "3baac9155b20bf8eeda8a9f13a5ef2d8e4ebc83ce7ede8f6f5d5daa8d71b40af",
+      "httpObservationsSHA256": "76de7e8002f9ebf6c3dd508f49ea05c4ac0753ecd49c6c6b7106024106a01358"
+    },
+    {
+      "summary": {
+        "schemaVersion": 1,
+        "runID": "281dac0e-0dd0-4521-823e-c9e0f11d993f",
+        "evidenceDirectory": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-check-smoke-xuVpqp",
+        "api": "synthetic authenticated loopback fixture; production Worker covered separately",
+        "mode": "committed_only",
+        "cases": [
+          {
+            "name": "pass",
+            "cliExitCode": 2,
+            "outcome": "passed",
+            "commandExitCode": 0,
+            "cleanupConfirmed": true,
+            "freshness": {
+              "before": "matched",
+              "after": "unknown"
+            },
+            "receipt": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-check-smoke-xuVpqp/pass/receipt.json",
+            "stdoutSHA256": "d6684989b8dd63b37d2f1954270826fbe1bd89a8debd12bcacf03ed1c6140ef6",
+            "stderrSHA256": "7fc42a0902b20f57b4aa380c5c8dc728089d50f5e08ab0df1f64834483b8708d"
+          }
+        ],
+        "agentImageID": "sha256:818cd6b2642d51c388b9624c77a1ee9960ce1f7951d78b1bb1488f0dd3a168c9",
+        "checkerImageID": "sha256:416095926dcfb1c8e255691117c3c5504579e875bbb58fc3657fc2469076c516",
+        "agentPlatform": "linux/amd64",
+        "daemonArchitecture": "aarch64",
+        "studioBefore": "8fd750f3c29aa01548a2232abc129a5edf9dc42b11f5ec1ae8fec06b65ead0e9 2026-11-15T17:58:45.608984542Z",
+        "commit": "d211c1877226380c77e741ca376724ba5aed3e9c",
+        "tree": "8037b9039750becc6faad5c5825ad1af96720fa8",
+        "sourceSHA256": "38b0bbef645520072bbaae2519f0702ac6b3ac04a2b463b3f5b5dcf1e61e1cb6",
+        "fileCount": 9,
+        "passed": false,
+        "failedCase": "pass",
+        "error": "Expected values to be strictly equal:\n\n2 !== 0\n",
+        "pendingProxyReadsAtCleanup": 0,
+        "sourceState": "{\"Status\":\"running\",\"Running\":true,\"Paused\":false,\"Restarting\":false,\"OOMKilled\":false,\"Dead\":false,\"Pid\":43754,\"ExitCode\":0,\"Error\":\"\",\"StartedAt\":\"2026-11-15T19:42:20.981971924Z\",\"FinishedAt\":\"0001-01-01T00:00:00Z\"}",
+        "sourceMemory": "/sys/fs/cgroup/memory.events\nlow 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n/sys/fs/cgroup/memory.current\n1062268928\n/sys/fs/cgroup/memory.peak\n2078564352",
+        "sourceLogSHA256": "27b7af0a7da77629c85d035c63b87edacdc8e30d133047dfc48c2200d88f4dd4",
+        "sourceCleanupConfirmed": true,
+        "studioAfter": "8fd750f3c29aa01548a2232abc129a5edf9dc42b11f5ec1ae8fec06b65ead0e9 2026-11-15T17:58:45.608984542Z",
+        "processExitCode": 1
+      },
+      "summarySHA256": "6df3b07965a21ff735fa04dee96f54eb17b59af15d16336e987fa9ffbb6608f6",
+      "log": "/tmp/aboiteau-workspace-check-proxy-fixed-smoke.log",
+      "logSHA256": "81e9cb9ee65a83932cfa7d114b087d273c3b9cef195a4549487562fe13770e71",
+      "httpObservationsSHA256": "534955c2b6475c40db0878ee3f32ff41810fb1ba77324bee0c860eeee0dac4c3"
+    }
+  ],
+  "diagnosticHarnesses": [
+    {
+      "path": "/tmp/aboiteau-workspace-check-diagnostics-03f43a7d/aboiteau-checker-sanity.ts",
+      "sha256": "5a988313d0ff602513f9942f029a8eacd2defd10a124d68fc70cc1a3d017e609"
+    },
+    {
+      "path": "/tmp/aboiteau-workspace-check-diagnostics-03f43a7d/aboiteau-checker-pass-repro.ts",
+      "sha256": "8da0b350e1b8e1f5235994ee2d149957c0c944410b6794f6fb55a0af7de369fb"
+    }
+  ],
+  "finalImages": [
+    {
+      "id": "sha256:a07c2d2d632e36a33c3edfb95e74bf0d43978515b8ca656f436ad18b213a38ab",
+      "tagsAtCapture": [
+        "aboiteau-checks-agent:20261115"
+      ],
+      "sizeBytes": 493070095,
+      "platform": "linux/amd64",
+      "created": "2026-11-15T19:50:08.874893626Z"
+    },
+    {
+      "id": "sha256:416095926dcfb1c8e255691117c3c5504579e875bbb58fc3657fc2469076c516",
+      "tagsAtCapture": [
+        "aboiteau-check-arm64:20261115"
+      ],
+      "sizeBytes": 192324884,
+      "platform": "linux/arm64",
+      "created": "2026-11-15T19:30:17.974224506Z"
+    }
+  ],
+  "finalImageBuilds": {
+    "agent": {
+      "log": "/tmp/aboiteau-workspace-check-agent-final-build.log",
+      "sha256": "f7f09e84d1bf3f7d72420ecfe5eafed60120d1bb9ce920daceca336896887208"
+    },
+    "checkerArm64": {
+      "log": "/tmp/aboiteau-workspace-check-checker-arm64-build.log",
+      "sha256": "41d32f631992375874d65ca277f51a5943f394f153577275d91a798add9a80c4"
+    }
+  },
+  "preWarmGuardSourceSHA256": {
+    ".dockerignore": "6ad7afcb79a9730cbac05116589c434b3eee3ce57e7da0c491742d55ebd39d76",
+    "Dockerfile": "4cae1dc1a9afd83e612878982d166f3f58daa0a3eb9f32d8f30392e5ec833fee",
+    "control-server.ts": "d3fe5b5fefd227c44340229d56722fdc097b337873caced5c211d0012487b2cb",
+    "entrypoint.sh": "3b83aee13df4acf266736da93140baf75472ec6edb549e1d6e66cf288786585f",
+    "control-lifecycle.ts": "3de4676efa9edeec3e5d2cac5aec1a78a9c5c8a81d3dd11a4887c9a7e4c38c93",
+    "stow-workspace.ts": "b3d824995ee1672be49e449bdbd0a24253a734862e5767fe8660e2cf01f69317",
+    "workspace-preflight.ts": "53c82e31486de625ab6c299a9560b55aacfc5d5f4ef9efef3e76e085431b25df",
+    "workspace-repository.ts": "60c061ea1cf938f95f81cb904fc2e0c00cb18c29bbb77dc2098b301201991085",
+    "workspace-check-snapshot.ts": "0a759daaedb15ee6741ca63b6b9f96a78d3779494a4fc9d7ecf1638bb8584276",
+    "src/permissions.ts": "1b713e1de2cd2d28dc779e21879fab89946ff8ca02cff9f8652df4f998d003a9",
+    "src/control-auth.ts": "6b30d7c78667a72f8886585b6481a0a0d2b65d9a6dd1f81fbd3d3505434d7b2f",
+    "src/tar.ts": "b794d6916315cd81fbace6ccf910d2f271b44e36aa4967a458e58cff2bda6aba",
+    "src/accounting-policy.ts": "efc873596610954c44528db6727cb7dbc19c6b52f29e3d19512adde7c029d21a",
+    "src/workspace-preflight.ts": "a5af1639e09379a869f7bb4dba92b9dce1033de77c9c1d8145dcd9dfdda7909b",
+    "src/workspace-repository.ts": "169490d76ebf7ee95b98882e900833eacc93ce7eff419e0da51035ecb5254396",
+    "src/workspace-check.ts": "e3316d25d6db3c7308fe8d97e090e0091d62f2c462fd82b2d92c455ce6102d35",
+    "src/workspace-check-snapshot.ts": "d3ca25aa15e5cfa1fcdb48100e3ea217aec41bf6d533c8afecdbd154513af9db",
+    "src/index.ts": "9a4ba92f3633e59e198584a9657caed37b3f512274762436740d6b39443e1467",
+    "src/conversation.ts": "ae523f47723bf3d41858126ae7a3f9e4dcc01b6065e1815a0c660fb6ee2f46d1",
+    "src/conversation/workspace-checks.ts": "d58aa8bc7d924904802c954af3588a43611008a39cfffde7e5caf293a89c950b",
+    "src/conversation/readiness.ts": "4975f6ff672f465a25ad2c952cec7778748982454cd47a55605720a59db18987",
+    "src/conversation/runtime.ts": "f313c1dab2671944997b95b84e1420dd9c64bedb6df837edd1a5a03a9ddad4a3",
+    "src/conversation/images.ts": "130fb40f3970bc4312e9d6aa467daf10e4ff204ae0ea90d787f24702e297da5a",
+    "src/state.ts": "7b8dfe29e6ca23624f16cd24aef18cbcf192cdc316770725ae3498a261bbfd7d",
+    "scripts/workspace-repository.ts": "8d09c0fdb87d3c9a7d5ecf8f568ac0d53e5ae5cb146339e97801389e17f9dd14",
+    "scripts/workspace-check.ts": "58b216e5053fe3a169b0e5eb7f9c290c7db65f23918f1425036a5fa7665e58d4",
+    "scripts/workspace-check-docker.ts": "04846c73cb3c528631b91d2196ec487d615f3a5458c37dfc1f178c77dc3d1d38",
+    "scripts/lib/workspace-api.ts": "5f2a3be58e378dfd0bedd9bd99a6841decf99feaf517b481d8061924bfd71d05",
+    "runtime/check/Dockerfile": "32ffeb98b00134c27842c5690909cbb82c227019ff5160399d0c02c9911bf83a",
+    "runtime/check/bootstrap.ts": "36567287955196542d59314740b79161556aab02a05d9e0f1bcda1af7e299d1a",
+    "runtime/opencode/package.json": "fe89ba2e21af17d70d53ac69d0570663fe9ee43e559483d2d68831ea01368bf6",
+    "runtime/opencode/bun.lock": "d965226a19c2137d0812434bd9479df68d670565e69a1dde424c949b636ddb54",
+    "runtime/opencode/server.ts": "ea4e282c7cbd9c21552b825abffe0efbb85e356ce0e431887fef05adf22df283",
+    "runtime/opencode/options.ts": "81bd889f50bcfd3fbae2eedf9ac84819329cd7a5f9e9e81f6d6a84cfc4238c07",
+    "patches/stow/metadata-refusal.patch": "054b8b091a052189af1d4e17d2464b9a2a95b5fa55421a8f3b9358c326c7d014",
+    "patches/stow/metadata-refusal_test.go": "d61ed0777098559d94af448196b9f45623f0aadc364c1f6f5e6ef01809188588"
+  },
+  "preWarmGuardChecks": [
+    {
+      "check": "typecheck",
+      "exitCode": 0,
+      "seconds": 19.24,
+      "log": "/tmp/aboiteau-workspace-check-final-gate-2/typecheck.log",
+      "logSHA256": "a16b13054bc70b4f530216fee4dc7e681cc9b4d1fa2945b057a93f8f8b27f5ee"
+    },
+    {
+      "check": "config",
+      "exitCode": 0,
+      "seconds": 0.13,
+      "log": "/tmp/aboiteau-workspace-check-final-gate-2/config.log",
+      "logSHA256": "628ac0c1e5187e00e17d2f545df11824f8be6bf30336841ebc492cb28d046d0a"
+    },
+    {
+      "check": "unit",
+      "exitCode": 0,
+      "seconds": 28.21,
+      "log": "/tmp/aboiteau-workspace-check-final-gate-2/unit.log",
+      "logSHA256": "0ea5ac0bf671c78fd65294f9eb86a237417bfc61d9f9deaa10f7b3740080d1e2"
+    },
+    {
+      "check": "workers",
+      "exitCode": 0,
+      "seconds": 28.44,
+      "log": "/tmp/aboiteau-workspace-check-final-gate-2/workers.log",
+      "logSHA256": "a9d2da68f76acbb61a3b33a0beb952f6f644d159322158c3a911beb0110af39b"
+    },
+    {
+      "check": "ui",
+      "exitCode": 0,
+      "seconds": 1.18,
+      "log": "/tmp/aboiteau-workspace-check-final-gate-2/ui.log",
+      "logSHA256": "7002a519d3c56fea494d93105554165678e74a813b7785d24128ff60b0369356"
+    },
+    {
+      "check": "diff",
+      "exitCode": 0,
+      "seconds": 0.02,
+      "log": "/tmp/aboiteau-workspace-check-final-gate-2/diff.log",
+      "logSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "finalIntegratedSmoke": {
+    "exitCode": 0,
+    "summary": {
+      "schemaVersion": 1,
+      "runID": "a7c8eb62-3bea-4eda-ace0-162dd0cf3130",
+      "evidenceDirectory": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-check-smoke-OwBcjT",
+      "api": "synthetic authenticated loopback fixture; production Worker covered separately",
+      "mode": "committed_only",
+      "cases": [
+        {
+          "name": "pass",
+          "cliExitCode": 0,
+          "outcome": "passed",
+          "commandExitCode": 0,
+          "cleanupConfirmed": true,
+          "freshness": {
+            "before": "matched",
+            "after": "matched"
+          },
+          "receipt": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-check-smoke-OwBcjT/pass/receipt.json",
+          "stdoutSHA256": "d6684989b8dd63b37d2f1954270826fbe1bd89a8debd12bcacf03ed1c6140ef6",
+          "stderrSHA256": "eb1e48974c4ef10cd194d546c7299f5a9b97c317689eb441aceb4104571a5d8f"
+        },
+        {
+          "name": "nonzero",
+          "cliExitCode": 2,
+          "outcome": "failed",
+          "commandExitCode": 7,
+          "cleanupConfirmed": true,
+          "freshness": {
+            "before": "matched",
+            "after": "matched"
+          },
+          "receipt": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-check-smoke-OwBcjT/nonzero/receipt.json",
+          "stdoutSHA256": "5154ab3482136bf21bff626f639819bb75a37e9520dec293ed9148d43a836efa",
+          "stderrSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "fake-pass",
+          "cliExitCode": 2,
+          "outcome": "failed",
+          "commandExitCode": 7,
+          "cleanupConfirmed": true,
+          "freshness": {
+            "before": "matched",
+            "after": "matched"
+          },
+          "receipt": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-check-smoke-OwBcjT/fake-pass/receipt.json",
+          "stdoutSHA256": "8d07f598818d8e660ed47d76cf555b0c59ef494b6e1da153185493a29d576dab",
+          "stderrSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "hang",
+          "cliExitCode": 2,
+          "outcome": "timeout",
+          "commandExitCode": null,
+          "cleanupConfirmed": true,
+          "freshness": {
+            "before": "matched",
+            "after": "matched"
+          },
+          "receipt": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-check-smoke-OwBcjT/hang/receipt.json",
+          "stdoutSHA256": "4d744c0aca4dc5600a3b45577e4ffafd43ed9a8e78c6539cde875e0e487261c8",
+          "stderrSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "flood",
+          "cliExitCode": 3,
+          "outcome": "collector_error",
+          "commandExitCode": null,
+          "cleanupConfirmed": true,
+          "freshness": {
+            "before": "matched",
+            "after": "matched"
+          },
+          "receipt": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-check-smoke-OwBcjT/flood/receipt.json",
+          "stdoutSHA256": "b7e378f5d6e3d6c9a8e2e9eb649356e7687ddb2e2d8ec43a5bcd0325e2c2b266",
+          "stderrSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "name": "stale-after",
+          "cliExitCode": 2,
+          "outcome": "passed",
+          "commandExitCode": 0,
+          "cleanupConfirmed": true,
+          "freshness": {
+            "before": "matched",
+            "after": "stale"
+          },
+          "receipt": "/var/folders/f3/n5tk3w792px0vctvqjytc6t00000gn/T/aboiteau-check-smoke-OwBcjT/stale-after/receipt.json",
+          "stdoutSHA256": "d6684989b8dd63b37d2f1954270826fbe1bd89a8debd12bcacf03ed1c6140ef6",
+          "stderrSHA256": "f377b047ff7fd384aef7276d310ac8b4aa6a3db47eb803056b960dfdfe11324a"
+        }
+      ],
+      "agentImageID": "sha256:a07c2d2d632e36a33c3edfb95e74bf0d43978515b8ca656f436ad18b213a38ab",
+      "checkerImageID": "sha256:416095926dcfb1c8e255691117c3c5504579e875bbb58fc3657fc2469076c516",
+      "agentPlatform": "linux/amd64",
+      "daemonArchitecture": "aarch64",
+      "studioBefore": "8fd750f3c29aa01548a2232abc129a5edf9dc42b11f5ec1ae8fec06b65ead0e9 2026-11-15T17:58:45.608984542Z",
+      "commit": "5784d412ee83bb1e4e8a024a33e224921b9724cc",
+      "tree": "8037b9039750becc6faad5c5825ad1af96720fa8",
+      "sourceSHA256": "83c1f66eba600dc348410f0b457f3e037be2aae5782a506ff3dadacf72574277",
+      "fileCount": 9,
+      "passed": true,
+      "pendingProxyReadsAtCleanup": 0,
+      "sourceState": "{\"Status\":\"running\",\"Running\":true,\"Paused\":false,\"Restarting\":false,\"OOMKilled\":false,\"Dead\":false,\"Pid\":45964,\"ExitCode\":0,\"Error\":\"\",\"StartedAt\":\"2026-11-15T19:50:41.844564461Z\",\"FinishedAt\":\"0001-01-01T00:00:00Z\"}",
+      "sourceMemory": "/sys/fs/cgroup/memory.events\nlow 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n/sys/fs/cgroup/memory.current\n1068326912\n/sys/fs/cgroup/memory.peak\n2087804928",
+      "sourceLogSHA256": "27b7af0a7da77629c85d035c63b87edacdc8e30d133047dfc48c2200d88f4dd4",
+      "sourceCleanupConfirmed": true,
+      "studioAfter": "8fd750f3c29aa01548a2232abc129a5edf9dc42b11f5ec1ae8fec06b65ead0e9 2026-11-15T17:58:45.608984542Z",
+      "processExitCode": 0
+    },
+    "summarySHA256": "f5ba8a33eec510c6bdafc094cfa76591269949816d0b8e6cf5e32503ee95a66f",
+    "log": "/tmp/aboiteau-workspace-check-final-smoke.log",
+    "logSHA256": "d841ca3cb944b982a2daca0b837902ba21e79ea961c8faebdfc9a4e999799d13",
+    "httpObservationsSHA256": "8d45d620bd8171c0774b48f15f36a2aa15ce5ef090f99345e020773c9533f53d",
+    "headProbeMillis": {
+      "count": 12,
+      "minimum": 2526,
+      "maximum": 4860
+    },
+    "scriptSHA256": "760f340682bbb29c172aed974bbf958161cbc0c00e59b20042fd7086974ae8ae"
+  },
+  "checks": [
+    {
+      "check": "typecheck",
+      "exitCode": 0,
+      "seconds": 13.14,
+      "log": "/tmp/aboiteau-workspace-check-final-gate-3/typecheck.log",
+      "logSHA256": "a16b13054bc70b4f530216fee4dc7e681cc9b4d1fa2945b057a93f8f8b27f5ee"
+    },
+    {
+      "check": "config",
+      "exitCode": 0,
+      "seconds": 0.04,
+      "log": "/tmp/aboiteau-workspace-check-final-gate-3/config.log",
+      "logSHA256": "628ac0c1e5187e00e17d2f545df11824f8be6bf30336841ebc492cb28d046d0a"
+    },
+    {
+      "check": "unit",
+      "exitCode": 0,
+      "seconds": 27.29,
+      "log": "/tmp/aboiteau-workspace-check-final-gate-3/unit.log",
+      "logSHA256": "231f0451f3d28be9592790ad80108b808fe8f62aacc12d5f91bdfa0decd1a177"
+    },
+    {
+      "check": "workers",
+      "exitCode": 0,
+      "seconds": 24.11,
+      "log": "/tmp/aboiteau-workspace-check-final-gate-3/workers.log",
+      "logSHA256": "378786c7fd96e085a513f4b37a7312ee6b7af71c3078da17f6e84067585181a6"
+    },
+    {
+      "check": "ui",
+      "exitCode": 0,
+      "seconds": 0.87,
+      "log": "/tmp/aboiteau-workspace-check-final-gate-3/ui.log",
+      "logSHA256": "2f2616ce9838e521b002b800fb4ba150a96953bde8ac9ffb1fe94542af9bec45"
+    },
+    {
+      "check": "diff",
+      "exitCode": 0,
+      "seconds": 0.02,
+      "log": "/tmp/aboiteau-workspace-check-final-gate-3/diff.log",
+      "logSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "cleanup": {
+    "ownedContainersRemoved": true,
+    "unrelatedContainersAndVolumesPreserved": true,
+    "studioContainerID": "8fd750f3c29a",
+    "studioStartUnchanged": true,
+    "studioHTTPStatus": 200
+  },
+  "smokeScript": {
+    "path": "scripts/smoke-workspace-checks.ts",
+    "sha256": "760f340682bbb29c172aed974bbf958161cbc0c00e59b20042fd7086974ae8ae"
+  }
+}

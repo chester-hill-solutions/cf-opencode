@@ -1,0 +1,69 @@
+{
+  "kind": "native CI for Stow metadata refusal",
+  "sourceCommit": "fa5411bd93092fd102fb65d4d69c0562712d6fa0",
+  "runID": 43643079964,
+  "url": "https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43643079964",
+  "conclusion": "success",
+  "jobs": [
+    {
+      "id": 132594726455,
+      "name": "check",
+      "conclusion": "success"
+    },
+    {
+      "id": 132595085359,
+      "name": "container-smoke",
+      "conclusion": "success"
+    }
+  ],
+  "checks": {
+    "typecheck": "pass",
+    "config": "pass",
+    "uiBuild": "pass",
+    "bunTests": 412,
+    "runtimeTests": 5,
+    "workerTests": 351,
+    "workerTestFiles": 58,
+    "nativeContainerSmoke": "pass",
+    "stowRegressionBaseline": "failed with expected silent success",
+    "patchedS3APIPackage": "pass",
+    "independentLinuxBinaryHash": "39615975e58008a60a94b0c696e9ee46aa8dba77e1899e5297dcb4f5010e3174",
+    "accountSeedIdentityAndCredentialExclusions": "pass",
+    "multipartSelectorRegressions": "pass"
+  },
+  "scopeLimit": "Qualifies this source and native rebuilt smoke image. Corrected live registry image is separately assembled from the frozen base and the independently hash-matched binary, then qualified by its own receipt.",
+  "supersededInitialRun": {
+    "kind": "native CI for Stow metadata refusal",
+    "sourceCommit": "9d00a72ec55525c343a22af38e794bfd7a2540c6",
+    "runID": 43642280972,
+    "url": "https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43642280972",
+    "conclusion": "success",
+    "jobs": [
+      {
+        "id": 132592255881,
+        "name": "check",
+        "conclusion": "success"
+      },
+      {
+        "id": 132592604885,
+        "name": "container-smoke",
+        "conclusion": "success"
+      }
+    ],
+    "checks": {
+      "typecheck": "pass",
+      "config": "pass",
+      "uiBuild": "pass",
+      "bunTests": 412,
+      "runtimeTests": 5,
+      "workerTests": 351,
+      "workerTestFiles": 58,
+      "nativeContainerSmoke": "pass",
+      "stowRegressionBaseline": "failed with expected silent success",
+      "patchedS3APIPackage": "pass",
+      "independentLinuxBinaryHash": "78e69bb95cef92433543ac339fa9a38ffc3a8d4b66173820a776a097e3e5ed0b",
+      "accountSeedIdentityAndCredentialExclusions": "pass"
+    },
+    "scopeLimit": "Qualifies this source and native rebuilt smoke image. Corrected live registry image is separately assembled from the frozen base and the independently hash-matched binary, then qualified by its own receipt."
+  }
+}

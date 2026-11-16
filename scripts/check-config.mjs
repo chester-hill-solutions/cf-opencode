@@ -7,9 +7,11 @@
  * containers (never started in tests). Everything a Worker depends on at
  * runtime — the entrypoint, compatibility flags, DO classes and bindings, R2
  * bindings, exports, and vars — must line up, or a binding added to one file
- * silently goes missing in the other.
+ * silently goes missing in the other. The exact test-only Lifecycle wrapper
+ * is validated before normalizing its one probe out of those comparisons.
  */
 import { readFileSync } from "node:fs"
+import { LIFECYCLE_TEST_ENTRY, normalizeLifecycleTestBoundary } from "./config-test-boundary.ts"
 
 const PROD = "wrangler.jsonc"
 const TEST = "wrangler.test.jsonc"
@@ -43,8 +45,11 @@ function compare(label, prod, test, problems) {
 }
 
 const prod = parse(PROD)
-const test = parse(TEST)
-const problems = []
+const testSource = parse(TEST)
+const wrapper = testSource.main === LIFECYCLE_TEST_ENTRY
+  ? readFileSync(new URL(`../${LIFECYCLE_TEST_ENTRY}`, import.meta.url), "utf8")
+  : ""
+const { config: test, problems } = normalizeLifecycleTestBoundary(prod, testSource, wrapper)
 
 compare("main", prod.main, test.main, problems)
 compare("compatibility_flags", [...(prod.compatibility_flags ?? [])].sort(), [...(test.compatibility_flags ?? [])].sort(), problems)

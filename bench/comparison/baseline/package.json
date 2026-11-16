@@ -1,0 +1,12 @@
+{
+  "name": "@cf-opencode/comparison-baseline",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@ai-sdk/openai-compatible": "2.0.93",
+    "@ai-sdk/provider": "3.0.8",
+    "@opencode/plugin": "2.2.5",
+    "@opencode/sdk": "2.2.5",
+    "agents": "0.33.0"
+  }
+}

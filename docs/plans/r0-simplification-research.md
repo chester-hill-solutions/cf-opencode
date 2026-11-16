@@ -1,5 +1,7 @@
 # R0 budget simplification research
 
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is retained as historical research and the source of permanent accounting constraints; the roadmap wins on any disagreement.
+
 > Historical scope decision for the first repair pass. The separately authorized
 > F1 implementation follows the source correction below; the narrower first-pass
 > completion claims remain historical evidence.

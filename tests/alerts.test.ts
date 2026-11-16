@@ -60,4 +60,12 @@ describe("evaluateAlerts", () => {
   test("does not warn without a budget", () => {
     expect(evaluateAlerts({ ...base, spendUSD: 100 })).toEqual([])
   })
+
+  test("alerts on the first paused settlement and failed question delivery", () => {
+    const metrics = { "settlement.paused": 1, "slack.form.failed": 1 }
+    expect(evaluateAlerts({ ...base, metrics }).map((alert) => alert.name)).toEqual([
+      "settlement.paused", "slack.form.failed",
+    ])
+    expect(evaluateAlerts({ ...base, metrics, marks: metrics })).toEqual([])
+  })
 })

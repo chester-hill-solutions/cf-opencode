@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { classifyRecovery, recoverySnapshotID, type RecoveryAuthority } from "../src/recovery"
+import { classifyRecovery, recoveryQueueSummary, recoverySnapshotID, type RecoveryAuthority } from "../src/recovery"
 import type { ConversationState } from "../src/state"
 
 const base: ConversationState = { phase: "idle", seen: [], pending: {} }
@@ -26,7 +26,7 @@ describe("held turn recovery classification", () => {
     const state: ConversationState = {
       ...base,
       budgetReservation: { reservationID: "r1", dispatched: false },
-      queued: { text: "private prompt", attempts: 0 },
+      queue: [{ id: "q-private", enqueuedAt: 1, source: "http", text: "private prompt", attempts: 0 }],
       sessionID: "session-1",
       usageExecution: { sessionID: "session-1", startedSeq: 8, terminalSeq: 4, latestStepSeq: 6 },
     }
@@ -46,7 +46,7 @@ describe("held turn recovery classification", () => {
         ...base,
         phase: "settling",
         budgetReservation: { reservationID: "r1", date: "2026-11-11", dispatched: true },
-        queued: { text: "next prompt", attempts: 0 },
+        queue: [{ id: "q-next", enqueuedAt: 1, source: "http", text: "next prompt", attempts: 0 }],
         sessionID: "session-1",
         usageExecution: { sessionID: "session-1", startedSeq: 8, terminalSeq: 4, latestStepSeq: 6 },
       },
@@ -99,5 +99,20 @@ describe("held turn recovery classification", () => {
     ]) })
     expect(first).toMatch(/^[a-f0-9]{64}$/)
     expect(changed).not.toBe(first)
+  })
+
+  it("summarizes queue metadata without including prompt text", async () => {
+    const state = {
+      ...base,
+      queue: [{ id: "q1", enqueuedAt: 12, source: "http" as const, text: "private prompt", attempts: 2 }],
+    }
+    expect(recoveryQueueSummary(state)).toEqual({
+      depth: 1,
+      head: {
+        id: "q1", source: "http", enqueuedAt: 12, attempts: 2,
+        nextAttemptAt: null, lastError: null,
+      },
+    })
+    expect(JSON.stringify(recoveryQueueSummary(state))).not.toContain("private prompt")
   })
 })

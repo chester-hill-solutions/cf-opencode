@@ -56,6 +56,27 @@ curl -X POST https://<worker>/api/conversations/demo/permissions/<requestID> \
 curl https://<worker>/api/conversations/demo -H "authorization: Bearer $API_TOKEN"
 ```
 
+Message bodies accept `delivery: "queue" | "steer" | "interrupt"` (default
+`queue`). Busy conversations return HTTP 202 with `queue.id`, `position` and
+`depth`; a full queue returns 429 without dropping entries. `QUEUE_LIMIT` sets
+capacity from 1–100 (default 10). Entries survive restart and wait for settlement
+before acquiring their own budget hold.
+
+`steer` requires a running, dispatched turn and accepts guidance without a new
+hold. Acknowledgement is admission, with `consumed: null`: if the run finishes
+before reading it, guidance stays pending until a later turn. Steering sets
+`resume: false` so it cannot wake a fresh execution.
+`interrupt` requires an active turn and queues the supplied text after it;
+`replaceQueue: true` explicitly replaces pending follow-ups. Interrupt results
+separate `stopRequested`, `observedStop` (currently unknown/null), and `settled`.
+A transport error can mean an unknown outcome: inspect status and reuse the same
+idempotency key; never resend automatically with a new key. One stop intent per
+active turn prevents repeated interrupt calls after restart.
+
+State includes `turnObservation`: the 15-minute threshold observes and alerts;
+it does not enforce an execution deadline. The daily budget gates admission and
+can be exceeded by an already admitted turn.
+
 Frames:
 
 ```
@@ -100,7 +121,8 @@ Slack controls are handled directly, before any model prompt or budget admission
 | `!sessions` / `!session` | List recent sessions in this conversation's workspace |
 | `!sessions 2` / `!sessions ses_…` | Continue a listed or verified older session |
 | `!new` | Start a fresh session on the next message; keep workspace and history |
-| `!stop` | Interrupt running work and clear queued follow-ups; reconcile usage normally |
+| `!steer <text>` | Add guidance to the running turn without a new hold |
+| `!stop` / `!stop <text>` | Request interruption and clear pending follow-ups, or replace them with the supplied text; wait for usage settlement |
 | `!leave` | Stop following the current channel thread until mentioned again |
 | `!answer` / `!answer <value>` | Show or answer the waiting question; multiple fields accept `key=value` pairs |
 | `!cancel` | Skip the waiting question |
@@ -202,25 +224,39 @@ Apple `container` needs macOS 26+ on Apple silicon. `wrangler dev` with containe
 
 ## Testing and measurements
 
-- `bun test tests` — 116 unit tests (signature, conversation keys, permissions, state, SSE formatting, retry/backoff, helpers, UI kit registry, settings state machine).
-- `bun run test:workers` — 30 integration tests in workerd (Worker surface, DO state, Slack signature/routing, SSE, concurrency and admission-queue regressions, a latency guard).
+- `bun test tests` — unit/helper tests (signature, conversation keys, permissions,
+  state, SSE formatting, retry/backoff, helpers, UI kit registry, settings state
+  machine).
+- `bun run test:workers` — integration tests in workerd (Worker surface, DO state,
+  Slack signature/routing, SSE, concurrency and admission-queue regressions, a
+  latency guard). Current pass counts and evidence dates live in the roadmap.
 - `bun run check:config` — fails CI when the prod and test Wrangler configs drift on bindings, exports or vars.
 - `bench/measure.ts` — deployed Worker/SSE/turn latency.
 - `bench/container.sh` — cold start, checkpoint size/time, restore time.
 
 Local numbers (workerd): `/health` p50 1.0 ms / p95 1.0 ms; DO state p50 1.0 ms / p95 2.0 ms; Worker bundle 103 KB. Targets and results live in [bench/README.md](bench/README.md) and [bench/RESULTS.md](bench/RESULTS.md); the test pyramid is in [docs/testing.md](docs/testing.md).
 
+The provider-egress prototype has an offline gate:
+`bun run qualification:provider-egress`. Its [fixed native fixture](scripts/provider-egress-qualification/README.md)
+uses a fresh namespace and synthetic upstream to test scoped HTTP/SSE forwarding
+with public internet disabled. Production provisioning, credential migration and
+Git/package egress remain gated in R1-7a/R1-7.
+
 ## Roadmap
 
-Operating notes (deploy, health, first turn, failures, rollback) are in
-[docs/runbook.md](docs/runbook.md). The path from harness to product — R0 harness complete, R1 tenancy foundations, R2 self-onboarding,
-R3 configurable sandbox, R4 product — is in [docs/roadmap.md](docs/roadmap.md), with gates, estimates
-and the ticket-level backlog.
+The single canonical plan — product direction, current gate status, the ordered
+next-step queue and acceptance criteria — is [docs/roadmap.md](docs/roadmap.md).
+Every other file under `docs/plans/` and `docs/design/` is evidence, design input,
+research or an operational reference; none of them schedules work. Operating notes
+(deploy, health, first turn, failures, rollback) are in
+[docs/runbook.md](docs/runbook.md); the test layers are in
+[docs/testing.md](docs/testing.md).
 
 ## Limits and open work
 
 - The reply pump uses a warm event stream while the container is up, with a 2s alarm poll as fallback.
-- One container (`max_instances: 1`); extra conversations queue on alarms.
+- One container per conversation, with a global `maxContainers` cap; extra
+  conversations queue on alarms.
 - Checkpoints are per settled prompt; a crash mid-turn loses that turn.
 - Channel-level engagement (`!leave`) lives in the Slack adapter and is not ported.
 - Uploads and clip rendering are deferred; `slack_upload_file` lives in the container-side plugin.

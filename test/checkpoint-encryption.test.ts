@@ -4,6 +4,7 @@ import { deriveWorkspaceKey } from "@chester-hill-solutions/vault/core"
 import { decryptBytes } from "../src/archive-crypto"
 import { usageLogResponse } from "./helpers/usage-log"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
+import { driveConversationJobs } from "./helpers/conversation-jobs"
 
 /**
  * Workspace archives carry source and (today) OpenCode state. With a vault key
@@ -99,7 +100,7 @@ describe("checkpoint encryption", () => {
         }),
       )
       await sent.text()
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["turn:observe"])
 
       const saved = await state.storage.get<{ checkpointKey?: string }>("state")
       const prefix = `workspaces/${state.id.toString()}/`

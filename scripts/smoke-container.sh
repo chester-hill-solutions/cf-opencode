@@ -25,7 +25,9 @@ BASE="http://127.0.0.1:${CONTROL_PORT}"
 SECOND_NAME="${SECOND_NAME:-${NAME}-account-seed}"
 SECOND_CONTROL_PORT="${SECOND_CONTROL_PORT:-$((CONTROL_PORT + 10))}"
 SECOND_BASE="http://127.0.0.1:${SECOND_CONTROL_PORT}"
-EXPECTED_STOW_SHA256="780c3ccf89abdb4355e1b943ab686693d7436bd08cefdffd0f315226815f27da"
+# Source-pinned v0.4.0 plus patches/stow/metadata-refusal.patch, Go 1.25.6,
+# CGO disabled, linux/amd64, trimpath and no build VCS metadata.
+EXPECTED_STOW_SHA256="39615975e58008a60a94b0c696e9ee46aa8dba77e1899e5297dcb4f5010e3174"
 EXPECTED_KERNEL_EXECUTABLE="/usr/local/bin/stow-s3"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/cf-opencode-smoke.XXXXXX")"
 WS_ARCHIVE="${WORK}/workspace.tar.gz"
@@ -88,6 +90,7 @@ case "$RUNTIME" in
     exec_second_agent() { docker exec --user 1001 "$SECOND_NAME" "$@"; }
     copy_to_second() { docker cp "$1" "$SECOND_NAME:$2"; }
     remove_named() { docker rm -f "$1" >/dev/null 2>&1; }
+    stop_main() { docker stop --time 10 "$NAME" >/dev/null; }
     cleanup() {
       [[ "$CREATED_SECOND" == 1 ]] && remove_named "$SECOND_NAME" || true
       [[ "$CREATED_MAIN" == 1 ]] && remove_named "$NAME" || true
@@ -116,6 +119,7 @@ case "$RUNTIME" in
       container stop "$1" >/dev/null 2>&1 || true
       container delete "$1" >/dev/null 2>&1
     }
+    stop_main() { container stop "$NAME" >/dev/null; }
     cleanup() {
       [[ "$CREATED_SECOND" == 1 ]] && remove_named "$SECOND_NAME" || true
       [[ "$CREATED_MAIN" == 1 ]] && remove_named "$NAME" || true
@@ -206,11 +210,11 @@ finish() {
   if [[ "$status" != 0 && "$RUNTIME" == "docker" ]]; then
     echo "container smoke failed; collecting process diagnostics" >&2
     if [[ "$CREATED_MAIN" == 1 ]]; then
-      docker top "$NAME" -eo pid,ppid,stat,comm >&2 || true
-      docker exec "$NAME" sh -c 'for p in /proc/[0-9]*; do test -r "$p/status" || continue; sed -n -e "/^Name:/p" -e "/^State:/p" -e "/^Pid:/p" -e "/^PPid:/p" "$p/status"; printf "wait: "; cat "$p/wchan" 2>/dev/null; printf "\n"; done' >&2 || true
-      docker logs --tail 200 "$NAME" >&2 || true
+      timeout 5 docker top "$NAME" -eo pid,ppid,stat,comm >&2 || true
+      timeout 5 docker exec "$NAME" sh -c 'for p in /proc/[0-9]*; do test -r "$p/status" || continue; sed -n -e "/^Name:/p" -e "/^State:/p" -e "/^Pid:/p" -e "/^PPid:/p" "$p/status"; printf "wait: "; cat "$p/wchan" 2>/dev/null; printf "\n"; done' >&2 || true
+      timeout 5 docker logs --tail 200 "$NAME" >&2 || true
     fi
-    if [[ "$CREATED_SECOND" == 1 ]]; then docker logs --tail 200 "$SECOND_NAME" >&2 || true; fi
+    if [[ "$CREATED_SECOND" == 1 ]]; then timeout 5 docker logs --tail 200 "$SECOND_NAME" >&2 || true; fi
   fi
   cleanup
   rm -rf "$WORK"
@@ -221,6 +225,13 @@ trap finish EXIT
 
 echo "building ${IMAGE}…"
 build_image
+if [ "$RUNTIME" = docker ]; then
+  image_bytes=$(docker image inspect "$IMAGE" --format '{{.Size}}')
+  echo "image size: $(( image_bytes / 1024 / 1024 )) MB"
+  if [ "$image_bytes" -gt "${IMAGE_MAX_BYTES:-600000000}" ]; then
+    fail "image exceeds ${IMAGE_MAX_BYTES:-600000000} byte budget"
+  fi
+fi
 
 echo "starting ${NAME}…"
 run_container
@@ -239,6 +250,17 @@ AUTH=(-H "authorization: Bearer ${CONTROL_TOKEN}")
 # Every operation except /health must require the per-container token.
 code="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/status")"
 [[ "$code" == "401" ]] || fail "unauthenticated /status returned ${code}, expected 401"
+
+# Inspect the native workspace as the agent without preparing either runtime.
+code="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/workspace/preflight")"
+[[ "$code" == "401" ]] || fail "unauthenticated workspace preflight returned ${code}, expected 401"
+preflight_before="$(curl -fsS "${AUTH[@]}" "${BASE}/status" | jq -c '{initialized,running,s3}')"
+curl -fsS "${AUTH[@]}" "${BASE}/workspace/preflight" >"${WORK}/workspace-preflight.json"
+jq -e '.schemaVersion == 1 and .mode == "read_only" and .verification.setup == "not_run" and .verification.checks == "not_run"' \
+  "${WORK}/workspace-preflight.json" >/dev/null || fail "workspace preflight omitted its read-only verification contract"
+preflight_after="$(curl -fsS "${AUTH[@]}" "${BASE}/status" | jq -c '{initialized,running,s3}')"
+[[ "$preflight_before" == "$preflight_after" ]] || fail "workspace preflight changed runtime readiness"
+ok "authenticated workspace preflight stays passive before startup"
 ok "control token required"
 
 curl -fsS "${AUTH[@]}" -X POST "${BASE}/configure" \
@@ -432,6 +454,12 @@ echo "completed runtime start"
 capture_readiness account-checkpoint
 ok "account state checkpoint"
 
+# This smoke qualifies sequential recovery, not concurrent runtime capacity.
+# The source has supplied every required archive/identity; stop it before the
+# recipient starts so emulated amd64 processes do not exhaust a small host VM.
+stop_main
+ok "source stopped after archive capture for sequential recovery profile"
+
 # A second fresh workspace proves account seeding copies only account state.
 echo "starting fresh account-seed recipient ${SECOND_NAME}…"
 run_second_container
@@ -501,6 +529,11 @@ code="$(curl -s -o /dev/null -w '%{http_code}' "${AUTH_SECOND[@]}" -X POST \
 identity_hash_after="$(exec_second sha256sum /var/lib/aboiteau/state/stow/identity.json | awk '{print $1}')"
 [[ "$identity_hash_before" == "$identity_hash_after" ]] || fail "rejected reseed changed recipient identity"
 ok "reseed of initialized runtime refused without changing identity"
+
+# The recipient's assertions are complete. Remove it before starting the fresh
+# cold-restore runtime; preserve the same sequential memory profile throughout.
+remove_named "$SECOND_NAME" || fail "could not remove the owned account-seed recipient"
+CREATED_SECOND=0
 
 # Remove the original container before creating a clean recipient for the same
 # two saved checkpoint parts. This is a local fresh-container restore, not R2.

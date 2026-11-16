@@ -1,5 +1,7 @@
 # Next roadmap iteration — R0 reliability
 
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is retained as historical implementation evidence and permanent accounting constraints; the roadmap wins on any disagreement.
+
 Status: local implementation, review and gate complete · Updated: 2026-11-11
 Baseline: `ba94404` plus existing working-tree edits; preserve those edits.
 Coverage: local repairs in R0-10–R0-14. G0, G1 and audit 32 remain open.
@@ -10,6 +12,16 @@ acceptance. Its later B2 native amd64 startup smoke and bounded C2 encrypted
 Cloudflare/R2 cold restore passed on 2026-11-12, independently of the older gates
 below. Production cutover and wider storage qualification remain open in the
 owning integration plan; G0 is not closed by those bounded proofs.
+
+**Execution-service follow-up — 2026-11-11:** this document remains the evidence
+and contract for its completed repair slices, not the current dispatch queue.
+The [roadmap gate ledger](../roadmap.md#current-gate-ledger) records later live
+canary evidence and remaining gaps. The [delivery plan](execution-service-delivery.md)
+owns R0-16 public replay, representative coding/recovery measurements and the
+R1 caller contract/reference-client sequence. Bounded live/manual S8 decisions
+remain in [operator reconciliation](operator-reconciliation.md); prior F1/F2
+limits and approval requirements are not waived. No old statement about an
+unstarted deployment supersedes later specifically recorded live evidence.
 
 Execution checkpoint: W1–W9, W10 independent review, W11 local gate and W12 evidence
 publication are complete. The final gate passed with 212 unit tests/34 files, 100 Worker

@@ -1,6 +1,10 @@
 # WASM sandbox with durable storage — feasibility research
 
-Research date: 2026-11-11. Status: retained research; experiment and runtime migration deferred by product-owner decision.
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is retained as research reference only; no work here is scheduled, and the roadmap wins on any disagreement.
+
+Research date: 2026-11-11. Status: retained research; implementation now follows
+the [sandbox-lighter plan](sandbox-lighter-plan.md). Experiment and runtime
+migration remain gated by that plan's Computer spike.
 
 ## Current planning decision
 

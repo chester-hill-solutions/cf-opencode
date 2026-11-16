@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
+import { driveConversationJobs, startConversationJobs, waitForConversationJobs } from "./helpers/conversation-jobs"
 
 const settings = () => env.SETTINGS.getByName("global")
 
@@ -57,10 +58,69 @@ function fakeContainer(prompts: { count: number }) {
 }
 
 describe("admission queue", () => {
+  it("returns the existing queued receipt for a repeated idempotency key", async () => {
+    const stub = env.CONVERSATION.getByName("C1:queue-idempotent-receipt")
+    const result = await runInDurableObject(stub, async (instance, runtime) => {
+      await runtime.storage.put("state", {
+        phase: "queued",
+        queue: [
+          { id: "q-head", enqueuedAt: 1, source: "http", text: "first", attempts: 0 },
+          { id: "q-same", enqueuedAt: 2, source: "http", text: "same request", idempotencyKey: "request-1", attempts: 0 },
+        ],
+        seen: [],
+        pending: {},
+      })
+      const response = await instance.fetch(new Request("https://conversation/message", {
+        method: "POST",
+        body: JSON.stringify({ text: "same request", idempotencyKey: "request-1", replaceQueue: true }),
+      }))
+      const receipt = await response.json() as { queue?: { id?: string; position?: number; depth?: number; duplicate?: boolean } }
+      const state = await runtime.storage.get<{ queue?: { id: string; text: string }[] }>("state")
+      return { status: response.status, receipt, queue: state?.queue }
+    })
+    expect(result.status).toBe(202)
+    expect(result.receipt.queue).toMatchObject({ id: "q-same", position: 2, depth: 2, duplicate: true })
+    expect(result.queue?.map(({ id }) => id)).toEqual(["q-head", "q-same"])
+  })
+
+  it("drops only a terminally failed head and schedules the next FIFO item", async () => {
+    const stub = env.CONVERSATION.getByName("C1:queue-terminal-head")
+    const result = await runInDurableObject(stub, async (instance, runtime) => {
+      await runtime.storage.put("state", {
+        phase: "queued",
+        queue: [
+          { id: "q-fail", enqueuedAt: 1, source: "http", text: "cannot start", attempts: 4, nextAttemptAt: Date.now() - 1 },
+          { id: "q-next", enqueuedAt: 2, source: "slack", text: "keep this", attempts: 0, slack: { channel: "C1" } },
+        ],
+        seen: [],
+        pending: {},
+      })
+      const internal = instance as unknown as {
+        admissions: {
+          drainQueue(): Promise<boolean>
+          options: { session: { ensure(text: string, transport: "http" | "slack", slack?: { channel: string; replyTs?: string }): Promise<string> } }
+        }
+      }
+      internal.admissions.options.session.ensure = async () => { throw new Error("permanent session start failure") }
+      await internal.admissions.drainQueue()
+      const after = await runtime.storage.get<Record<string, unknown> & { queue?: { id?: string; attempts?: number }[] }>("state")
+      const job = runtime.storage.sql.exec<{ payload: string }>(
+        "SELECT payload FROM cf_agents_jobs WHERE id = ? AND capability = ?",
+        "admission:retry",
+        "conversation-jobs",
+      ).toArray()[0]
+      return { after, payload: job ? JSON.parse(job.payload) as Record<string, unknown> : undefined }
+    })
+    expect(result.after?.phase).toBe("queued")
+    expect(result.after?.queue?.map(({ id }) => id)).toEqual(["q-next"])
+    expect(result.after?.lastTurnError).toBe("permanent session start failure")
+    expect(result.payload).toMatchObject({ queueID: "q-next", reason: "queued-after-retry-limit" })
+  })
+
   it("queues when the container cannot start, then drains on the alarm", async () => {
     await setTestBudget(0.1)
     const stub = env.CONVERSATION.getByName("C1:queue")
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDurableObject(stub, async (instance, state) => {
       let starts = 2
       let prompts = 0
       const json = (body: unknown, status = 200) =>
@@ -106,7 +166,9 @@ describe("admission queue", () => {
         costUSD?: number
         reservedUSD?: number
       }
-      for (let attempt = 0; attempt < 4; attempt++) await instance.alarm()
+      for (let attempt = 0; attempt < 4; attempt++) {
+        await driveConversationJobs(instance, state.storage, ["admission:retry"], { queued: true })
+      }
       const afterDrain = await (await settings().fetch("https://settings/usage/today")).json() as {
         costUSD?: number
         reservedUSD?: number
@@ -125,7 +187,7 @@ describe("admission queue", () => {
   it("queues when the pre-dispatch turn-baseline read fails without taking a hold", async () => {
     await setTestBudget(0.1)
     const stub = env.CONVERSATION.getByName("C1:baseline-read-fails")
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDurableObject(stub, async (instance, state) => {
       let contextReads = 0
       let prompts = 0
       const json = (body: unknown, status = 200) =>
@@ -162,7 +224,7 @@ describe("admission queue", () => {
       const initial = await (await settings().fetch("https://settings/usage/today")).json() as {
         reservedUSD?: number
       }
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["admission:retry"], { queued: true })
       const recovered = await (await settings().fetch("https://settings/usage/today")).json() as {
         reservedUSD?: number
       }
@@ -178,7 +240,7 @@ describe("admission queue", () => {
   it("does not replay a queued prompt after an ambiguous provider response", async () => {
     await setTestBudget(0.1)
     const stub = env.CONVERSATION.getByName("C1:queue-prompt-loss")
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDurableObject(stub, async (instance, state) => {
       let starts = 1
       let prompts = 0
       let prompted = false
@@ -217,25 +279,29 @@ describe("admission queue", () => {
         new Request("https://conversation/message", { method: "POST", body: JSON.stringify({ text: "hello" }) }),
       )
       const firstStatus = first.status
+      const tailResponse = await instance.fetch(new Request("https://conversation/message", {
+        method: "POST", body: JSON.stringify({ text: "tail must remain queued" }),
+      }))
       const beforeDrain = await (await settings().fetch("https://settings/usage/today")).json() as {
         costUSD?: number
         reservedUSD?: number
       }
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["admission:retry"], { queued: true })
       const afterDispatch = await (await instance.fetch(new Request("https://conversation/state"))).json() as {
         phase?: string
-        queued?: unknown
+        queue?: { text?: string }[]
         budgetReservation?: { dispatched?: boolean }
       }
-      await instance.alarm()
-      return { firstStatus, beforeDrain, afterDispatch, prompts }
+      await driveConversationJobs(instance, state.storage, ["turn:observe"])
+    return { firstStatus, tailStatus: tailResponse.status, beforeDrain, afterDispatch, prompts }
     })
     const usage = await (await settings().fetch("https://settings/usage/today")).json() as { reservedUSD?: number }
 
     expect(result.firstStatus).toBe(202)
+    expect(result.tailStatus).toBe(202)
     expect(result.beforeDrain).toMatchObject({ costUSD: 0, reservedUSD: 0 })
     expect(result.afterDispatch.phase).toBe("running")
-    expect(result.afterDispatch.queued).toBeUndefined()
+    expect(result.afterDispatch.queue?.map(({ text }) => text)).toEqual(["tail must remain queued"])
     expect(result.afterDispatch.budgetReservation).toMatchObject({ dispatched: true })
     expect(result.prompts).toBe(1)
     expect(usage.reservedUSD).toBe(0.1)
@@ -245,9 +311,10 @@ describe("admission queue", () => {
     await setTestBudget(0.1)
     const stub = env.CONVERSATION.getByName("C1:queue-followup-inflight")
     const result = await runInDurableObject(stub, async (instance, state) => {
+      await state.storage.setAlarm(Date.now() + 60_000)
       await state.storage.put("state", {
         phase: "queued",
-        queued: { text: "original queued prompt", attempts: 0 },
+        queued: { text: "original queued prompt", attempts: 0, nextAttemptAt: Date.now() + 60_000 },
         seen: [],
         pending: {},
       })
@@ -290,7 +357,17 @@ describe("admission queue", () => {
         },
       })
 
-      const draining = instance.alarm()
+      // Consume the one-time legacy alarm translation while the queued item is
+      // still future-dated; then explicitly fire its typed admission job below.
+      await (await instance.fetch(new Request("https://conversation/health"))).text()
+      state.storage.sql.exec(
+        "UPDATE cf_agents_jobs SET time = ?, running = 0, execution_started_at = NULL WHERE id = ? AND capability = ?",
+        Date.now(),
+        "legacy:bootstrap",
+        "conversation-jobs",
+      )
+      await instance.alarm()
+      const draining = await startConversationJobs(instance, state.storage, ["admission:retry"], { queued: true })
       await entered
       const followup = await instance.fetch(
         new Request("https://conversation/message", {
@@ -299,11 +376,17 @@ describe("admission queue", () => {
         }),
       )
       const followupStatus = followup.status
+      const secondFollowup = await instance.fetch(new Request("https://conversation/message", {
+        method: "POST",
+        body: JSON.stringify({ text: "second follow-up arriving during dispatch" }),
+      }))
+      const secondFollowupStatus = secondFollowup.status
       finishPrompt()
-      await draining
+      await draining.completion
+      await waitForConversationJobs(state.storage)
       const current = await (await instance.fetch(new Request("https://conversation/state"))).json() as {
         phase?: string
-        queued?: { text?: string }
+        queue?: { text?: string }[]
         runStartedAt?: number
         turnBaseline?: string
         sessionID?: string
@@ -313,26 +396,33 @@ describe("admission queue", () => {
       // been persisted. Recovery must resume the owner before queue drain.
       const stored = await state.storage.get<Record<string, unknown>>("state")
       await state.storage.put("state", { ...stored, phase: "queued" })
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["turn:observe", "admission:retry"], { queued: true })
       const recovered = await (await instance.fetch(new Request("https://conversation/state"))).json() as {
         phase?: string
-        queued?: { text?: string }
+        queue?: { text?: string }[]
         runStartedAt?: number
         turnBaseline?: string
         sessionID?: string
         budgetReservation?: { dispatched?: boolean }
       }
-      return { followupStatus, prompts, current, recovered }
+      return { followupStatus, secondFollowupStatus, prompts, current, recovered }
     })
 
     expect(result.followupStatus).toBe(202)
+    expect(result.secondFollowupStatus).toBe(202)
     expect(result.prompts).toBe(1)
     expect(result.current.phase).toBe("running")
-    expect(result.current.queued?.text).toBe("follow-up arriving during dispatch")
+    expect(result.current.queue?.map(({ text }) => text)).toEqual([
+      "follow-up arriving during dispatch",
+      "second follow-up arriving during dispatch",
+    ])
     expect(result.current.turnBaseline).toBe("prior-assistant")
     expect(result.current.budgetReservation).toMatchObject({ dispatched: true })
     expect(result.recovered.phase).toBe("running")
-    expect(result.recovered.queued?.text).toBe("follow-up arriving during dispatch")
+    expect(result.recovered.queue?.map(({ text }) => text)).toEqual([
+      "follow-up arriving during dispatch",
+      "second follow-up arriving during dispatch",
+    ])
     expect(result.recovered.turnBaseline).toBe("prior-assistant")
     expect(result.recovered.runStartedAt).toBe(result.current.runStartedAt)
     expect(result.recovered.sessionID).toBe("ses_1")
@@ -343,7 +433,7 @@ describe("admission queue", () => {
   it("keeps a queued message while container capacity is full", async () => {
     await setTestBudget(0)
     const stub = env.CONVERSATION.getByName("C1:capacity-queue")
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDurableObject(stub, async (instance, state) => {
       const prompts = { count: 0 }
       instance.transport = fakeContainer(prompts)
 
@@ -373,25 +463,27 @@ describe("admission queue", () => {
       await response.text()
 
       // More alarms than the old bounded prompt-retry budget.
-      for (let attempt = 0; attempt < 6; attempt++) await instance.alarm()
+      for (let attempt = 0; attempt < 6; attempt++) {
+        await driveConversationJobs(instance, state.storage, ["admission:retry"], { queued: true })
+      }
       const queuedAfterPressure = (await (
         await instance.fetch(new Request("https://conversation/state"))
-      ).json()) as { queued?: unknown }
+      ).json()) as { queue?: unknown[] }
 
       // Capacity frees: the same queued message runs, it was not dropped.
       capacityFailures = 0
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["admission:retry"], { queued: true })
       const queuedAfterDrain = (await (
         await instance.fetch(new Request("https://conversation/state"))
-      ).json()) as { queued?: unknown }
+      ).json()) as { queue?: unknown[] }
 
       return { status, prompts: prompts.count, queuedAfterPressure, queuedAfterDrain }
     })
 
     expect(result.status).toBe(202)
-    expect(result.queuedAfterPressure.queued).toBeTruthy()
+    expect(result.queuedAfterPressure.queue).toHaveLength(1)
     expect(result.prompts).toBe(1)
-    expect(result.queuedAfterDrain.queued).toBeUndefined()
+    expect(result.queuedAfterDrain.queue).toHaveLength(0)
   })
 })
 

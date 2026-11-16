@@ -1,5 +1,7 @@
 # Runbook — Aboiteau
 
+> Operational reference. Gate status and sequencing live in [the canonical plan](roadmap.md); this file covers deploy, recovery, rollback and onboarding procedures.
+
 Operational notes for the current single-tenant harness.
 
 ## Deploy
@@ -421,6 +423,7 @@ after the existing staging/container checks.
 ```
 
 Counters: `turn.settled`, `turn.failed`, `turn.timedout`, `checkpoint.saved`,
+`settlement.paused`, `slack.form.failed`,
 `checkpoint.skipped`, `checkpoint.failed`, `queue.enqueued`, `queue.drained`,
 `queue.failed`, `admission.failed`, `container.recycled`. Pass `?date=YYYY-MM-DD`
 for another UTC day.
@@ -451,9 +454,11 @@ recycle/reset/delete and when a container fails to start, or they expire after
 10 minutes. Onboarding is exempt: it never takes a slot, so `/onboarding/` works
 even when every conversation is warm.
 
-Containers stay warm for 10 minutes after a conversation goes quiet
-(`setInactivityTimeout`), so quick follow-up turns skip the cold start. Raise it
-for latency, lower it for idle cost.
+Containers stay warm for `IDLE_CLOSE_SECONDS` after a conversation goes quiet
+(production: 300 s; code default: 30 s), so quick follow-up turns skip the cold
+start. The platform's 10-minute inactivity timeout is only a backstop. Raise it
+for latency, lower it for idle cost, and remember that a warm container holds one
+of the `maxContainers` lease slots.
 
 ## Alerts
 
@@ -464,6 +469,8 @@ against the last values reported:
 |---|---|
 | `capacity.rejected` | container cap hit |
 | `turn.failed`, `turn.timedout` | failed or abandoned turns |
+| `settlement.paused` | first entry into a paused settlement; inspect the conversation's `settlementError` and retained hold |
+| `slack.form.failed` | question-card delivery failed; check bot scopes/channel access; retries back off from 5 seconds to 5 minutes while the turn is active |
 | `checkpoint.failed`, `snapshot.failed` | durability failures |
 | `budget` | daily spend reaches 80% of `dailyBudgetUSD` |
 
@@ -623,7 +630,12 @@ A checkpoint that fails is retried from the alarm up to three times (`checkpoint
 ## Known limitations
 
 - Single container application on the `durable_object` scheduling policy. There is no per-application `max_instances`; account limits bound concurrency, so keep message throughput in mind.
-- Instance size is chosen at start (`standard-1`). `basic` has no exact equivalent on this policy.
+- Instance size is chosen at start: 1 vCPU, 2 GiB memory, 8 GB disk (custom
+  shape). The optional Worker variable `CONTAINER_INSTANCE_PROFILE` can select
+  `custom-1cpu-2gib` (default), `custom-1cpu-3gib`, `standard-1`, or `standard-2`;
+  unsupported values fail closed. OpenCode boot is CPU-bound; the old
+  `standard-1` 0.5 vCPU shape was the measured cold-start bottleneck. Use the
+  3 GiB profile if a real repo's LSP or plugins OOM.
 - Snapshots are a fast restore cache only: they are bound to the image they were taken from, have a 30-day TTL refreshed on restore, and are not portable across deploys. The R2 tar archive remains the source of truth.
 - `.stow` (the local S3 view) and `.state/cache` are excluded from checkpoints: files survive a restore, cached/provider state is rebuilt.
 - A crash mid-turn loses that turn (the checkpoint is written after settle).

@@ -2,6 +2,16 @@ node_modules
 .git
 .wrangler
 .github
+.board
+.repl
+.env
+.env.*
+.dev.vars
+.dev.vars.*
+**/.env
+**/.env.*
+**/.dev.vars
+**/.dev.vars.*
 bench
 docs
 hillclimb

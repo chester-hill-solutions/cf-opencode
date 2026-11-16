@@ -1,0 +1,72 @@
+{
+  "date": "2026-11-12",
+  "codeCommit": "02e4ddf4716f27cce653e64d2ffd716b9851a8ae",
+  "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-native-c2@sha256:9f82e154e6d050e0f0d3daa72bb9b8bb387cf05c3c7aae1f74d787264455340f",
+  "platform": "Cloudflare Workers + standard-1 Container; public HTTP from local machine",
+  "scenario": "fixed empty session; warm context versus confirmed idle stop and encrypted R2 same-session restore",
+  "modelPrompts": 0,
+  "samples": [
+    {
+      "observedIdleMs": 32207.268540999998,
+      "warmMs": 186.72170899999946,
+      "coldMs": 6441.569499999998,
+      "coldDeltaMs": 6254.847790999998
+    },
+    {
+      "observedIdleMs": 31446.165542000002,
+      "warmMs": 398.64337499999965,
+      "coldMs": 6159.031125000009,
+      "coldDeltaMs": 5760.387750000009
+    },
+    {
+      "observedIdleMs": 32128.639584000004,
+      "warmMs": 135.10341700000572,
+      "coldMs": 7391.252124999999,
+      "coldDeltaMs": 7256.148707999993
+    }
+  ],
+  "summaryMs": {
+    "observedIdleMs": {
+      "p50": 32128.639584000004,
+      "min": 31446.165542000002,
+      "max": 32207.268540999998
+    },
+    "warmMs": {
+      "p50": 186.72170899999946,
+      "min": 135.10341700000572,
+      "max": 398.64337499999965
+    },
+    "coldMs": {
+      "p50": 6441.569499999998,
+      "min": 6159.031125000009,
+      "max": 7391.252124999999
+    },
+    "coldDeltaMs": {
+      "p50": 6254.847790999998,
+      "min": 5760.387750000009,
+      "max": 7256.148707999993
+    }
+  },
+  "proof": {
+    "sameSessionAcrossAllCycles": true,
+    "closedBeforeEachColdRead": true,
+    "runningAfterEachColdRead": true,
+    "encryptedSplitArchivesRequired": true,
+    "fastSnapshotsCleared": true
+  },
+  "limits": [
+    "Three samples; no p95 claim.",
+    "Initial image/bootstrap is primed outside timing.",
+    "Empty session, not a large workspace or a model turn.",
+    "Includes public network latency; idle observation includes polling and checkpoint/stop work."
+  ],
+  "ciRun": "https://github.com/chester-hill-solutions/cf-opencode/actions/runs/43313283317",
+  "cleanup": {
+    "runtimeStopped": true,
+    "bucketEmptyBeforeDeletion": true,
+    "workerDeleted": true,
+    "containerApplicationDeleted": true,
+    "bucketDeleted": true,
+    "freshLocalSecretsDeleted": true
+  }
+}

@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-11-15T22:57:57.295996+00:00",
+  "status": "deployed and verified for the isolated internal canary; Callcaster repository remains unattached",
+  "scope": {
+    "deployment": "cf-opencode-arfin-canary-20261115",
+    "channel": "C0A5YNXLP6C",
+    "affectedConversationKey": "C0A5YNXLP6C:1794778051.500769"
+  },
+  "diagnosis": {
+    "publicAssistantTextCharacters": 0,
+    "assistantSteps": 8,
+    "completedShellCalls": 6,
+    "mcpLookupResources": 0,
+    "mcpLookupTemplates": 0,
+    "terminalOutcome": "aborted: Step interrupted",
+    "workspaceRepositoryAttached": false,
+    "requestedProject": "Callcaster",
+    "finding": "Provider used tools to search an unbound workspace, generated no public answer. No evidence that generated text was dropped in this turn.",
+    "reasoningOrCredentialsPublished": false
+  },
+  "independentReproductions": {
+    "finalSlackFailureAfterAccounting": "real orchestration regression fails: active reservation fence discards retry after hold release",
+    "identicalReplyAfterAcceptedBookkeepingFailure": "real orchestration regression fails: stale content dedupe suppresses a new turn answer"
+  },
+  "priorVerificationCorrection": "Paid provider execution, terminal accounting and idle state did not establish a visible assistant reply. Previous key repair receipt corrected accordingly.",
+  "constraints": [
+    "No legacy Worker/image/storage changes",
+    "No private Callcaster checkout claim",
+    "No provider turn replay for a connector delivery failure",
+    "Historical unknown-cost approval remains scoped to the earlier failed turn"
+  ],
+  "verification": {
+    "liveModelReplyReadBackInSlack": true,
+    "fullWorkerTests": 453,
+    "fullWorkerSuite": "passed before final one-line attempt-bound fix",
+    "finalDeliveryTests": 9,
+    "finalWorkerTestTypes": "passed",
+    "fullTypechecks": "passed",
+    "configurationCheck": "passed",
+    "diffCheck": "passed",
+    "repositoryAndAdapterTests": 11,
+    "focusedDeliveryTestsBeforeFinalBoundFix": 26,
+    "baselineLiveModelReply": {
+      "verified": true,
+      "channel": "C0A5YNXLP6C",
+      "threadTS": "1794783182.886909",
+      "sessionID": "ses_e1e95bb56ffefAHujFLpS569Y8",
+      "model": "opencode/deepseek-v4.1-flash",
+      "costUSD": 0.00128196,
+      "assistantSteps": 1,
+      "assistantMessageIDs": [
+        "msg_1e16a4784001bFyDy0brhCITRJ"
+      ],
+      "assistantText": "ARFIN_MODEL_REPLY_OK_20261115_A1",
+      "slackMessage": {
+        "ts": "1794783202.712199",
+        "user": "U0CEWGTR7E2",
+        "text": "ARFIN_MODEL_REPLY_OK_20261115_A1"
+      },
+      "reservationReleased": true,
+      "toolsObserved": false,
+      "onePrompt": true,
+      "syntheticOperatorEvent": true
+    },
+    "originalThreadGuidance": {
+      "guidanceReadBack": true,
+      "slackMessageTS": "1794783369.022939",
+      "visibleText": "This thread already has workspace or session history. Start a new Slack thread and mention me with `!repo <https://github.com/owner/repo> main aboiteau/task-123`, then resend your request. Use the repository's actual base branch. Only public GitHub repositories are supported for new tasks here. This message was not sent to a model.",
+      "phase": "idle",
+      "sessionID": "ses_e1ee40f82ffe3XH1aN3nISm8lm",
+      "activeHold": false,
+      "queueDepth": 0
+    },
+    "postDeployLiveModelReply": {
+      "verified": true,
+      "postDeployFollowup": true,
+      "channel": "C0A5YNXLP6C",
+      "threadTS": "1794783182.886909",
+      "sessionID": "ses_e1e95bb56ffefAHujFLpS569Y8",
+      "historyPreserved": true,
+      "baselineMessageIDs": [
+        "msg_1e16a459c001gRX18esrM91VsD",
+        "msg_1e16a470a001mdmPo4Rkhukypt",
+        "msg_1e16a4784001bFyDy0brhCITRJ",
+        "msg_1e16a4bbc001lu2AADWn52ZMM2"
+      ],
+      "newAssistantMessageIDs": [
+        "msg_1e16d7f1a001AjSQcvsgsA0naF"
+      ],
+      "assistantText": "ARFIN_MODEL_REPLY_OK_20261115_B2",
+      "model": "opencode/deepseek-v4.1-flash",
+      "costUSD": 0.0001117,
+      "assistantSteps": 1,
+      "reservationReleased": true,
+      "toolsObserved": false,
+      "slackMessage": {
+        "ts": "1794783417.771519",
+        "user": "U0CEWGTR7E2",
+        "text": "ARFIN_MODEL_REPLY_OK_20261115_B2"
+      },
+      "onePrompt": true,
+      "syntheticOperatorEvent": true
+    },
+    "liveVerificationTotalCostUSD": 0.00139366,
+    "deployedSourceMatchesWorkspace": true,
+    "slackPermalink": "https://teamnatelib.slack.com/archives/C0A5YNXLP6C/p1794783417771519?thread_ts=1794783182.886909&cid=C0A5YNXLP6C"
+  },
+  "deployedCanaryVersion": "54df8cc6-8036-4c56-bd7f-31af45affe8e",
+  "durableObjectRollout": "deferred 30s; passive quiescence verified before deploy",
+  "sourceSHA256": {
+    "src/conversation/final-replies.ts": "eea12c86ba8796f684409f5f0f5b949778ee4759a2e7b07d691a2d0394ca0e33",
+    "src/conversation/turn-execution.ts": "c54dc720b799fd57d0447fb1d5f11934128416f57088134f01cc162e9886ff49",
+    "src/conversation/admissions.ts": "34a204babf24c12a09a8042c7b29c2a61d061d8e16401a75b4b6ade1be8770b4",
+    "src/conversation/slack-adapter.ts": "b42bca8e2146d4e5b6f8af1d7123212af694a3ff705588ec2132dca864cf1d76",
+    "src/conversation/jobs.ts": "b925f43cef1a824d9a9184cdbd8459c0dda9b0916434d4cdb725c5241c9f765f",
+    "src/conversation/scheduler.ts": "4b06ac76b2cec311e2963b7f0e2aa6bd129f744eff3ea7b49c98dac071411f49",
+    "src/conversation.ts": "0e9eae6ff04c281027edac585a7e78807908933a973dd4418ee47ba0ca9488eb",
+    "test/turn-reply-delivery.test.ts": "204fa417f425a9cb25ad86fd11d5766a2ce06d7da9f7c562a1301b725dde39df",
+    "test/slack-workspace-repository.test.ts": "26a5618fa14cd406f21453f480c1d0118413640a7edd3fde33d040ec744d5c15",
+    "test/helpers/conversation-jobs.ts": "c9e3b22d896c76a29db5f6526c8c94f5ccbe8d4840e0f647bdb510395508845d"
+  },
+  "limits": {
+    "deliverySemantics": "at least once; unacknowledged chunk may repeat after lost acknowledgement",
+    "replyUTF8Bytes": 98304,
+    "pendingReplies": 20,
+    "retainedAcknowledgements": 20,
+    "attemptsPerJob": 4,
+    "retryBackoffMaxMS": 300000,
+    "oversizeOrBacklog": "refuses settlement before hold release; no silent truncation"
+  },
+  "operationalNotes": [
+    "Original-thread guidance POST used a plain-text/empty success acknowledgement. Operator JSON parsing failed after dispatch; guidance was read back and event was not resent.",
+    "Only isolated canary Worker updated; container rollout none preserves frozen runtime image."
+  ]
+}

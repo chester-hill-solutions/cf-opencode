@@ -27,7 +27,8 @@ function fake(overrides: Partial<SlackCommandServices> = {}) {
     switchModel: async (ref) => { calls.push(["switchModel", ref]) },
     selectSession: async (id) => { calls.push(["selectSession", id]) },
     newSession: async () => { calls.push(["newSession"]) },
-    stop: async () => "⏹️ Interrupted.",
+    steer: async (text) => { calls.push(["steer", text]); return "🧭 Guidance added." },
+    stop: async (...args) => { calls.push(["stop", ...args]); return "⏹️ Interrupted." },
     leave: async () => "👋 Stopped following this conversation.",
     listForms: async () => [form],
     answerForm: async (sessionID, formID, answer) => { calls.push(["answerForm", sessionID, formID, answer]) },
@@ -54,6 +55,13 @@ describe("handleSlackCommand", () => {
     expect(replies[0]).toContain("!model")
     expect(replies[0]).toContain("follow-up replies")
     expect(replies[0]).toContain("!leave")
+    expect(replies[0]).toContain("queue while a turn is active")
+    expect(replies[0]).toContain("!steer <text>")
+    expect(replies[0]).toContain("clear queued follow-ups")
+    expect(replies[0]).toContain("!stop <text>")
+    expect(replies[0]).toContain("Workspace first")
+    expect(replies[0]).toContain("repository is optional")
+    expect(replies[0]).toContain("nested agent checkouts are not eligible")
     expect(usageCalls).toBe(0)
   })
 
@@ -156,35 +164,87 @@ describe("handleSlackCommand", () => {
 
   test("status reports phase, pending questions, queue, and errors", async () => {
     const { service, replies } = fake({ getState: async () => ({
-      sessionID: "ses_current", phase: "queued", queued: { text: "private input" },
+      sessionID: "ses_current", phase: "queued", queue: [{ id: "q<1>`", text: "private *input* <x>" }],
       lastTurnError: "turn failed", settlementError: "checkpoint failed",
     }) })
     await handleSlackCommand("!status", service)
     expect(replies[0]).toContain("Phase: queued")
+    expect(replies[0]).toContain("1 message queued")
+    expect(replies[0]).toContain("private ＊input＊ &lt;x&gt;")
+    expect(replies[0]).toContain("q&lt;1&gt;ˋ")
     expect(replies[0]).toContain("Pending question")
     expect(replies[0]).toContain("Last turn error")
     expect(replies[0]).toContain("Settlement error")
     expect(replies[0]).not.toContain("private input")
   })
 
+  test("status distinguishes a general workspace from an immutable registered root without dispatching work", async () => {
+    const general = fake({ getState: async () => ({ phase: "idle" }) })
+    await handleSlackCommand("!status", general.service)
+    expect(general.replies[0]).toContain("Workspace: general; a repository is optional")
+    expect(general.calls).toEqual([])
+    const registered = fake({ getState: async () => ({ phase: "idle", workspaceRepository: {
+      schemaVersion: 1, bindingID: "11111111-1111-4111-8111-111111111111", status: "pending", baseCommit: null,
+      repository: "https://github.com/owner/repo", baseBranch: "main", workingBranch: "task/work",
+    } }) })
+    await handleSlackCommand("!status", registered.service)
+    expect(registered.replies[0]).toContain("Registered root (pending): https://github.com/owner/repo")
+    expect(registered.calls).toEqual([])
+  })
+
   test("status before a session still reports phase, model, queue, and errors", async () => {
     const { service, replies } = fake({ getState: async () => ({
-      phase: "admitting", modelOverride: "openrouter/anthropic/claude-x", queued: true,
+      phase: "admitting", modelOverride: "openrouter/anthropic/claude-x", queue: [{ text: "pending" }],
       lastTurnError: "startup failed", settlementError: "usage settlement pending",
     }) })
     await handleSlackCommand("!status", service)
     expect(replies[0]).toContain("No session mapped here yet.")
     expect(replies[0]).toContain("Phase: admitting")
     expect(replies[0]).toContain("Model: `openrouter/anthropic/claude-x`")
-    expect(replies[0]).toContain("A message is queued")
+    expect(replies[0]).toContain("1 message queued")
     expect(replies[0]).toContain("Last turn error")
     expect(replies[0]).toContain("Settlement error")
+  })
+
+  test("steer requires text and delegates the trimmed guidance", async () => {
+    const { service, replies, calls } = fake()
+    await handleSlackCommand("!steer", service)
+    expect(replies[0]).toContain("!steer <text>")
+    expect(calls).toHaveLength(0)
+    await handleSlackCommand("!steer   keep the answer concise  ", service)
+    expect(calls).toContainEqual(["steer", "keep the answer concise"])
+    expect(replies[1]).toContain("Guidance added")
+  })
+
+  test("stop clears queued follow-ups by default and delegates explicit follow-up text", async () => {
+    const { service, calls } = fake()
+    await handleSlackCommand("!stop", service)
+    await handleSlackCommand("!stop   continue with the summary  ", service)
+    expect(calls).toContainEqual(["stop"])
+    expect(calls).toContainEqual(["stop", "continue with the summary"])
+  })
+
+  test("status explains an overdue observation without claiming automatic stop", async () => {
+    const { service, replies } = fake({ getState: async () => ({
+      sessionID: "ses_current",
+      phase: "running",
+      turnObservation: {
+        policy: "observe_and_alert", thresholdMs: 900_000, executionDeadlineEnforced: false,
+        runStartedAt: 100, elapsedMs: 900_000, overdue: true,
+        timeoutObserved: false, timeoutObservedAt: null, settlement: "active",
+      },
+    }) })
+    await handleSlackCommand("!status", service)
+    expect(replies[0]).toContain("15-minute observation threshold")
+    expect(replies[0]).toContain("not automatically stopped")
+    expect(replies[0]).not.toContain("runtime stopped")
   })
 
   test("new, stop, leave, usage, and callback errors are consumed", async () => {
     const { service, replies, calls } = fake()
     for (const command of ["!new", "!stop", "!leave", "!usage"]) expect(await handleSlackCommand(command, service)).toBe(true)
     expect(calls).toContainEqual(["newSession"])
+    expect(calls).toContainEqual(["stop"])
     expect(replies).toContain("Usage information")
     const quota = fake({ usageText: async () => { throw new Error("daily quota exceeded") } })
     await handleSlackCommand("!usage", quota.service)
@@ -193,4 +253,38 @@ describe("handleSlackCommand", () => {
     expect(await handleSlackCommand("!new", broken.service)).toBe(true)
     expect(broken.replies[0]).toContain("Couldn't run")
   })
+})
+
+test("workspace help makes permanent repository-free work and explicit retention first-class", async () => {
+  const f = fake()
+  await handleSlackCommand("!help", f.service)
+  expect(f.replies[0]).toContain("remain repository-free permanently")
+  expect(f.replies[0]).toContain("no git initialization, commit or remote")
+  expect(f.replies[0]).toContain("persistent is the default")
+  expect(f.replies[0]).toContain("!workspace disposable [name]")
+  expect(f.replies[0]).toContain("finish/idle never auto-discards")
+  expect(f.calls).toEqual([])
+})
+
+test("workspace status and normal status read retention passively without starting model/session work", async () => {
+  const requests: string[] = []
+  const f = fake({ getState: async () => ({}), workspace: {
+    repository: async () => Response.json({ workspaceRepository: null }), check: async () => "", checks: async () => "",
+    workspace: async request => { requests.push(request.method + " " + new URL(request.url).pathname); return Response.json({ workspace: { schemaVersion: 1, profileID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", revision: 2, retention: "disposable", name: "Scratch <notes>", status: "active" } }) },
+  } })
+  expect(await handleSlackCommand("!workspace", f.service)).toBe(true)
+  expect(f.replies[0]).toContain("disposable")
+  expect(f.replies[0]).toContain("Scratch &lt;notes&gt;")
+  expect(f.replies[0]).toContain("checkpoint")
+  await handleSlackCommand("!status", f.service)
+  expect(f.replies[1]).toContain("Retention: disposable")
+  expect(requests).toEqual(["GET /workspace/profile", "GET /workspace/profile"])
+  expect(f.calls).toEqual([])
+})
+
+test("ordinary descriptions of temporary work never become retention changes or discard commands", async () => {
+  const f = fake()
+  expect(await handleSlackCommand("temporary disposable analysis", f.service)).toBe(false)
+  expect(f.calls).toEqual([])
+  expect(f.replies).toEqual([])
 })

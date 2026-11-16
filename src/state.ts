@@ -3,6 +3,18 @@
  * Transport-neutral: Slack targets and HTTP/SSE consumers share it.
  */
 
+import {
+  parseWorkspaceRepositoryBinding,
+  parseWorkspaceRepositoryReceipt,
+  parseWorkspaceRepositorySelection,
+  sameWorkspaceRepositorySelection,
+  WorkspaceRepositoryConflictError,
+  type WorkspaceRepositoryBinding,
+  type WorkspaceRepositorySelection,
+} from "./workspace-repository"
+
+import { parseWorkspaceControlEvent, workspaceControlEventKey, type WorkspaceControlEvent } from "./workspace-profile"
+
 export type Transport = "slack" | "http"
 
 /**
@@ -32,7 +44,15 @@ export interface SlackTarget {
 
 /** One admission held while the container could not accept it. */
 export interface QueuedMessage {
+  /** Stable owner fence for its Lifecycle admission/retry intent. */
+  id: string
+  /** Stable FIFO ordering timestamp. */
+  enqueuedAt: number
+  /** Original admission transport. */
+  source: Transport
   text: string
+  /** Optional request id used to return the same pending queue receipt. */
+  idempotencyKey?: string
   slack?: SlackTarget
   attempts: number
   /** When the next admission attempt is due. */
@@ -40,6 +60,20 @@ export interface QueuedMessage {
   /** Why the last attempt failed, for operators. */
   lastError?: string
 }
+
+/** Legacy singleton queue shape accepted only while normalizing stored records. */
+export interface LegacyQueuedMessage extends Partial<Pick<QueuedMessage, "id" | "enqueuedAt" | "source">> {
+  text: string
+  idempotencyKey?: string
+  slack?: SlackTarget
+  attempts: number
+  nextAttemptAt?: number
+  lastError?: string
+}
+
+export type QueueEnqueueResult =
+  | { kind: "enqueued"; id: string; position: number; depth: number; limit: number }
+  | { kind: "queue_full" | "admission_in_progress"; depth: number; limit: number }
 
 /** Durable reference to the one Settings-owned hold for this conversation. */
 export interface BudgetReservation {
@@ -76,7 +110,16 @@ export interface CheckpointManifest {
   createdAt: number
 }
 
+export interface PermissionNotification {
+  sessionID: string
+  delivered: boolean
+  attempts: number
+  nextAttemptAt: number
+}
+
 export interface ConversationState {
+  /** Opt-in immutable task identity; global defaults never overwrite it. */
+  workspaceRepository?: WorkspaceRepositoryBinding
   /** Lifecycle phase; absent means "idle" for conversations from older builds. */
   phase?: ConversationPhase
   /** When the current run was admitted, for turn-duration metrics. */
@@ -90,6 +133,12 @@ export interface ConversationState {
   modelOverride?: string
   /** Channel threads accept follow-ups after a mention, until !leave. */
   slackEngaged?: boolean
+  /** Provenance for pre-work Slack controls; legacy seen/history is never adopted. */
+  slackControlHistory?: {
+    schemaVersion: 1
+    kind: "benign_only"
+    events: Array<{ id: string; command: BenignSlackControlCommand }>
+  }
   /** Questions already announced for the active session. */
   announcedForms?: string[]
   transport?: Transport
@@ -102,8 +151,14 @@ export interface ConversationState {
   reportedError?: string
   /** Settings version the running container was configured with. */
   settingsVersion?: number
-  /** One pending admission when the container could not start. */
-  queued?: QueuedMessage
+  /** Authoritative FIFO of pending admissions. */
+  queue?: QueuedMessage[]
+  /** @deprecated Legacy persisted singleton; normalized away on read. */
+  queued?: LegacyQueuedMessage
+  /** Stable fence for a pre-dispatch admission recovery wake. */
+  admissionID?: string
+  /** When the current admission claimed the phase, for stale recovery. */
+  admissionStartedAt?: number
   /** Owned Settings hold for the current turn, if one has been acquired. */
   budgetReservation?: BudgetReservation
   /** Durable local pointer to the last acknowledged operator reconciliation receipt. */
@@ -122,6 +177,12 @@ export interface ConversationState {
   checkpointPending?: boolean
   /** Retry count for a pending checkpoint. */
   checkpointAttempts?: number
+  /** Earliest safe retry time for a failed checkpoint. */
+  checkpointRetryAt?: number
+  /** Last bounded lifecycle callback failure, retained for operator visibility. */
+  lifecycleJobError?: { kind: string; message: string; at: number }
+  /** Alarm memory-limit seal: resume requires guarded recovery retry or reset. */
+  lifecycleJobsSealed?: boolean
   /** Size of the last successful checkpoint, for cost tracking. */
   checkpointSize?: number
   /** The terminal error of the last turn, kept for status output. */
@@ -144,6 +205,8 @@ export interface ConversationState {
   seen: string[]
   /** Pending permission requests: requestID -> sessionID. */
   pending: Record<string, string>
+  /** Delivery acknowledgement/backoff, independent of permission ownership. */
+  permissionNotifications?: Record<string, PermissionNotification>
 }
 
 export interface StoredEventEntry {
@@ -154,6 +217,65 @@ export interface StoredEventEntry {
 export interface KeyValueStorage {
   get<T>(key: string): Promise<T | undefined>
   put(key: string, value: unknown): Promise<void>
+}
+
+export type WorkspaceRepositorySelectionResult = {
+  kind: "selected" | "existing" | "conflict" | "busy"
+  binding?: WorkspaceRepositoryBinding
+}
+
+const benignSlackControls = ["help", "status", "usage", "setup", "connect", "repo", "check", "checks", "workspace"] as const
+export type BenignSlackControlCommand = typeof benignSlackControls[number]
+export function benignSlackControlCommand(name: string): BenignSlackControlCommand | undefined {
+  return benignSlackControls.find(command => command === name)
+}
+
+function plainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value))
+}
+
+/** The entire current dedupe window must have trusted, explicit provenance. */
+export function hasBenignSlackControlHistory(state: ConversationState): boolean {
+  const value: unknown = state.slackControlHistory
+  if (!plainRecord(value) || Object.keys(value).sort().join(",") !== "events,kind,schemaVersion" ||
+    value.schemaVersion !== 1 || value.kind !== "benign_only" || !Array.isArray(value.events) ||
+    value.events.length < 1 || value.events.length > 200 || value.events.length !== state.seen.length) return false
+  const ids = new Set<string>()
+  return value.events.every((event: unknown, index: number) => {
+    if (!plainRecord(event) || Object.keys(event).sort().join(",") !== "command,id" ||
+      typeof event.id !== "string" || !event.id || event.id.length > 256 || /[\u0000-\u0020\u007f]/.test(event.id) ||
+      event.id !== state.seen[index] || ids.has(event.id) || typeof event.command !== "string" || !benignSlackControlCommand(event.command)) return false
+    ids.add(event.id)
+    return true
+  })
+}
+
+function benignTombstone(value: unknown): value is { schemaVersion: 1; kind: "benign_slack_control"; at: number; command: BenignSlackControlCommand } {
+  return plainRecord(value) && Object.keys(value).sort().join(",") === "at,command,kind,schemaVersion" &&
+    value.schemaVersion === 1 && value.kind === "benign_slack_control" && typeof value.at === "number" &&
+    Number.isSafeInteger(value.at) && value.at >= 0 && typeof value.command === "string" && Boolean(benignSlackControlCommand(value.command))
+}
+
+/** Only this explicit row shape may bypass the fresh-workspace storage guard. */
+export function isBenignSlackControlTombstones(value: unknown, state: ConversationState): boolean {
+  return hasBenignSlackControlHistory(state) && plainRecord(value) && Object.entries(value).every(([id, entry]) =>
+    id.length > 0 && id.length <= 256 && !/[\u0000-\u0020\u007f]/.test(id) && benignTombstone(entry))
+}
+
+/** Reject evidence of any previous execution; harmless pre-start preferences may remain. */
+function freshWorkspaceRepositoryState(state: ConversationState): boolean {
+  const allowed = new Set([
+    "phase", "seen", "pending", "queue", "permissionNotifications", "announcedForms",
+    "modelOverride", "transport", "slack", "slackEngaged", "slackControlHistory", "containerStarts",
+  ])
+  const benignHistory = hasBenignSlackControlHistory(state)
+  if (Object.entries(state).some(([key, value]) => value !== undefined && !allowed.has(key))) return false
+  return (state.phase === undefined || state.phase === "idle") &&
+    (state.seen.length === 0 || benignHistory) && Object.keys(state.pending).length === 0 &&
+    (state.queue?.length ?? 0) === 0 && Object.keys(state.permissionNotifications ?? {}).length === 0 &&
+    (state.announcedForms?.length ?? 0) === 0 && (state.slackEngaged !== true || benignHistory) &&
+    (state.slackControlHistory === undefined || benignHistory) &&
+    (state.containerStarts === undefined || state.containerStarts === 0)
 }
 
 const SEEN_LIMIT = 200
@@ -186,10 +308,22 @@ export class ConversationStore {
    */
   private async read(): Promise<ConversationState> {
     const state = await this.storage.get<ConversationState>("state")
+    const legacy = state?.queued
+    const queue = Array.isArray(state?.queue) ? state.queue : legacy ? [{
+      ...legacy,
+      id: legacy.id ?? "legacy-queued",
+      enqueuedAt: legacy.enqueuedAt ?? 0,
+      source: legacy.source ?? (legacy.slack ? "slack" : "http"),
+    }] : []
+    const { queued: _legacyQueued, ...normalized } = state ?? {}
     return {
-      ...(state ?? {}),
+      ...normalized,
+      queue,
       seen: Array.isArray(state?.seen) ? state.seen : [],
       pending: state?.pending && typeof state.pending === "object" ? state.pending : {},
+      permissionNotifications: state?.permissionNotifications && typeof state.permissionNotifications === "object"
+        ? state.permissionNotifications
+        : {},
     }
   }
 
@@ -214,30 +348,81 @@ export class ConversationStore {
     return this.read()
   }
 
-  /** Claim an event for processing; false when it was already claimed. */
-  async claimEvent(eventID: string): Promise<boolean> {
-    if (await this.isTombstoned(eventID)) return false
-    return this.transact((state) => {
-      if (state.seen.includes(eventID)) return { result: false }
-      return {
-        next: { ...state, seen: [...state.seen, eventID].slice(-SEEN_LIMIT) },
-        result: true,
+  /** First selection wins; an identical retry remains idempotent even after admission. */
+  async selectWorkspaceRepository(selection: WorkspaceRepositorySelection, bindingID: string): Promise<WorkspaceRepositorySelectionResult> {
+    const canonical = parseWorkspaceRepositorySelection(selection)
+    const candidate = parseWorkspaceRepositoryBinding({ ...canonical, schemaVersion: 1, bindingID, status: "pending", baseCommit: null })
+    return this.transact<WorkspaceRepositorySelectionResult>(state => {
+      if (state.workspaceRepository !== undefined) {
+        let existing: WorkspaceRepositoryBinding
+        try { existing = parseWorkspaceRepositoryBinding(state.workspaceRepository) }
+        catch { return { result: { kind: "conflict" } } }
+        return { result: { kind: sameWorkspaceRepositorySelection(existing, canonical) ? "existing" : "conflict", binding: existing } }
       }
+      if (!freshWorkspaceRepositoryState(state)) return { result: { kind: "busy" } }
+      return { next: { ...state, workspaceRepository: candidate }, result: { kind: "selected", binding: candidate } }
+    })
+  }
+
+  /** Only a matching materialization receipt can resolve the original immutable base. */
+  async acknowledgeWorkspaceRepository(value: unknown): Promise<boolean> {
+    let receipt: ReturnType<typeof parseWorkspaceRepositoryReceipt>
+    try { receipt = parseWorkspaceRepositoryReceipt(value) }
+    catch { return false }
+    return this.transact(state => {
+      let binding: WorkspaceRepositoryBinding
+      try { binding = parseWorkspaceRepositoryBinding(state.workspaceRepository) }
+      catch { return { result: false } }
+      if (binding.bindingID !== receipt.bindingID || !sameWorkspaceRepositorySelection(binding, receipt)) return { result: false }
+      if (binding.status === "bound") return { result: binding.baseCommit === receipt.baseCommit }
+      return { next: { ...state, workspaceRepository: receipt }, result: true }
+    })
+  }
+
+  /** Claim an event for processing; false when it was already claimed. */
+  async claimEvent(eventID: string, benignControl?: BenignSlackControlCommand): Promise<boolean> {
+    return this.serial(async () => {
+      // Workspace controls can destroy resettable state. Their intake identity
+      // therefore survives reset, including failures before a discard POST.
+      if (benignControl === "workspace") {
+        const key = workspaceControlEventKey(eventID), prior = await this.storage.get(key)
+        if (prior !== undefined) {
+          if (parseWorkspaceControlEvent(prior).eventID !== eventID) throw new Error("Invalid workspace event identity")
+          return false
+        }
+        await this.storage.put(key, { schemaVersion: 1, eventID, at: Date.now() } satisfies WorkspaceControlEvent)
+      }
+      if (await this.isTombstoned(eventID)) return false
+      const state = await this.read()
+      if (state.seen.includes(eventID)) return false
+      const proven = benignControl && benignSlackControlCommand(benignControl) && eventID.length > 0 && eventID.length <= 256 &&
+        !/[\u0000-\u0020\u007f]/.test(eventID) && (hasBenignSlackControlHistory(state) || freshWorkspaceRepositoryState(state))
+      const slackControlHistory: ConversationState["slackControlHistory"] = proven ? {
+        schemaVersion: 1, kind: "benign_only",
+        events: [...(state.slackControlHistory?.events ?? []), { id: eventID, command: benignControl }].slice(-SEEN_LIMIT),
+      } : undefined
+      await this.storage.put("state", { ...state, seen: [...state.seen, eventID].slice(-SEEN_LIMIT), slackControlHistory })
+      return true
     })
   }
 
   /** Persist a tombstone so an event id stays blocked beyond the SEEN_LIMIT window. */
-  async markTombstone(eventID: string): Promise<void> {
+  async markTombstone(eventID: string, benignControl?: BenignSlackControlCommand): Promise<void> {
     await this.serial(async () => {
       const now = Date.now()
       const date = new Date(now).toISOString().slice(0, 10)
       const key = `tombstones:${date}`
-      const store = (await this.storage.get<Record<string, number>>(key)) ?? {}
-      store[eventID] = now
+      const store = (await this.storage.get<Record<string, unknown>>(key)) ?? {}
+      const retainUnproven = benignControl && Object.hasOwn(store, eventID) && !benignTombstone(store[eventID])
+      if (!retainUnproven) store[eventID] = benignControl && benignSlackControlCommand(benignControl)
+        ? { schemaVersion: 1, kind: "benign_slack_control", at: now, command: benignControl } : now
       // Purge tombstones older than the TTL so the map does not grow forever.
       const cutoff = now - TOMBSTONE_TTL_MS
       for (const [id, ts] of Object.entries(store)) {
-        if (Number(ts) <= cutoff) delete store[id]
+        // A harmless control must not erase unproven legacy history and thereby
+        // make a later repository selection appear fresh.
+        if (benignControl && !benignTombstone(ts)) continue
+        if (Number(benignTombstone(ts) ? ts.at : ts) <= cutoff) delete store[id]
       }
       await this.storage.put(key, store)
     })
@@ -249,8 +434,9 @@ export class ConversationStore {
     const today = new Date(now)
     const dates = [today, new Date(now - 24 * 60 * 60 * 1000)]
     for (const date of dates) {
-      const store = await this.storage.get<Record<string, number>>(`tombstones:${date.toISOString().slice(0, 10)}`)
-      const ts = store?.[eventID]
+      const store = await this.storage.get<Record<string, unknown>>(`tombstones:${date.toISOString().slice(0, 10)}`)
+      const value = store?.[eventID]
+      const ts = benignTombstone(value) ? value.at : value
       if (typeof ts === "number" && Number.isFinite(ts) && now >= ts && now - ts < TOMBSTONE_TTL_MS) {
         return true
       }
@@ -278,6 +464,8 @@ export class ConversationStore {
 
   /** Merge fields into the latest state instead of writing a stale snapshot. */
   async patch(patch: Partial<ConversationState>): Promise<ConversationState> {
+    if (Object.hasOwn(patch, "slackControlHistory")) throw new Error("Slack control provenance requires a claimed control event")
+    if (Object.hasOwn(patch, "workspaceRepository")) throw new WorkspaceRepositoryConflictError()
     return this.transact((state) => {
       const next = { ...state, ...patch }
       return { next, result: next }
@@ -316,7 +504,7 @@ export class ConversationStore {
     reservationID: string,
     date: string,
     turnBaseline: string | undefined,
-    fromQueue = false,
+    queueID?: string,
   ): Promise<boolean> {
     return this.transact((state) => {
       const reservation = state.budgetReservation
@@ -324,14 +512,17 @@ export class ConversationStore {
         return { result: false }
       }
       if (reservation.dispatched) return { result: false }
+      if (queueID !== undefined && state.queue?.[0]?.id !== queueID) return { result: false }
       return {
         next: {
           ...state,
           phase: "admitting",
+          admissionID: undefined,
+          admissionStartedAt: undefined,
           budgetReservation: { ...reservation, dispatched: true },
           runStartedAt: Date.now(),
           turnBaseline,
-          ...(fromQueue ? { queued: undefined } : {}),
+          ...(queueID !== undefined ? { queue: (state.queue ?? []).slice(1) } : {}),
         },
         result: true,
       }
@@ -358,7 +549,7 @@ export class ConversationStore {
   }): Promise<boolean> {
     return this.transact((state) => {
       const reservation = state.budgetReservation
-      if (state.sessionID !== input.sessionID || state.queued ||
+      if (state.sessionID !== input.sessionID || (state.queue?.length ?? 0) > 0 ||
         !reservation || reservation.dispatched !== true ||
         reservation.reservationID !== input.reservationID || reservation.date !== input.date) {
         return { result: false }
@@ -393,7 +584,7 @@ export class ConversationStore {
       const reservation = state.budgetReservation
       if (!reservation || reservation.dispatched !== false || captured.dispatched !== false ||
         reservation.reservationID !== captured.reservationID || reservation.date !== captured.date ||
-        state.queued || ((state.phase ?? "idle") !== "idle" && state.phase !== "admitting")) {
+        (state.queue?.length ?? 0) > 0 || ((state.phase ?? "idle") !== "idle" && state.phase !== "admitting")) {
         return { result: false }
       }
       return {
@@ -415,18 +606,42 @@ export class ConversationStore {
     })
   }
 
-  /**
-   * Claim the single queue slot. Concurrent callers race on this one
-   * check-and-set, so exactly one message can be queued and none is dropped by
-   * a stale read.
-   */
-  async enqueue(entry: QueuedMessage): Promise<boolean> {
-    return this.transact((state) => {
-      if (state.queued) return { result: false }
+  /** Append one FIFO entry atomically, or replace the waiting queue explicitly. */
+  async enqueue(entry: QueuedMessage, limit = 10, replace = false): Promise<QueueEnqueueResult> {
+    return this.transact<QueueEnqueueResult>((state) => {
+      const currentQueue = state.queue ?? []
+      const depth = currentQueue.length
+      if (replace && state.phase === "admitting") return { result: { kind: "admission_in_progress", depth, limit } }
+      if (replace) {
+        const from = state.phase ?? "idle"
+        const phase = from === "idle" ? "queued" : state.phase
+        return { next: { ...state, queue: [entry], phase }, result: { kind: "enqueued", id: entry.id, position: 1, depth: 1, limit } }
+      }
+      if (depth >= limit) return { result: { kind: "queue_full", depth, limit } }
       const from = state.phase ?? "idle"
-      const phase = from === "queued" || canTransition(from, "queued") ? "queued" : state.phase
-      return { next: { ...state, queued: entry, phase }, result: true }
+      const phase = from === "idle" ? "queued" : state.phase
+      const queue = [...currentQueue, entry]
+      return { next: { ...state, queue, phase }, result: { kind: "enqueued", id: entry.id, position: queue.length, depth: queue.length, limit } }
     })
+  }
+
+  async updateQueueHead(id: string, updates: Partial<QueuedMessage>): Promise<boolean> {
+    return this.transact((state) => {
+      const currentQueue = state.queue ?? []
+      if (currentQueue[0]?.id !== id) return { result: false }
+      const queue = [{ ...currentQueue[0], ...updates, id }, ...currentQueue.slice(1)]
+      return { next: { ...state, queue }, result: true }
+    })
+  }
+
+  async removeQueueHead(id: string): Promise<boolean> {
+    return this.transact((state) => (state.queue ?? [])[0]?.id !== id
+      ? { result: false }
+      : { next: { ...state, queue: (state.queue ?? []).slice(1), ...((state.queue?.length ?? 0) === 1 && state.phase === "queued" ? { phase: "idle" as const } : {}) }, result: true })
+  }
+
+  async clearQueue(): Promise<void> {
+    await this.transact((state) => ({ next: { ...state, queue: [] }, result: undefined }))
   }
 
   async setSession(sessionID: string, transport: Transport, slack?: SlackTarget): Promise<void> {
@@ -485,13 +700,55 @@ export class ConversationStore {
     return (await this.get()).pending[requestID]
   }
 
+  /** Apply only a successful current-session permission snapshot; prune resolved requests. */
+  async syncPermissions(sessionID: string, requestIDs: string[]): Promise<void> {
+    await this.transact((state) => {
+      if (state.sessionID !== sessionID) return { result: undefined }
+      if (requestIDs.length === Object.keys(state.pending).length &&
+        requestIDs.length === Object.keys(state.permissionNotifications ?? {}).length &&
+        requestIDs.every((id) => state.pending[id] === sessionID && state.permissionNotifications?.[id]?.sessionID === sessionID)) {
+        return { result: undefined }
+      }
+      const pending = Object.fromEntries(requestIDs.map((id) => [id, sessionID]))
+      const permissionNotifications = Object.fromEntries(requestIDs.map((id) => {
+        const saved = state.permissionNotifications?.[id]
+        return [id, state.pending[id] === sessionID && saved?.sessionID === sessionID ? saved : {
+          sessionID, delivered: false, attempts: 0, nextAttemptAt: 0,
+        }]
+      }))
+      return { next: { ...state, pending, permissionNotifications }, result: undefined }
+    })
+  }
+
+  /** A late delivery completion must not recreate a resolved/stale authorization. */
+  async updatePermissionNotification(
+    requestID: string,
+    sessionID: string,
+    patch: Partial<Omit<PermissionNotification, "sessionID">>,
+  ): Promise<boolean> {
+    return this.transact((state) => {
+      const saved = state.permissionNotifications?.[requestID]
+      if (state.sessionID !== sessionID || state.pending[requestID] !== sessionID || saved?.sessionID !== sessionID) {
+        return { result: false }
+      }
+      return {
+        next: { ...state, permissionNotifications: {
+          ...state.permissionNotifications, [requestID]: { ...saved, ...patch },
+        } },
+        result: true,
+      }
+    })
+  }
+
   /** Remove a permission only after the decision was recorded. */
   async clearPermission(requestID: string): Promise<void> {
     await this.transact((state) => {
-      if (!state.pending[requestID]) return { result: undefined }
+      if (!state.pending[requestID] && !state.permissionNotifications?.[requestID]) return { result: undefined }
       const pending = { ...state.pending }
       delete pending[requestID]
-      return { next: { ...state, pending }, result: undefined }
+      const permissionNotifications = { ...state.permissionNotifications }
+      delete permissionNotifications[requestID]
+      return { next: { ...state, pending, permissionNotifications }, result: undefined }
     })
   }
 }

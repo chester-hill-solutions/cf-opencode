@@ -1,0 +1,36 @@
+{
+  "observedAt": "2026-11-15T15:24:04.447Z",
+  "id": "r0-23-6e287457fbbe-l1-cold-1",
+  "reason": "Native SDK max_completion_tokens body alias refused before provider dispatch; operator requested cleanup rather than leave the failed cell settling until deadline",
+  "providerCalls": 0,
+  "httpStatus": 409,
+  "cleanup": {
+    "runtimeStopped": false,
+    "product": {
+      "ok": false,
+      "error": "conversation has unresolved work; wait for it to settle before reset or delete"
+    },
+    "receipt": {
+      "schemaVersion": 1,
+      "identity": {
+        "id": "r0-23-6e287457fbbe-l1-cold-1",
+        "taskID": "L1",
+        "protocolSHA256": "6e287457fbbe205084de93e3359d3a0be9ad2b21ddf0ba027b42282e36426f2d",
+        "condition": "cold",
+        "repetition": 1
+      },
+      "phase": "cleanup-requested",
+      "preparedAt": 1794756049835,
+      "submittedAt": 1794756059131,
+      "fixtureCommit": "8f85941eaf677eab8670b67acd4ea9c854f7840c",
+      "fixtureReadyAt": 1794756063719,
+      "submission": {
+        "status": 200,
+        "body": {
+          "ok": true,
+          "sessionID": "ses_e2033c6b9ffe80S0hpChhUmkWB"
+        }
+      }
+    }
+  }
+}

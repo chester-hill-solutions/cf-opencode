@@ -20,7 +20,8 @@ function fail(errorPhase, error) {
   const errorClass = error && typeof error === "object" && typeof error.name === "string"
     ? error.name
     : "Error"
-  process.stdout.write(`${JSON.stringify({ mode: "host-lifecycle-race", ok: false, kind, errorPhase, errorClass, operationStatus, startStatus })}\n`)
+  const errorMessage = error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300)
+  process.stdout.write(`${JSON.stringify({ mode: "host-lifecycle-race", ok: false, kind, errorPhase, errorClass, errorMessage, operationStatus, startStatus })}\n`)
   process.exitCode = 1
 }
 
@@ -48,10 +49,13 @@ function observe(container) {
   if (runtime !== "docker" && runtime !== "container") throw new Error("unsupported-runtime")
   const result = spawnSync(runtime, ["exec", container, "bun", "/tmp/stow-s3-probe.ts", "native-lifecycle-observe"], {
     encoding: "utf8",
-    timeout: 5_000,
+    timeout: 60_000,
     maxBuffer: 64 * 1024,
   })
-  if (result.error || result.status !== 0) throw new Error("observer-failed")
+  if (result.error || result.status !== 0) {
+    const detail = `${result.stderr ?? ""}${result.stdout ?? ""}`.trim().slice(0, 240)
+    throw new Error(`observer-failed:${result.error?.message ?? result.status ?? "unknown"}:${detail}`)
+  }
   let value
   try {
     value = JSON.parse(result.stdout)

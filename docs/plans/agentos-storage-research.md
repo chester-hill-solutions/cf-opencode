@@ -1,5 +1,7 @@
 # AgentOS and Stow storage research
 
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is retained as research reference only; no work here is scheduled, and the roadmap wins on any disagreement.
+
 Research date: 2026-11-12 UTC. Scope: concepts for Aboiteau and feasibility of isolated WASM execution with durable storage. This is source research, not a deployment or runtime compatibility certification.
 
 **Planning status — retained research.** Keep OpenCode in Cloudflare Containers,

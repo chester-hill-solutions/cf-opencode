@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import { env, runInDurableObject } from "cloudflare:test"
 import { usageLogResponse } from "./helpers/usage-log"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
+import { driveConversationJobs } from "./helpers/conversation-jobs"
 
 /**
  * Lifecycle regression: the persisted phase must follow admission → running →
@@ -64,7 +65,7 @@ function fakeContainer() {
 describe("conversation lifecycle", () => {
   it("moves admitting → running → settling → idle", async () => {
     const stub = env.CONVERSATION.getByName("C1:lifecycle")
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDurableObject(stub, async (instance, state) => {
       instance.transport = fakeContainer()
 
       const admitted = await instance.fetch(
@@ -77,7 +78,7 @@ describe("conversation lifecycle", () => {
         phase?: string
       }
 
-      await instance.alarm()
+      await driveConversationJobs(instance, state.storage, ["turn:observe"])
       const afterSettle = (await (await instance.fetch(new Request("https://conversation/state"))).json()) as {
         phase?: string
         runStartedAt?: number

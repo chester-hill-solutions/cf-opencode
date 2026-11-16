@@ -1,0 +1,119 @@
+{
+  "observedAt": "2026-11-14T20:22:44.745Z",
+  "matrixVersion": 1,
+  "scope": "local container split-archive recovery; not Cloudflare/R2 or custom-shape qualification",
+  "conditions": {
+    "network": "none",
+    "volumes": [],
+    "credentials": "synthetic only",
+    "providerPrompts": 0
+  },
+  "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-shape-ab@sha256:2cd03c57e7458d337fde892cb6a729969e5dd55d6e3f61d01f0ac67068fcc2ba",
+  "localImageID": "sha256:dc0856170d9a60aa1f9c9766435031ddfdf9e2688f5c9b8b0cec2d08153ad630",
+  "probeSHA256": "2ae16f6ef877909ff2b9b017d5ddf87adfaa21ecf0f195794a06e08624af5a86",
+  "sourceBase": "b93274769032ede40e80ea219b5fcdb46c9b6b86",
+  "firstProbe": {
+    "mode": "first",
+    "ok": true,
+    "workspaceID": "ws_2458b46ed42d7675",
+    "directFileToS3GetMatches": true,
+    "s3PutToWorkspaceFileMatches": true,
+    "metadataTypeMatches": false,
+    "ephemeralSentinelAbsent": true,
+    "agentUID": 1001,
+    "controllerSHA256": "0ec5e1e2dff12951041e837cab3aa877701f1d02359f6ecc8650e1cf20c8cace",
+    "binarySHA256": "6f0f247912de4c4d5d296a3176fe291b7c29717498f5778d920949d4025420b6",
+    "matrixVersion": 1,
+    "matrix": [
+      {
+        "id": "key-natural",
+        "disposition": "prepared",
+        "reason": "awaiting_cold_restore",
+        "httpStatus": 200
+      },
+      {
+        "id": "key-spaces",
+        "disposition": "prepared",
+        "reason": "awaiting_cold_restore",
+        "httpStatus": 200
+      },
+      {
+        "id": "key-unicode",
+        "disposition": "prepared",
+        "reason": "awaiting_cold_restore",
+        "httpStatus": 200
+      },
+      {
+        "id": "key-percent",
+        "disposition": "prepared",
+        "reason": "awaiting_cold_restore",
+        "httpStatus": 200
+      },
+      {
+        "id": "key-punctuation",
+        "disposition": "failed",
+        "reason": "bytes_mismatch",
+        "httpStatus": 200
+      },
+      {
+        "id": "key-double-slash",
+        "disposition": "prepared",
+        "reason": "awaiting_cold_restore",
+        "httpStatus": 200
+      },
+      {
+        "id": "key-dot-segment",
+        "disposition": "prepared",
+        "reason": "awaiting_cold_restore",
+        "httpStatus": 200
+      },
+      {
+        "id": "key-traversal",
+        "disposition": "prepared",
+        "reason": "awaiting_cold_restore",
+        "httpStatus": 200
+      },
+      {
+        "id": "key-reserved-stow",
+        "disposition": "prepared",
+        "reason": "awaiting_cold_restore",
+        "httpStatus": 200
+      },
+      {
+        "id": "key-reserved-git",
+        "disposition": "prepared",
+        "reason": "awaiting_cold_restore",
+        "httpStatus": 200
+      },
+      {
+        "id": "object-metadata",
+        "disposition": "failed",
+        "reason": "metadata_mismatch",
+        "httpStatus": 200
+      },
+      {
+        "id": "unfinished-multipart",
+        "disposition": "prepared",
+        "reason": "awaiting_cold_restore"
+      },
+      {
+        "id": "git-state",
+        "disposition": "prepared",
+        "reason": "awaiting_cold_restore"
+      },
+      {
+        "id": "background-writer",
+        "disposition": "prepared",
+        "reason": "awaiting_cold_restore"
+      }
+    ]
+  },
+  "syntheticSessionCreated": true,
+  "result": "LOCAL_PROBE_INCOMPLETE",
+  "failedStage": "active-writer-capture",
+  "qualificationPassed": false,
+  "cleanupAttempted": true,
+  "evidenceLimit": "Developmental local attempt before the final reviewed probe. Did not reach cold restore; not a live or completed recovery qualification.",
+  "cleanupFollowup": "Both task-prefixed containers were removed or confirmed absent after Docker became responsive; the second receipt originally recorded an attempt without confirmation.",
+  "punctuationExpectationCorrection": "The portable layout escapes question marks; final inventory requires exact S3 bytes/listing and canaries rather than a natural filesystem path."
+}

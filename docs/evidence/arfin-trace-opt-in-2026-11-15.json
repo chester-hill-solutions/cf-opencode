@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "operator_trace_opt_in_intent",
+  "recordedAt": "2026-11-15T21:27:35.736695+00:00",
+  "source": "Explicit user instruction in this workspace conversation",
+  "statement": "Also we opt in to traces.",
+  "scope": {
+    "deployment": "cf-opencode-arfin-canary-20261115",
+    "slackChannelID": "C0A5YNXLP6C",
+    "slackChannelName": "arfin-test"
+  },
+  "ownedOperationalTracing": "opted_in",
+  "operationalTracingAlreadyConfigured": {
+    "enabled": true,
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    }
+  },
+  "capturePolicyChanged": false,
+  "trainingContribution": {
+    "status": "intent_recorded_not_activated",
+    "notAnExecutableTrainingGrant": true,
+    "reason": "Owned trace export and TRAIN-0 through TRAIN-3 are not implemented/qualified.",
+    "futureEligibleRunsOnly": true,
+    "historicalTraceSelectionAuthorized": false,
+    "eligibleRepositories": null,
+    "allowedPayloadClasses": null,
+    "recipients": null,
+    "retentionAndWithdrawalTerms": null,
+    "thirdPartyProviderTrainingAuthorized": false,
+    "uploadsStarted": false,
+    "trainingStarted": false
+  }
+}

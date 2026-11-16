@@ -1,5 +1,7 @@
 # R1 design — agent boundary and tenant isolation
 
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is design input for G1; the roadmap controls sequencing and gate status.
+
 Status: partially implemented; isolation gate open · Updated: 2026-11-11 · Scope: R1 (tenancy foundations)
 Related: `docs/roadmap.md` R1-1…R1-11, audit findings on agent credentials, control
 plane, checkpoints and tenancy.
@@ -12,6 +14,14 @@ or replacing storage. The [roadmap decision and revisit gate](../roadmap.md#runt
 defer alternative runtimes until measured startup, idle-cost or concurrency needs
 justify investigation. AgentOS's scoped-capability and recovery concepts refine
 the existing boundary work without adding a runtime dependency.
+
+**Execution-service sequencing — 2026-11-11:** the
+[delivery plan](../plans/execution-service-delivery.md) promotes caller-visible
+turn identity, status, neutral questions/cancellation and public replay into
+R1-4a–R1-4c before the admin console; protected runtime/event extraction follows
+in R1-4d. R1-7a proves egress/credential feasibility early on disposable resources.
+This changes sequencing, not the trust boundary below. A non-Slack reference
+client must pass G1-C, and own-account external pilots still require G1.
 
 This document covers **one question**: what exactly separates a tenant's agent from
 the harness, from other tenants, and from credentials it should never see. It does
@@ -111,6 +121,15 @@ Move harness state **out of the agent's workspace**:
 still read `state` (OpenCode needs write access to its DB). The fix is not file
 permissions; it is keeping long-lived credentials out of `state` (see 3.4).
 
+**R0-19 receipt (2026-11-14), input to R1-7a:** the current 0.4.0 image's UID 1001
+recovered a synthetic credential through both allowlisted `find` and
+repository-controlled `bun test`. The pinned matcher denies literal state-root
+`cat` but allows both tested command forms. The
+[receipt and limitations](../evidence/w0-correctness-2026-11-14.md#r0-19--known_open_g1)
+and [raw output](../evidence/r0-19-2026-11-14.json) are known-open G1 evidence,
+not a security pass. R1-7a must test the proposed external boundary against these
+same execution paths before R1-7 enforcement can be claimed.
+
 **Observed execution path (audit 32):** `bun test` and `bun run typecheck` are
 default-allowed commands that execute repository-controlled code. A disposable Bun
 test could read a synthetic sibling-state marker under the shared identity. Putting
@@ -175,8 +194,9 @@ tenants/<tenantID>/conversations/<conversationID>/state/<ts>.tar.gz
 - Restore writes the workspace archive to `/workspace` and the state archive to
   `/var/lib/aboiteau/state`, never across the two.
 - Reset/delete removes both prefixes plus the manifest.
-- Existing keys (`workspaces/<DO id>/…`) are migrated by R1-1; the legacy key is
-  read-only until the copy job completes.
+- Use the R1-1 target key layout directly for new supported state. Under the
+  pre-customer hard-cut decision (2026-11-12), copy legacy keys only for named
+  operator data to retain; no universal copy job or fallback reader is required.
 - Until tenancy lands, the implemented keys are
   `workspaces/<DO id>/workspace-<ts>.tar.gz` and `state-<ts>.tar.gz`, with the
   manifest in DO storage.
@@ -230,7 +250,7 @@ agent and approve its permission requests.
   The thread/conversation key stays as it is today (`channel:thread` or `channel:ts`).
 - Hashed, revocable API keys per tenant (R1-6), scoped to the tenant and optionally
   to one agent. The shared `API_TOKEN` becomes an operator-only token and stops
-  working for tenant routes after dual-run.
+  working for tenant routes after the single cutover.
 - Slack: `team_id` + `channel_id` resolve the agent; channel membership remains the
   approval boundary.
 - R1 optimizes for **self-hosted per team**: one tenant per deployment by default.
@@ -250,7 +270,10 @@ agent and approve its permission requests.
   different agent.
 - `Env.TENANCY` is **optional**. Without it, or for an unbound channel, routing
   stays on the legacy key. A namespaced conversation never falls back to the
-  legacy global account seed. Bind D1 and insert channel rows to activate:
+  legacy global account seed. This unbound-channel fallback is transitional: R1-5
+  strict mode fails closed instead, and any retained compatibility path is an
+  explicit operator setting rather than an error fallback. Bind D1 and insert
+  channel rows to activate:
 
   ```jsonc
   "d1_databases": [
@@ -464,22 +487,30 @@ build and container run, not a published image.
 | Phase | Work | Roadmap |
 | --- | --- | --- |
 | P0 | Control token, curated OpenCode env, control proxy, state relocation, marker move | R1-2 prerequisite |
-| P1 | R0-10 retention/restore correctness, stable checkpoint keys, legacy copy job | R1-1 |
+| P1 | R0-10 retention/restore correctness and stable checkpoint keys; conditional export only for named retained data | R1-1 |
 | P2 | Verify deployed `durable_object` policy and per-conversation lifecycle already present in code/configuration | R1-2/R1-3 |
 | P3 | Runtime extraction (`ContainerRuntime`, `EventStream`) | R1-4 |
 | P4 | Tenant model, per-tenant settings/account/keys, DO names | R1-5/R1-6 |
 | P5 | Egress proxy, credential injection, default-deny | R1-7 |
-| P6 | Isolation tests + dual-run/cutover | R1-9/R1-10 |
+| P6 | Isolation tests + single cutover and backout | R1-9/R1-10 |
+
+P3 is now delivered as the bounded R1-4 contract/client/extraction slices rather
+than an extraction-only project. Design and disposable fixtures may proceed in
+parallel, but broader rollout still requires G1. P5 starts with R1-7a's early
+feasibility proof before the full tenant/onboarding schedule is committed.
 
 P0's process/state split is implemented and P2 is present in code/configuration;
 deployed cutover and isolation still need verification. R0-10 retention/restore fixes
-pass local regressions, but fresh real-container verification and P1's stable-key/copy
-job remain open before treating archives as migration recovery points. P4/P5 require
+pass local regressions, but deployed recovery verification and P1's target key
+layout remain open. Legacy copying is conditional on data retention. P4/P5 require
 verified P2 behavior, not just a configuration change.
 
-**Rollback:** the v2 replacement app runs beside v1 with the same image; the
-control server accepts both token-authenticated and (temporarily) legacy calls
-during dual-run, then legacy calls are removed.
+**Pre-customer cutover:** select one supported version and update control calls,
+clients, bindings and Slack URLs together. No dual-run or unauthenticated legacy
+control path is required. Backout uses the previous image with a matching saved
+recovery point, or an intentional reset of disposable test state; never assume an
+old image can read incompatible new state. Name retained operator data before
+any reset. This policy does not itself authorize deleting stored data.
 
 ---
 
@@ -488,6 +519,10 @@ during dual-run, then legacy calls are removed.
 - Two tenants run concurrently in separate containers.
 - A probe from tenant A cannot read tenant B's workspace, state, events, settings,
   checkpoints or account seed.
+- Strict identity resolution fails closed for unknown/invalid bindings and resolver
+  outages. It cannot select legacy/global settings or credentials after an error;
+  legacy compatibility is optional and explicit if retained. Test the same scope for questions,
+  permission decisions, cancellation, recovery and revoked API keys.
 - No global `Settings` singleton in the request path; changing a spec restarts only
   that sandbox.
 - Unauthenticated control-plane calls fail, and the agent cannot read the control

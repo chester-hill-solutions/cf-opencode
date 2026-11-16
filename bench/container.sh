@@ -53,8 +53,21 @@ until curl -fsS "http://127.0.0.1:${CONTROL_PORT}/health" >/dev/null 2>&1; do sl
 echo "cold start (container → control /health): $(( $(now) - start )) ms"
 
 start=$(now)
-curl -fsS "${AUTH[@]}" -X POST "http://127.0.0.1:${CONTROL_PORT}/start" >/dev/null
+start_body=$(mktemp)
+curl -fsS "${AUTH[@]}" -X POST "http://127.0.0.1:${CONTROL_PORT}/start" -o "$start_body"
 echo "start (stow-s3 + opencode serve): $(( $(now) - start )) ms"
+if command -v python3 >/dev/null 2>&1; then
+  python3 - "$start_body" <<'PY'
+import json, sys
+try:
+    timings = json.load(open(sys.argv[1])).get("timings", {})
+except Exception:
+    timings = {}
+if timings:
+    print("start phases: " + ", ".join(f"{k}={v}ms" for k, v in timings.items()))
+PY
+fi
+rm -f "$start_body"
 
 # stow binds loopback inside the container; the host-mapped port cannot reach it.
 if s3_health >/dev/null 2>&1; then echo "local S3: healthy (inside container)"; else echo "local S3: unreachable"; fi

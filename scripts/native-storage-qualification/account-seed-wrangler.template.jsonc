@@ -1,0 +1,43 @@
+{
+  // Isolated R0-15a account-seed rehearsal. Replace every placeholder only
+  // in a private copy; never use production credentials or resources.
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cf-opencode-r0-15a-account-seed-qualification",
+  "account_id": "__SET_STAGING_ACCOUNT_ID__",
+  "main": "./account-seed.ts",
+  "compatibility_date": "2026-11-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "WORKSPACE_REPO": "",
+    "OPENCODE_MODEL": "",
+    "POLL_SECONDS": "2",
+    "CONTAINER_INSTANCE_PROFILE": "custom-1cpu-2gib",
+    "IDLE_CLOSE_SECONDS": "300",
+    "EVENTED_FRESH_CONVERSATIONS": "true",
+    "ALLOW_PLAINTEXT_ARCHIVES": "0"
+  },
+  "containers": [
+    {
+      "class_name": "AccountSeedConversation",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "evented": {
+          "image": "__SET_PARENT_VERIFIED_PINNED_EVENTED_IMAGE_DIGEST__"
+        }
+      }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "class_name": "AccountSeedConversation", "name": "CONVERSATION" },
+      { "class_name": "Settings", "name": "SETTINGS" }
+    ]
+  },
+  "r2_buckets": [
+    { "binding": "CHECKPOINTS", "bucket_name": "__SET_UNIQUE_EMPTY_R0_15A_BUCKET_NAME__" }
+  ],
+  "exports": {
+    "AccountSeedConversation": { "type": "durable-object", "storage": "sqlite" },
+    "Settings": { "type": "durable-object", "storage": "sqlite" }
+  }
+}

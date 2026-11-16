@@ -1,0 +1,35 @@
+{
+  // Private staging copy only. Set a disposable account id and use only the
+  // synthetic upstream secret documented in README.md. This template is not
+  // production deployable as written.
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "aboiteau-provider-egress-r1-7a-qualification",
+  "account_id": "__SET_DISPOSABLE_STAGING_ACCOUNT_ID__",
+  "main": "./worker.ts",
+  "compatibility_date": "2026-11-14",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "CONTAINER_INSTANCE_PROFILE": "custom-1cpu-2gib"
+  },
+  "containers": [
+    {
+      "class_name": "ProviderEgressQualification",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "evented": {
+          "image": "__SET_PARENT_VERIFIED_PINNED_EVENTED_IMAGE_DIGEST__"
+        }
+      }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "class_name": "ProviderEgressQualification", "name": "CONVERSATION" }
+    ]
+  },
+  "exports": {
+    "ProviderEgressQualification": { "type": "durable-object", "storage": "sqlite" },
+    "QualificationProviderEgress": { "type": "worker" },
+    "QualificationProviderEgressFailure": { "type": "worker" }
+  }
+}
