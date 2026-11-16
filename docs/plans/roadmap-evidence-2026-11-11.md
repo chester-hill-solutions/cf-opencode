@@ -92,4 +92,3 @@ is implemented and reviewed locally, with Luna ownership for retirement, passive
 inspection, safe pre-dispatch cancellation and existing recovery retries. It adds
 no expiry or ambiguous prompt resend. Unprovable legacy/orphan cases remain
 explicit blockers; no live recovery action has run.
-
