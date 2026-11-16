@@ -1,7 +1,8 @@
 import type { makeClient } from "../opencode"
 import { traceId } from "../telemetry"
-import { ConversationStore } from "../state"
+import { ConversationStore, type ConversationState } from "../state"
 import { parseFormAnswer, visibleFields, type Form, type FormAnswer } from "../slack-forms"
+import { projectQuestions, type PendingQuestion } from "../questions"
 import {
   emitConversationTelemetry,
   type ConversationTelemetryEventName,
@@ -38,6 +39,11 @@ export interface ControlPlaneOptions {
     sessionID: string
     reason: string
   }): Promise<void>
+}
+
+/** Phases in which a turn can be blocked waiting for an answer. */
+function isBlockingPhase(phase: ConversationState["phase"]): boolean {
+  return phase === "running" || phase === "settling" || phase === "admitting"
 }
 
 /** Durable control token and session-scoped permission/form operations. */
@@ -92,6 +98,32 @@ export class ConversationControlPlane {
     })
     this.cached = token
     return token
+  }
+
+  /**
+   * Pending interactions for a caller that is not Slack. A running turn can be
+   * blocked on either kind, so both are read together. Unreadable runtime state
+   * is `503`, never an empty list: "nothing asked" and "cannot tell" are
+   * different answers.
+   */
+  async onQuestions(): Promise<Response> {
+    const state = await this.options.store.get()
+    if (!state.sessionID || !isBlockingPhase(state.phase)) return Response.json({ questions: [] })
+    const sessionID = state.sessionID
+    try {
+      const [forms, permissions] = await Promise.all([
+        this.pendingForms(sessionID),
+        this.options.withClient((client) => client.permission.list({ sessionID }), false),
+      ])
+      const questions: PendingQuestion[] = projectQuestions({
+        forms,
+        permissions: permissions.filter((request) => state.pending[request.id] === sessionID),
+        ...(state.turnID ? { turnID: state.turnID } : {}),
+      })
+      return Response.json({ questions })
+    } catch {
+      return Response.json({ error: "questions_unavailable" }, { status: 503 })
+    }
   }
 
   async pendingForms(sessionID: string): Promise<Form[]> {

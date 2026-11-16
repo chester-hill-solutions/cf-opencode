@@ -100,6 +100,22 @@ export function queueAcceptedReceipt(
 }
 
 /** `GET /turns/:id`: identity, lifecycle and accounting state only. */
+/**
+ * Passive GETs served by the conversation itself. They answer from stored state
+ * or the live runtime and must never start lifecycle recovery or jobs.
+ */
+export async function passiveReadRoute(
+  request: Request,
+  store: ConversationStore,
+  questions: () => Promise<Response>,
+): Promise<Response | undefined> {
+  if (request.method !== "GET") return undefined
+  const pathname = new URL(request.url).pathname
+  if (pathname.startsWith("/turns/")) return turnStatusReceipt(store, pathname.slice("/turns/".length))
+  if (pathname === "/questions") return questions()
+  return undefined
+}
+
 export async function turnStatusReceipt(store: ConversationStore, rawID: string): Promise<Response> {
   let id: string
   try {

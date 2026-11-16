@@ -19,7 +19,7 @@ import { parseObjectJson } from "./http-json"
 import { validateOpencodeKey } from "./opencode-key-validation"
 import { handleCheckCollector } from "./workspace-check-collector"
 import { handleSlackCanaryRoute } from "./slack-canary"
-import { alertsRoute, safeDecode, turnStatusRoute } from "./worker-routes"
+import { alertsRoute, conversationStub, KEY_PATTERN, questionsRoute, safeDecode, turnStatusRoute } from "./worker-routes"
 
 export { Conversation } from "./conversation"
 export { Settings } from "./settings-do"
@@ -28,8 +28,6 @@ export { ProviderEgress } from "./provider-egress-entrypoint"
 // Tenancy-namespaced keys can exceed 128 chars: `tenant:{64}:agent:{64}:{legacy}`
 // where legacy is a Slack `channel:thread` pair (thread_ts has a dot).
 // Keep the cap generous but finite. `:` separates segments, `.` appears in thread timestamps.
-const KEY_PATTERN = /^[A-Za-z0-9:.\\_-]{1,256}$/
-
 /** Decode and validate path segments before forwarding them to the container. */
 function decodePathSegments(parts: string[]): string | undefined {
   const decoded: string[] = []
@@ -55,7 +53,7 @@ export default {
     }
 
     if (url.pathname.startsWith("/api/")) {
-      return handleApi(request, env, url, ctx)
+      return apiRoute(request, env, url, ctx)
     }
 
     if (request.method !== "POST") return new Response("not found", { status: 404 })
@@ -173,15 +171,16 @@ export default {
  * Conversation DO handle that carries the key with every call. The DO checks
  * this forwarded value against its canonical id name before routing or seeding.
  */
-function conversationStub(env: Env, key: string) {
-  const stub = env.CONVERSATION.getByName(key)
-  return {
-    fetch: (input: RequestInfo | URL, init?: RequestInit) => {
-      const headers = new Headers(init?.headers)
-      headers.set("x-conversation-key", key)
-      return stub.fetch(input, { ...init, headers })
-    },
-  }
+/**
+ * `/api/*` entry point: passive reads first, then the route table. Keeping this
+ * indirection means the two large routers do not grow when a read is added.
+ */
+async function apiRoute(request: Request, env: Env, url: URL, ctx: ExecutionContext): Promise<Response> {
+  const parts = url.pathname.split("/")
+  if (request.method !== "GET" || parts.length !== 5 || parts[1] !== "api" ||
+    parts[2] !== "conversations" || parts[4] !== "questions") return handleApi(request, env, url, ctx)
+  const key = parts[3] ?? ""
+  return questionsRoute(request, env, key, () => ctx.waitUntil(settingsDo(env, "/conversations", { key }).catch(() => undefined)))
 }
 
 /** HTTP/SSE adapter: any client can drive a conversation. */

@@ -32,7 +32,7 @@ import { ConversationReconciliation } from "./conversation/reconciliation"
 import { ConversationAccountingCutover } from "./conversation/accounting-cutover"
 import { ConversationDeliveryControls } from "./conversation/delivery-controls"
 import { ConversationMessagePipeline } from "./conversation/message-pipeline"
-import { turnStatusReceipt } from "./conversation/turn-replies"
+import { passiveReadRoute } from "./conversation/turn-replies"
 import { queueCapacity } from "./queue"
 import { projectTurnObservation, type PersistedTurnTimeout } from "./turn-observation"
 import { ConversationAdmissions } from "./conversation/admissions"
@@ -626,10 +626,9 @@ export class Conversation extends DurableObject<Env> {
     if (new URL(request.url).pathname === "/providers/repair") return this.providerRepair.fetch(request)
     if (/^\/workspace\/check-collector(?:\/|$)/.test(new URL(request.url).pathname)) return this.checkDispatcher.fetch(request)
     if (/^\/workspace\/checks(?:\/|$)/.test(new URL(request.url).pathname)) return this.workspaceCheckRequest(request)
-    // A turn status read is passive: it must not start lifecycle recovery or jobs.
-    if (request.method === "GET" && new URL(request.url).pathname.startsWith("/turns/")) {
-      return turnStatusReceipt(this.store, new URL(request.url).pathname.slice("/turns/".length))
-    }
+    // Status and questions are passive reads: neither starts lifecycle recovery or jobs.
+    const passive = await passiveReadRoute(request, this.store, () => this.controlPlane.onQuestions())
+    if (passive) return passive
     await this.scheduler.captureLegacyAlarmMigration(false)
     return this.lifecycle.fetch(request)
   }
