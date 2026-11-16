@@ -129,6 +129,24 @@ describe("ConversationSlackAdapter delivery controls", () => {
     expect(prompt).toContain("not instructions")
   })
 
+  test("sends the workspace brief even where the check-channel commands are disabled", async () => {
+    const f = fixture({
+      settings: async () => ({ model: "provider/model", streaming: false, workspaceRepo: "https://github.com/example/repo" }),
+      workspaceCommands: {
+        enabled: () => false,
+        repository: async () => Response.json({ workspaceRepository: null }),
+        check: async () => "",
+        checks: async () => "",
+      },
+    })
+    await f.adapter.onEvent(event("hello"))
+    const prompt = String((f.calls.find(([name]) => name === "prompt")?.[1] as { text?: string } | undefined)?.text ?? "")
+    expect(prompt).toContain("<workspace_context>")
+    expect(prompt).toContain("/workspace is this conversation's working directory")
+    expect(prompt.indexOf("<soul>")).toBeLessThan(prompt.indexOf("<workspace_context>"))
+    expect(prompt.indexOf("<workspace_context>")).toBeLessThan(prompt.indexOf("hello"))
+  })
+
   test("sends no memory block when nothing is remembered", async () => {
     const f = fixture({ memory: {
       context: async () => ({ team: [], user: [] }),

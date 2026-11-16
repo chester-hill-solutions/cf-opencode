@@ -113,9 +113,11 @@ describe("Slack repository controls reuse the guarded binding core", () => {
         expect(f.calls.length).toBeGreaterThan(0)
         const current = await new ConversationStore(state.storage).get()
         const prompt = f.prompts[0] ?? current.queue?.[0]?.text ?? ""
-        expect(prompt).not.toContain("No repository is configured")
+        if (mode === "default") expect(prompt).not.toContain("No repository is configured")
         if (mode === "default") expect(prompt).toContain("Workspace retention is explicitly persistent")
-        else expect(prompt).not.toContain("<workspace_context>")
+        // The brief no longer depends on the check-channel feature gate: every
+        // session is told where it works, even where !repo is unavailable.
+        else expect(prompt).toContain("/workspace is this conversation's general workspace")
       })
     }
   })
