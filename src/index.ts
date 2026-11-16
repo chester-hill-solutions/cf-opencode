@@ -176,9 +176,9 @@ export default {
  */
 const API_OR_MCP = new RegExp("^(?:/api/|/mcp$)")
 
-/** `/api/*` entry point: passive reads first, then the route table. */
 async function apiRoute(request: Request, env: Env, url: URL, ctx: ExecutionContext): Promise<Response> {
-  if (url.pathname === "/mcp") return mcpRoute(request, env, ctx) ?? handleApi(request, env, url, ctx)
+  const mcp = url.pathname === "/mcp" ? await mcpRoute(request, env, ctx) : undefined
+  if (mcp) return mcp
   const parts = url.pathname.split("/")
   const key = parts[3] ?? ""
   const record = () => ctx.waitUntil(settingsDo(env, "/conversations", { key }).catch(() => undefined))

@@ -33,12 +33,12 @@ function rpc(body: unknown, token?: string) {
 }
 
 describe("MCP connector", () => {
-  it("does not exist unless enabled", () => {
-    expect(mcpRoute(rpc({}), runtime({ MCP_ENABLED: undefined }), ctx)).toBeUndefined()
+  it("does not exist unless enabled", async () => {
+    expect(await mcpRoute(rpc({}), runtime({ MCP_ENABLED: undefined }), ctx)).toBeUndefined()
   })
 
-  it("requires the MCP token", () => {
-    const denied = mcpRoute(rpc({}), runtime({ MCP_TOKEN: "mcp-token" }), ctx) as Response
+  it("requires the MCP token", async () => {
+    const denied = await mcpRoute(rpc({}), runtime({ MCP_TOKEN: "mcp-token" }), ctx) as Response
     expect(denied.status).toBe(401)
   })
 

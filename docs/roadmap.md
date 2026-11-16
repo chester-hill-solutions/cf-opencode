@@ -668,7 +668,16 @@ reply the conversation still retains.
 an MCP result cannot differ from an HTTP one. `read` reads the turn-correlated
 event log rather than a stored baseline field. Still open for this row:
 deployment with `MCP_ENABLED=1` and a separate `MCP_TOKEN` in **staging**, then
-one conformance session against that endpoint. The connector remains optional G1-C evidence — a deployment without
+one conformance session against that endpoint.
+
+The shared bearer token is a **pilot stopgap**, not the target design. Cloudflare
+documents remote MCP authorization as OAuth 2.1 (`OAuthAuthorizationServer` /
+`OAuthResourceServer`, scopes per operation with `insufficientScope`) or
+Cloudflare Access in front of the endpoint. Before any external team integrates,
+put one of those in front of `/mcp` and give read and write tools separate
+scopes; per-tenant identity (R1-6) is the prerequisite for real per-caller
+tokens. Every tool declares `outputSchema` and returns matching
+`structuredContent`, because strict MCP clients reject drifting results. The connector remains optional G1-C evidence — a deployment without
 MCP must still pass that gate.
 
 **R0-15 — one storage cutover, on the current artifacts.**
