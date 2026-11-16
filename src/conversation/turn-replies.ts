@@ -137,6 +137,27 @@ function cancellationReceipt(queuedCleared: boolean, observedStop: boolean, sett
   }, { status: 202 })
 }
 
+/** `GET /turns/:id/reply`: the assistant text this conversation still retains. */
+export async function turnReplyReceipt(store: ConversationStore, turnID: string): Promise<Response> {
+  const turn = await store.getTurn(turnID)
+  if (!turn) return Response.json({ error: "unknown_turn" }, { status: 404 })
+  const reply = (await store.eventsAfter(0))
+    .filter((entry) => entry.event.turnID === turnID && entry.event.type === "assistant")
+    .map((entry) => (entry.event as { text: string }).text)
+    .join("")
+  const available = reply.length > 0
+  return Response.json({
+    available,
+    reply,
+    replay: available ? "retained" : turn.startedAt ? "expired" : "none",
+  })
+}
+
+function replyTarget(pathname: string): string | undefined {
+  if (!pathname.startsWith("/turns/") || !pathname.endsWith("/reply")) return undefined
+  return decodeURIComponent(pathname.slice("/turns/".length, -"/reply".length))
+}
+
 /** `POST /turns/:id/cancel`, or undefined for any other request. */
 function cancelTarget(request: Request, pathname: string): string | undefined {
   if (request.method !== "POST" || !pathname.startsWith("/turns/") || !pathname.endsWith("/cancel")) {
@@ -171,6 +192,8 @@ export async function passiveReadRoute(
     return control.answer(requestID, await request.json().catch(() => undefined))
   }
   if (request.method !== "GET") return undefined
+  const replyID = replyTarget(pathname)
+  if (replyID !== undefined) return turnReplyReceipt(store, replyID)
   if (pathname.startsWith("/turns/")) return turnStatusReceipt(store, pathname.slice("/turns/".length))
   if (pathname === "/questions") return control.questions()
   return undefined

@@ -28,6 +28,10 @@ export interface Env {
   CONTAINER_URL?: string
   /** Bearer token for the HTTP/SSE adapter. */
   API_TOKEN?: string
+  /** Opt in to the MCP connector; absent means the route does not exist. */
+  MCP_ENABLED?: string
+  /** MCP bearer token; falls back to API_TOKEN so it can be revoked alone. */
+  MCP_TOKEN?: string
   /** Separate host-only capability. Never forwarded into an agent or checker. */
   CHECK_COLLECTOR_TOKEN?: string
   CHECK_COLLECTOR_ID?: string
