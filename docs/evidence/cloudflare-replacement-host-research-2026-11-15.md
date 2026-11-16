@@ -22,7 +22,7 @@ Primary documentation checked on this date; local Stow/Vault integration source 
 
 Local [Stow identity/readiness validation](/Users/ladmin/WebProjects/cf-opencode/stow-workspace.ts) binds root, registry, bucket and fresh loopback credentials. [Control startup](/Users/ladmin/WebProjects/cf-opencode/control-server.ts) already launches the registered Workspace. Reuse these contracts; Stow does not replace scheduler ownership or authorization.
 
-[Vault](/Users/ladmin/WebProjects/cf-opencode/vendor/chester-hill-solutions/vault/src/vault.ts) accepts a ciphertext store; its [encryption](/Users/ladmin/WebProjects/cf-opencode/vendor/chester-hill-solutions/vault/src/encryption.ts) derives workspace AES-GCM keys using HKDF. Replace the DO-backed store with SQLite. Load the master key through systemd credentials, not a broadly inherited environment; keep key recovery separate from ciphertext backups. [Credential delivery](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html).
+The published `@chester-hill-solutions/vault` accepts a ciphertext store and derives workspace AES-GCM keys using HKDF. Replace the DO-backed store with SQLite. Load the master key through systemd credentials, not a broadly inherited environment; keep key recovery separate from ciphertext backups. [Credential delivery](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html).
 
 ## Required acceptance guarantees
 

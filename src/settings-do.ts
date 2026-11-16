@@ -6,7 +6,9 @@ import {
   type HarnessSettings,
   type OnboardingState,
 } from "./settings"
-import { accountVault, workspaceID } from "./vault"
+import { workspaceID } from "./vault"
+import { vaultOrErrorResponse } from "./vault-access"
+import { assertNoStaleVaultRecords } from "./vault-records"
 import { decideSecretRead } from "./secret-read-policy"
 import { evaluateAlerts } from "./alerts"
 import { decideContainerLease } from "./leases"
@@ -44,6 +46,14 @@ export class Settings extends DurableObject<Env> {
    * fetch also makes lease acquisition and OAuth-state consumption atomic.
    */
   private tail: Promise<unknown> = Promise.resolve()
+
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env)
+    ctx.blockConcurrencyWhile(async () => {
+      const records = await ctx.storage.list({ prefix: "vault:" })
+      assertNoStaleVaultRecords(records.keys())
+    })
+  }
 
   async fetch(request: Request): Promise<Response> {
     const run = this.tail.then(
@@ -1430,19 +1440,7 @@ export class Settings extends DurableObject<Env> {
   }
 
   private vaultOrError() {
-    try {
-      const vault = accountVault(this.env, this.ctx.storage as unknown as VaultKeyValueStorage)
-      if (!vault) {
-        return Response.json(
-          { error: "VAULT_MASTER_KEY is not configured; set it before connecting accounts" },
-          { status: 503 },
-        )
-      }
-      return vault
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "vault unavailable"
-      return Response.json({ error: message }, { status: 500 })
-    }
+    return vaultOrErrorResponse(this.env, this.ctx.storage as unknown as VaultKeyValueStorage)
   }
 }
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { assertNoStaleVaultRecords } from "../src/vault-records"
 import { env, runInDurableObject } from "cloudflare:test"
 
 /**
@@ -23,6 +24,36 @@ async function reset(): Promise<void> {
 }
 
 describe("settings atomicity", () => {
+  it("reports a count and one sample key when old vault records exist", () => {
+    const keys = [
+      "vault:default:github.token",
+      "vault:default:github.login",
+    ]
+
+    const message = (() => {
+      try {
+        assertNoStaleVaultRecords(keys)
+        return ""
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error)
+      }
+    })()
+
+    expect(message).toContain("2 vault record(s)")
+    expect(message).toContain("vault:default:github.token")
+    expect(message).toContain("predate the package swap")
+    expect(message).toContain("Delete them or re-enter the credential")
+    expect(message).not.toContain("github.login")
+  })
+
+  it("accepts records written in the package's own format", () => {
+    expect(() =>
+      assertNoStaleVaultRecords([
+        JSON.stringify(["vault:", "default", "github.token"]),
+      ]),
+    ).not.toThrow()
+  })
+
   it("bumps the version once per concurrent save without losing one", async () => {
     await reset()
     const before = (await (await settings().fetch("https://settings/get")).json()) as {
