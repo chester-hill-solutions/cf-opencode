@@ -1,20 +1,21 @@
 /**
- * Container lease arithmetic, kept pure so the cap can be tested without a
- * Durable Object. The Settings DO owns the storage; this decides the outcome.
+ * Container lease arithmetic, distinct from a credential lease, kept pure so
+ * the cap can be tested without a Durable Object. The Settings DO owns the
+ * storage; this decides the outcome.
  */
 
-export interface Lease {
+export interface ContainerLease {
   id: string
   expiresAt: number
 }
 
-export type LeaseDecision =
+export type ContainerLeaseDecision =
   | { grant: true; expiresAt: number; active: number; refreshed: boolean }
   | { grant: false; active: number; retryAt: number }
 
-export interface LeaseRequest {
+export interface ContainerLeaseRequest {
   /** All stored leases, including expired ones. */
-  leases: Lease[]
+  leases: ContainerLease[]
   id: string
   now: number
   ttlMs: number
@@ -25,7 +26,7 @@ export interface LeaseRequest {
  * Refresh a lease the caller already holds, grant one when a slot is free, or
  * refuse with the earliest expiry so the caller knows when to retry.
  */
-export function decideLease(request: LeaseRequest): LeaseDecision {
+export function decideContainerLease(request: ContainerLeaseRequest): ContainerLeaseDecision {
   const { id, now, ttlMs } = request
   const cap = Math.max(1, request.cap)
   const active = request.leases.filter((lease) => lease.expiresAt > now)
