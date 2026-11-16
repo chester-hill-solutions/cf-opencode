@@ -108,9 +108,15 @@ export async function passiveReadRoute(
   request: Request,
   store: ConversationStore,
   questions: () => Promise<Response>,
+  answer: (requestID: string, body: unknown) => Promise<Response>,
 ): Promise<Response | undefined> {
-  if (request.method !== "GET") return undefined
   const pathname = new URL(request.url).pathname
+  if (request.method === "POST" && pathname.startsWith("/questions/")) {
+    const requestID = decodeURIComponent(pathname.slice("/questions/".length))
+    if (!requestID) return Response.json({ error: "invalid question id" }, { status: 400 })
+    return answer(requestID, await request.json().catch(() => undefined))
+  }
+  if (request.method !== "GET") return undefined
   if (pathname.startsWith("/turns/")) return turnStatusReceipt(store, pathname.slice("/turns/".length))
   if (pathname === "/questions") return questions()
   return undefined

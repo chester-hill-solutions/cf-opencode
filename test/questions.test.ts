@@ -152,3 +152,108 @@ describe("GET /questions", () => {
     expect(await response.json()).toEqual({ questions: [] })
   })
 })
+
+describe("POST /questions/:id", () => {
+  function answeringPlane(runtime: DurableObjectState, client: Client) {
+    return new ConversationControlPlane({
+      storage: runtime.storage,
+      store: new ConversationStore(runtime.storage),
+      withClient: async <T>(fn: (value: Client) => Promise<T>): Promise<T> => fn(client),
+      withAdmissionLock: async <T>(task: () => Promise<T>) => task(),
+      hasPendingRuntimeUpgrade: async () => false,
+      scheduleObservation: async () => {},
+    })
+  }
+
+  function clientWith(calls: { replies: number; forms: number }, formResult: () => Promise<Form | never>): Client {
+    return {
+      permission: {
+        reply: async () => { calls.replies++ },
+        list: async () => [],
+      },
+      session: {
+        form: {
+          list: async () => [],
+          get: formResult,
+          reply: async () => { calls.forms++ },
+          cancel: async () => {},
+        },
+      },
+    } as unknown as Client
+  }
+
+  it("answers a permission once and reports the second answer as not pending", async () => {
+    const stub = env.CONVERSATION.getByName("questions:answer-permission")
+    const result = await runInDurableObject(stub, async (_instance, runtime) => {
+      const calls = { replies: 0, forms: 0 }
+      await runtime.storage.put("state", {
+        phase: "running", sessionID: "ses_q", turnID: "turn_1",
+        pending: { "perm-1": "ses_q", "perm-other": "ses_other" },
+      })
+      const control = answeringPlane(runtime, clientWith(calls, async () => { throw new Error("not a form") }))
+      const first = await control.answerQuestion("perm-1", { decision: "once" })
+      const second = await control.answerQuestion("perm-1", { decision: "once" })
+      const foreign = await control.answerQuestion("perm-other", { decision: "once" })
+      const invalid = await control.answerQuestion("perm-1", {})
+      return {
+        first: first.status,
+        second: { status: second.status, body: await second.json() },
+        foreign: { status: foreign.status, body: await foreign.json() },
+        invalid: invalid.status,
+        replies: calls.replies,
+      }
+    })
+
+    expect(result.first).toBe(204)
+    expect(result.second).toEqual({ status: 409, body: { error: "not_pending" } })
+    expect(result.foreign).toEqual({ status: 409, body: { error: "foreign_turn" } })
+    expect(result.invalid).toBe(400)
+    // The foreign request never reached the runtime.
+    expect(result.replies).toBe(1)
+  })
+
+  it("answers a form question and reports a resolved form as not pending", async () => {
+    const stub = env.CONVERSATION.getByName("questions:answer-form")
+    const result = await runInDurableObject(stub, async (_instance, runtime) => {
+      const calls = { replies: 0, forms: 0 }
+      await runtime.storage.put("state", { phase: "running", sessionID: "ses_q", turnID: "turn_1", pending: {} })
+      let pending = true
+      const client = clientWith(calls, async () => {
+        if (!pending) throw new Error("This question is no longer waiting for an answer.")
+        return form
+      })
+      const control = answeringPlane(runtime, client)
+      const first = await control.answerQuestion("form-1", { answer: { branch: "main" } })
+      pending = false
+      const second = await control.answerQuestion("form-1", { answer: { branch: "main" } })
+      return {
+        first: first.status,
+        second: { status: second.status, body: await second.json() },
+        forms: calls.forms,
+      }
+    })
+
+    expect(result.first).toBe(204)
+    expect(result.second).toEqual({ status: 409, body: { error: "not_pending" } })
+    expect(result.forms).toBe(1)
+  })
+
+  it("requires a token on the public answer route", async () => {
+    const response = await SELF.fetch("https://harness.test/api/conversations/questions:none/questions/perm-1", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision: "once" }),
+    })
+    expect(response.status).toBe(401)
+  })
+
+  it("reports a conversation with no session as stale", async () => {
+    const response = await SELF.fetch("https://harness.test/api/conversations/questions:stale/questions/perm-1", {
+      method: "POST",
+      headers: { authorization: "Bearer test-token", "content-type": "application/json" },
+      body: JSON.stringify({ decision: "once" }),
+    })
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({ error: "stale" })
+  })
+})

@@ -12,6 +12,14 @@ export const KEY_PATTERN = /^[A-Za-z0-9:.\\_-]{1,256}$/
 
 export type SettingsFetch = (path: string, body?: unknown, method?: string) => Promise<Response>
 
+/** Settings DO is global and owns the conversation registry. */
+export async function settingsDo(env: Pick<Env, "SETTINGS">, path: string, body?: unknown, method?: string): Promise<Response> {
+  return env.SETTINGS.getByName("global").fetch(`https://settings${path}`, {
+    method: method ?? (body === undefined ? "GET" : "POST"),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  })
+}
+
 /** The slice of a conversation DO handle a forwarder needs. */
 export interface ConversationHandle {
   fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>
@@ -51,6 +59,15 @@ export function alertsRoute(
   return undefined
 }
 
+/** Shared bearer policy for the API routes served before the main table. */
+function authorizeToken(request: Request, env: Pick<Env, "API_TOKEN">): Response | undefined {
+  if (!env.API_TOKEN) return Response.json({ error: "API_TOKEN is not configured" }, { status: 503 })
+  if (!bearerAuthorized(request.headers.get("authorization") ?? "", env.API_TOKEN)) {
+    return Response.json({ error: "unauthorized" }, { status: 401 })
+  }
+  return undefined
+}
+
 /** The DO handle every Worker route forwards to, stamped with its own key. */
 export function conversationStub(env: Pick<Env, "CONVERSATION">, key: string) {
   const stub = env.CONVERSATION.getByName(key)
@@ -73,12 +90,41 @@ export async function questionsRoute(
   rawKey: string,
   record: () => void,
 ): Promise<Response> {
-  if (!env.API_TOKEN) return Response.json({ error: "API_TOKEN is not configured" }, { status: 503 })
-  if (!bearerAuthorized(request.headers.get("authorization") ?? "", env.API_TOKEN)) {
-    return Response.json({ error: "unauthorized" }, { status: 401 })
-  }
+  const denied = authorizeToken(request, env)
+  if (denied) return denied
   const key = safeDecode(rawKey)
   if (!key || !KEY_PATTERN.test(key)) return Response.json({ error: "invalid conversation key" }, { status: 400 })
   record()
   return conversationStub(env, key).fetch("https://conversation/questions")
+}
+
+function isAnswerRequest(parts: string[]): boolean {
+  return parts.length === 6 && parts[1] === "api" && parts[2] === "conversations" && parts[4] === "questions"
+}
+
+/**
+ * `POST /api/conversations/:key/questions/:id` answers one pending permission
+ * or form question. The conversation decides first-answer-wins; this only
+ * forwards with the same authentication as the rest of the API.
+ */
+export async function answerRoute(
+  request: Request,
+  env: Pick<Env, "API_TOKEN" | "CONVERSATION">,
+  parts: string[],
+  record: () => void,
+): Promise<Response | undefined> {
+  if (!isAnswerRequest(parts)) return undefined
+  const denied = authorizeToken(request, env)
+  if (denied) return denied
+  const key = safeDecode(parts[3] ?? "")
+  const requestID = safeDecode(parts[5] ?? "")
+  if (!key || !requestID || !KEY_PATTERN.test(key)) {
+    return Response.json({ error: "invalid question request" }, { status: 400 })
+  }
+  record()
+  return conversationStub(env, key).fetch(`https://conversation/questions/${encodeURIComponent(requestID)}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: await request.text(),
+  })
 }
