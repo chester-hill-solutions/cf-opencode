@@ -22,6 +22,7 @@ import { handleSlackCanaryRoute } from "./slack-canary"
 import {
   alertsRoute, postRoute, conversationStub, KEY_PATTERN, questionsRoute, safeDecode, settingsDo, turnStatusRoute,
 } from "./worker-routes"
+import { mcpRoute } from "./mcp"
 
 export { Conversation } from "./conversation"
 export { Settings } from "./settings-do"
@@ -54,7 +55,7 @@ export default {
       return handleGithubCallback(request, env, url)
     }
 
-    if (url.pathname.startsWith("/api/")) {
+    if (API_OR_MCP.test(url.pathname)) {
       return apiRoute(request, env, url, ctx)
     }
 
@@ -173,22 +174,18 @@ export default {
  * Conversation DO handle that carries the key with every call. The DO checks
  * this forwarded value against its canonical id name before routing or seeding.
  */
-/**
- * `/api/*` entry point: passive reads first, then the route table. Keeping this
- * indirection means the two large routers do not grow when a read is added.
- */
+const API_OR_MCP = new RegExp("^(?:/api/|/mcp$)")
+
+/** `/api/*` entry point: passive reads first, then the route table. */
 async function apiRoute(request: Request, env: Env, url: URL, ctx: ExecutionContext): Promise<Response> {
+  if (url.pathname === "/mcp") return mcpRoute(request, env, ctx) ?? handleApi(request, env, url, ctx)
   const parts = url.pathname.split("/")
   const key = parts[3] ?? ""
   const record = () => ctx.waitUntil(settingsDo(env, "/conversations", { key }).catch(() => undefined))
-  if (request.method === "GET" && parts.length === 5 && parts[1] === "api" &&
-    parts[2] === "conversations" && parts[4] === "questions") {
-    return questionsRoute(request, env, key, record)
-  }
-  if (request.method === "POST") {
-    const answered = await postRoute(request, env, parts, record)
-    if (answered) return answered
-  }
+  const questions = request.method === "GET" ? await questionsRoute(request, env, parts, record) : undefined
+  if (questions) return questions
+  const posted = request.method === "POST" ? await postRoute(request, env, parts, record) : undefined
+  if (posted) return posted
   return handleApi(request, env, url, ctx)
 }
 

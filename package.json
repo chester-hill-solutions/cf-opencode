@@ -44,10 +44,13 @@
   "dependencies": {
     "@aboiteau/ui": "workspace:*",
     "@chester-hill-solutions/vault": "file:vendor/chester-hill-solutions/vault",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@modelcontextprotocol/server": "2.4.0",
     "@opencode/client": "latest",
     "agents": "0.33.0",
     "react": "19",
-    "react-dom": "19"
+    "react-dom": "19",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@chester-hill-solutions/ratchet-strap": "./tools/vendor/chester-hill-solutions-ratchet-strap-0.6.0.tgz",

@@ -100,6 +100,25 @@ for current persisted state after a reset; that inspection is separate from repl
 and is not an atomic snapshot with a cursor. Heartbeat comments also have no ID.
 Idle connections get a `: heartbeat` comment every 15s.
 
+### MCP connector (optional)
+
+Set `MCP_ENABLED=1` to expose the caller contract as a stateless MCP server at
+`POST /mcp`. It is off by default; `MCP_TOKEN` falls back to `API_TOKEN` so the
+connector can be revoked without breaking the HTTP API.
+
+Tools: `submit`, `status`, `wait`, `read`, `cancel`, `questions`, `answer`.
+`submit` returns a turn immediately — MCP clients time out long before a coding
+turn finishes — and `wait` polls for at most 45 seconds. Every tool takes the
+conversation key explicitly and returns the same payload as the HTTP route.
+
+```sh
+claude mcp add --transport http cf-opencode https://<worker>/mcp \
+  --header "Authorization: Bearer <MCP_TOKEN>"
+```
+
+OpenCode uses the same shape under `mcp` in `opencode.json` (`"type": "remote"`,
+`"url": "https://<worker>/mcp"`, and an `Authorization` header).
+
 ## Slack adapter
 
 Optional. Set `SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN` and `SLACK_BOT_USER_ID`, then point the Slack app at:

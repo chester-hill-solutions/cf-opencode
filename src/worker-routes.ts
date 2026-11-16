@@ -84,15 +84,20 @@ export function conversationStub(env: Pick<Env, "CONVERSATION">, key: string) {
  * `GET /api/conversations/:key/questions`. A read of pending questions; it
  * authenticates like the rest of the API and never starts lifecycle work.
  */
+function isQuestionsRead(parts: string[]): boolean {
+  return parts.length === 5 && parts[1] === "api" && parts[2] === "conversations" && parts[4] === "questions"
+}
+
 export async function questionsRoute(
   request: Request,
   env: Pick<Env, "API_TOKEN" | "CONVERSATION">,
-  rawKey: string,
+  parts: string[],
   record: () => void,
-): Promise<Response> {
+): Promise<Response | undefined> {
+  if (!isQuestionsRead(parts)) return undefined
   const denied = authorizeToken(request, env)
   if (denied) return denied
-  const key = safeDecode(rawKey)
+  const key = safeDecode(parts[3] ?? "")
   if (!key || !KEY_PATTERN.test(key)) return Response.json({ error: "invalid conversation key" }, { status: 400 })
   record()
   return conversationStub(env, key).fetch("https://conversation/questions")
