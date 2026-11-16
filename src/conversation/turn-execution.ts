@@ -7,6 +7,7 @@ import {
 import {
   failureKey,
   isSettled,
+  lastTurnPair,
   latestAssistantReply,
   turnMessages,
   turnFailure,
@@ -70,6 +71,8 @@ export interface ConversationTurnExecutionOptions {
   releaseBudgetReservation(reservation: BudgetReservation): Promise<boolean>
   finalReply?(state: ConversationState, text: string, assistantID?: string): Promise<void>
   waitUntil(promise: Promise<unknown>): void
+  /** Post-turn review of the user prompt and reply. It must never affect settlement. */
+  memoryReview?(turn: { user: string; assistant: string }): void
   telemetry?(input: ConversationTelemetryInput): void
 }
 
@@ -387,6 +390,13 @@ export class ConversationTurnExecution {
         { queueID: queued.id, reason: "turn-settled-queue-wake" },
       )
     })
+    const reviewed = failure || !messages ? undefined : lastTurnPair(messages)
+    if (reviewed) this.options.memoryReview?.(reviewed)
+    this.recordTurnTelemetry(state, failure)
+  }
+
+  /** Count and emit the terminal turn event; nothing here can change settlement. */
+  private recordTurnTelemetry(state: ConversationState, failure?: TurnFailure): void {
     void this.options.delivery.count(failure ? "turn.failed" : "turn.settled")
     const telemetry = {
       event: "turn.settled",
