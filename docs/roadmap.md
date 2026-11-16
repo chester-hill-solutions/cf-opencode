@@ -666,9 +666,14 @@ reply the conversation still retains.
 **Implemented (PR #16).** Stateless `POST /mcp`, off unless `MCP_ENABLED`, with
 `MCP_TOKEN ?? API_TOKEN`; seven tools over the existing conversation routes, so
 an MCP result cannot differ from an HTTP one. `read` reads the turn-correlated
-event log rather than a stored baseline field. Still open for this row:
-deployment with `MCP_ENABLED=1` and a separate `MCP_TOKEN` in **staging**, then
-one conformance session against that endpoint.
+event log rather than a stored baseline field. **Verified (2026-11-16), deployed.** No separate staging Worker exists, so the
+run was against `cf-opencode.chester-hill-solutions.workers.dev` with
+`MCP_ENABLED=1` and its own `MCP_TOKEN`. `tools/list` returned all seven tools
+with `outputSchema`; `submit` dispatched, `wait` reported `completed`, `read`
+returned the assistant reply (`pong`, `replay: retained`), `questions` returned
+an empty list, and a second `cancel` correctly answered `409 already_terminal`.
+The endpoint is live in the only deployment; disabling it is removing
+`MCP_ENABLED`.
 
 The shared bearer token is a **pilot stopgap**, not the target design. Cloudflare
 documents remote MCP authorization as OAuth 2.1 (`OAuthAuthorizationServer` /
