@@ -176,6 +176,13 @@ export async function passiveReadRoute(
   return undefined
 }
 
+/** Whether this conversation still holds a replayable frame for the turn. */
+async function turnOutput(store: ConversationStore, turn: TurnRecord) {
+  const retained = (await store.eventsAfter(0)).some((entry) => entry.event.turnID === turn.id)
+  if (retained) return { available: true, replay: "retained" as const }
+  return { available: false, replay: turn.startedAt ? "expired" as const : "none" as const }
+}
+
 export async function turnStatusReceipt(store: ConversationStore, rawID: string): Promise<Response> {
   let id: string
   try {
@@ -187,5 +194,10 @@ export async function turnStatusReceipt(store: ConversationStore, rawID: string)
   const turn = await store.getTurn(id)
   if (!turn) return Response.json({ error: "unknown_turn" }, { status: 404 })
   const state = await store.get()
-  return Response.json({ turn: publicTurn(turn, { activeReservationID: state.budgetReservation?.reservationID }) })
+  return Response.json({
+    turn: {
+      ...publicTurn(turn, { activeReservationID: state.budgetReservation?.reservationID }),
+      output: await turnOutput(store, turn),
+    },
+  })
 }

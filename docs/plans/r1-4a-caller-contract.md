@@ -163,9 +163,11 @@ status read never claims more than the event log holds.
 `410 turn_expired` is returned once the turn record is pruned; `404` is only for
 an id that never existed.
 
-**Implementation note (first slice).** Status serves identity, lifecycle,
-configuration, accounting state and cancellation state. `output` and per-turn
-USD amounts are omitted until §5.5 correlates events with `turnID`; `accounting`
+**Implementation notes.** Status serves identity, lifecycle, configuration,
+accounting state, cancellation state and output availability. Replayable frames
+carry `turnID`, so `output.replay` reports `retained` while the 200-event log
+still holds a frame for that turn, `expired` once it does not, and `none` for a
+turn that never produced one. Per-turn USD amounts remain out: `accounting`
 reports `held` / `settled` / `unknown` only, never an invented figure. Steer and
 interrupt still answer with the active turn reference added, and gain their own
 turn records with the delivery-mode follow-up.

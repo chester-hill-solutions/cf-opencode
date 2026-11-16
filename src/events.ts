@@ -5,13 +5,16 @@
  * posts messages, HTTP streams them as SSE.
  */
 
-export type ConversationEvent =
+type ConversationEventBody =
   | { type: "assistant"; text: string }
   | { type: "settled" }
   | { type: "steered"; sessionID: string }
   | { type: "permission"; requestID: string; action?: string; resources?: string[] }
   | { type: "error"; message: string }
   | { type: "reset" }
+
+/** Every replayable frame names the turn that produced it, when one exists. */
+export type ConversationEvent = ConversationEventBody & { turnID?: string }
 
 /** A subscriber this far behind (bytes queued) is dropped instead of buffered. */
 export const SLOW_SUBSCRIBER_BYTES = -64 * 1024
