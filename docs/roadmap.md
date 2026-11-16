@@ -653,9 +653,16 @@ Submit-side rate limiting reuses `enforceRateLimit` and every tool call is logge
 
 Locked defaults: `conversation` is a required argument on every tool, with no
 environment default, so one connector can drive several conversations without
-hidden routing; `wait` caps at 45 s with 1 s polls; `read` ships in v1 and
-returns the assistant reply produced after the turn's stored baseline, so an
-offloaded turn is readable before §5.5 event correlation lands.
+hidden routing; `wait` caps at 45 s with 1 s polls; `read` returns the assistant
+reply the conversation still retains.
+
+**Implemented (PR #16).** Stateless `POST /mcp`, off unless `MCP_ENABLED`, with
+`MCP_TOKEN ?? API_TOKEN`; seven tools over the existing conversation routes, so
+an MCP result cannot differ from an HTTP one. `read` reads the turn-correlated
+event log rather than a stored baseline field. Still open for this row:
+deployment with the two env values and a conformance run against a deployed
+endpoint. The connector remains optional G1-C evidence — a deployment without
+MCP must still pass that gate.
 
 **R0-15 — one storage cutover, on the current artifacts.**
 Re-state provenance: all earlier C1/C2 evidence used Stow 0.3.7 and `standard-1`;
