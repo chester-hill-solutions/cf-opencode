@@ -119,6 +119,22 @@ claude mcp add --transport http cf-opencode https://<worker>/mcp \
 OpenCode uses the same shape under `mcp` in `opencode.json` (`"type": "remote"`,
 `"url": "https://<worker>/mcp"`, and an `Authorization` header).
 
+### Reference CLI
+
+`bun run cli -- <command>` is the non-Slack reference client (R1-4c). It uses
+only the public HTTP surface; set `CF_OPENCODE_URL` and `API_TOKEN`.
+
+```sh
+bun run cli -- submit --conversation demo --text "fix the failing test"
+bun run cli -- wait   --conversation demo --turn turn_…
+bun run cli -- read   --conversation demo --turn turn_…
+bun run cli -- cancel --conversation demo --turn turn_…
+bun run cli -- questions --conversation demo
+bun run cli -- answer --conversation demo --question <id> --decision once
+```
+
+Output is JSON on stdout; a contract error exits non-zero with its status and code.
+
 ## Slack adapter
 
 Optional. Set `SLACK_SIGNING_SECRET`, `SLACK_BOT_TOKEN` and `SLACK_BOT_USER_ID`, then point the Slack app at:
