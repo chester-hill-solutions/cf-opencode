@@ -8,9 +8,6 @@
   "workspaces": [
     "packages/ui"
   ],
-  "overrides": {
-    "@chester-hill-solutions/dev-guards": "./tools/vendor/chester-hill-solutions-dev-guards-0.1.0.tgz"
-  },
   "scripts": {
     "dev": "wrangler dev",
     "build:ui": "bun scripts/build-ui.ts",
@@ -54,7 +51,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@chester-hill-solutions/ratchet-strap": "./tools/vendor/chester-hill-solutions-ratchet-strap-0.6.0.tgz",
+    "@chester-hill-solutions/ratchet-strap": "0.6.2",
     "@cloudflare/vitest-plugin": "^1.6.0",
     "@cloudflare/workers-types": "^5.20261107.1",
     "@eslint/js": "9",
