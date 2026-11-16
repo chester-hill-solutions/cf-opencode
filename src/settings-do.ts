@@ -10,6 +10,8 @@ import { workspaceID } from "./vault"
 import { vaultOrErrorResponse } from "./vault-access"
 import { prepareVaultRecords } from "./vault-records"
 import { decideSecretRead } from "./secret-read-policy"
+import { memoryRoute } from "./memory"
+import { canaryThreadRoute } from "./slack-thread-ownership"
 import { evaluateAlerts } from "./alerts"
 import { decideContainerLease } from "./leases"
 import type { Env } from "./env"
@@ -67,24 +69,7 @@ export class Settings extends DurableObject<Env> {
 
   private async handle(request: Request): Promise<Response> {
     const url = new URL(request.url)
-    if (url.pathname === "/slack/canary-thread" && request.method === "POST") {
-      const body = await request.json() as { action?: unknown; channel?: unknown; threadTs?: unknown }
-      if (!body || typeof body !== "object" || Object.keys(body).length !== 3 ||
-        (body.action !== "claim" && body.action !== "lookup") || typeof body.channel !== "string" || !/^[A-Z0-9]{1,64}$/.test(body.channel) ||
-        typeof body.threadTs !== "string" || !/^\d{1,20}\.\d{1,20}$/.test(body.threadTs)) return Response.json({ error: "invalid thread ownership" }, { status: 400 })
-      const key = `slackCanaryThread:${body.channel}:${body.threadTs}`
-      const stored = await this.ctx.storage.get<unknown>(key)
-      if (stored !== undefined) {
-        const row = stored as Record<string, unknown>
-        if (!row || typeof row !== "object" || Array.isArray(row) || Object.keys(row).sort().join(",") !== "channel,claimedAt,threadTs" ||
-          row.channel !== body.channel || row.threadTs !== body.threadTs || !Number.isSafeInteger(row.claimedAt) || (row.claimedAt as number) < 0) {
-          return Response.json({ error: "thread ownership unavailable" }, { status: 503 })
-        }
-        return Response.json({ owned: true })
-      }
-      if (body.action === "claim") await this.ctx.storage.put(key, { channel: body.channel, threadTs: body.threadTs, claimedAt: Date.now() })
-      return Response.json({ owned: body.action === "claim" })
-    }
+    if (url.pathname === "/slack/canary-thread" && request.method === "POST") return canaryThreadRoute(this.ctx.storage, request)
     if (url.pathname === "/check-conversations" && request.method === "GET") {
       const cursor = url.searchParams.get("cursor") ?? ""
       if (cursor && !/^[A-Za-z0-9:.\\_-]{1,256}$/.test(cursor)) return Response.json({ error: "invalid cursor" }, { status: 400 })
@@ -387,11 +372,7 @@ export class Settings extends DurableObject<Env> {
     }
 
     if (url.pathname === "/usage/reserve" && request.method === "POST") {
-      const body = (await request.json()) as {
-        conversationID?: unknown
-        reservationID?: unknown
-        costUSD?: unknown
-      }
+      const body = (await request.json()) as { conversationID?: unknown; reservationID?: unknown; costUSD?: unknown }
       if (
         typeof body.conversationID !== "string" ||
         body.conversationID.length === 0 ||
@@ -700,6 +681,7 @@ export class Settings extends DurableObject<Env> {
 
     // Secrets are encrypted with the CHS vault. Values never leave the DO
     // unless a trusted caller asks for a specific key by name.
+    if (url.pathname === "/memory") return memoryRoute(this.ctx.storage, request)
     if (url.pathname === "/secrets" && request.method === "GET") {
       const vault = this.vaultOrError()
       if (vault instanceof Response) return vault

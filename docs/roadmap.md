@@ -1707,8 +1707,8 @@ feature claim: [GitHub workflow](https://docs.github.com/en/copilot/how-tos/copi
 
 ### 5.8 Memory — soul, team, user, and a decision filter
 
-**Authority and status.** User-directed, 2026-11-16. Design settled; MEM-1 implemented
-and deployed 2026-11-16 (inert until a decision credential is set). Not a general memory platform, transcript search or context engine:
+**Authority and status.** User-directed, 2026-11-16. Design settled. MEM-1 deployed
+2026-11-16 (inert until a decision credential is set); MEM-2 shipped 2026-11-16. Not a general memory platform, transcript search or context engine:
 the session already owns compaction, and nothing here replaces it. Provider research
 and API shapes: [decision-model providers](evidence/decision-model-providers-2026-11-16.md).
 
@@ -1742,7 +1742,7 @@ harness, not through `src/provider-egress.ts`, which is chat-only by design.
 | Slice | Depends | Work | Done when |
 |---|---|---|---|
 | **MEM-1 / M — decision port** | **IMPLEMENTED**; live proof pending `DECISION_API_KEY` | `DecisionPort` (`decide({state, questions})` → typed answers) with the System One adapter on OpenCode Console, `rules` fallback, and shadow recording. No host is hardcoded; the credential comes from the vault. | One real turn produces a `Noul` answer with probability and latency recorded; provider failure yields no decision and no turn impact; adapters pass shared fixtures. |
-| **MEM-2 / M — memory + soul** | MEM-1 | Soul constant; bounded team and user records in the Settings DO with provenance, caps, dedupe and injection scan; `!remember`/`!memory`/`!forget` (cold-capable, harness-only); `buildPrompt` injection in fixed order. | `!memory` answers with no execution running; soul/team/user appear in prompt order; cap overflow errors instead of evicting; no memory reaches the prompt as an instruction. |
+| **MEM-2 / M — memory + soul** | **DONE locally, 2026-11-16** — Soul constant; bounded team and user records in the Settings DO with provenance, caps, dedupe and injection scan; `!remember`/`!memory`/`!forget` (cold-capable, harness-only); `buildPrompt` injection in fixed order. | `!memory` answers with no execution running; soul/team/user appear in prompt order; cap overflow errors instead of evicting; no memory reaches the prompt as an instruction. |
 | **MEM-3 / S — gated writes** | MEM-2 + shadow evidence | Candidate queue with `!memory pending`/`approve`/`reject`; unattended user-scope writes only after a shadow review shows acceptable precision. | Shadow decisions are reviewed against hand labels; auto-write stays off until that review is recorded. |
 
 **Open questions.** Whether the existing Console key authorises `/systemone`;

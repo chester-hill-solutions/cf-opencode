@@ -2,9 +2,9 @@
   "version": 1,
   "counts": {
     "scripts/stow-s3-probe.ts": 6,
-    "src/conversation.ts": 644,
+    "src/conversation.ts": 643,
     "src/index.ts": 50,
-    "src/settings-do.ts": 828,
+    "src/settings-do.ts": 810,
     "test/container-image.test.ts": 79
   }
 }

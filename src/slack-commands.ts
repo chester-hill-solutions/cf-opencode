@@ -19,6 +19,7 @@ import {
   type Form,
   type FormAnswer,
 } from "./slack-forms"
+import type { MemoryEntry, MemoryScope } from "./memory"
 import type { TurnObservation } from "./turn-observation"
 import { parseWorkspaceRepositoryBinding } from "./workspace-repository"
 import { handleSlackWorkspaceCommand, readSlackWorkspaceProfile, type SlackWorkspaceCommandServices } from "./slack-workspace-commands"
@@ -53,6 +54,12 @@ export interface SlackCommandServices {
   answerForm(sessionID: string, formID: string, answer: FormAnswer): Promise<void>
   cancelForm(sessionID: string, formID: string): Promise<void>
   usageText(): Promise<string>
+  /** Team and user memory; absent when the harness has no store wired. */
+  memory?: {
+    context(): Promise<{ team: MemoryEntry[]; user: MemoryEntry[] }>
+    remember(scope: MemoryScope, text: string): Promise<MemoryResult>
+    forget(scope: MemoryScope, index: number): Promise<MemoryResult>
+  }
   reply(text: string): Promise<void>
   setupUrl: string
   workspace?: SlackWorkspaceCommandServices
@@ -61,6 +68,7 @@ export interface SlackCommandServices {
 type Reply = (message: string) => Promise<void>
 type CommandHandler = (name: string, args: string, services: SlackCommandServices, reply: Reply) => Promise<void>
 type ConversationState = Awaited<ReturnType<SlackCommandServices["getState"]>>
+type MemoryResult = { ok: true; entry: MemoryEntry } | { ok: false; error: string }
 type SessionDetail = Awaited<ReturnType<SlackCommandServices["getSession"]>>
 
 const SESSION_DIRECTORY = "/workspace"
@@ -82,6 +90,8 @@ const HELP = [
   "• `!new` — start a fresh session",
   "• `!leave` — detach this thread; in DMs, use `!new` for a fresh session",
   "• `!usage` — show usage information",
+  "• `!remember <text>` — keep a note about you; `!remember team <text>` keeps it for everyone",
+  "• `!memory` — list what is remembered; `!forget [team] <n>` removes one entry",
   "• Workspace first — durable projects, scripts, analysis, documents and prototypes may start blank and remain repository-free permanently. Keeping work requires no git initialization, commit or remote.",
   "• `!workspace` — show retention and name; persistent is the default",
   "• `!workspace persistent [name]` / `!workspace disposable [name]` — name or change retention in place; files and session are preserved",
@@ -431,6 +441,70 @@ async function replyStatus(_name: string, _args: string, services: SlackCommandS
   await reply(lines.join("\n"))
 }
 
+async function replyRemember(_name: string, args: string, services: SlackCommandServices, reply: Reply): Promise<void> {
+  const memory = await requireMemory(services, reply)
+  if (!memory) return
+  const { scope, text } = rememberScope(args)
+  if (!text) {
+    await reply("Use `!remember <something>` or `!remember team <something>`.")
+    return
+  }
+  const result = await memory.remember(scope, text)
+  if (!result.ok) {
+    await reply(`⚠️ ${result.error}`)
+    return
+  }
+  await reply(scope === "team" ? `🧠 Remembered for the team: ${result.entry.text}` : `🧠 Noted: ${result.entry.text}`)
+}
+
+/** Memory or an honest refusal; every memory command shares this guard. */
+async function requireMemory(services: SlackCommandServices, reply: Reply): Promise<NonNullable<SlackCommandServices["memory"]> | undefined> {
+  const memory = services.memory
+  if (!memory) await reply("Memory is unavailable here.")
+  return memory
+}
+
+/** "team" is the only scope keyword; everything else is a personal note. */
+function rememberScope(args: string): { scope: MemoryScope; text: string } {
+  const match = /^team\s+([\s\S]+)$/i.exec(args.trim())
+  return match?.[1] ? { scope: "team", text: match[1] } : { scope: "user", text: args.trim() }
+}
+
+async function replyMemory(_name: string, _args: string, services: SlackCommandServices, reply: Reply): Promise<void> {
+  const memory = await requireMemory(services, reply)
+  if (!memory) return
+  const { team, user } = await memory.context()
+  const lines = ["*Memory*"]
+  if (!team.length && !user.length) lines.push("Nothing is remembered yet.")
+  lines.push(memorySection("Team", team), memorySection("You", user))
+  lines.push("`!remember <text>` adds a note; `!remember team <text>` shares it. `!forget <n>` removes one.")
+  await reply(lines.filter((line) => line.length > 0).join("\n"))
+}
+
+function memorySection(title: string, entries: MemoryEntry[]): string {
+  if (!entries.length) return ""
+  return [`\n*${title}*`, ...entries.map((entry, index) => `${index + 1}. ${entry.text}`)].join("\n")
+}
+
+async function replyForget(_name: string, args: string, services: SlackCommandServices, reply: Reply): Promise<void> {
+  const memory = await requireMemory(services, reply)
+  if (!memory) return
+  const target = forgetTarget(args)
+  if (!target) {
+    await reply("Use `!forget <n>` or `!forget team <n>`, where n is the number `!memory` shows.")
+    return
+  }
+  const result = await memory.forget(target.scope, target.index)
+  await reply(result.ok ? `🧽 Forgot: ${result.entry.text}` : `⚠️ ${result.error}`)
+}
+
+function forgetTarget(args: string): { scope: MemoryScope; index: number } | undefined {
+  const match = /^(?:(team)\s+)?(\d{1,3})$/i.exec(args.trim())
+  const index = Number(match?.[2])
+  if (!match?.[2] || !Number.isSafeInteger(index) || index < 1) return undefined
+  return { scope: match[1] ? "team" : "user", index }
+}
+
 async function replyForm(name: string, args: string, services: SlackCommandServices, reply: Reply): Promise<void> {
   const state = await services.getState()
   if (!state.sessionID) {
@@ -480,6 +554,9 @@ const COMMANDS: Record<string, CommandHandler> = {
   status: replyStatus,
   answer: replyForm,
   cancel: replyForm,
+  remember: replyRemember,
+  memory: replyMemory,
+  forget: replyForget,
   workspace: replyWorkspace,
   repo: replyWorkspace,
   check: replyWorkspace,

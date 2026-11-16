@@ -513,7 +513,6 @@
       "src/conversation/scheduler.ts:complexity:Async arrow function has a complexity of 16. Maximum allowed is 10.#1",
       "src/conversation/scheduler.ts:complexity:Async method 'rehydrateConversationJobs' has a complexity of 23. Maximum allowed is 10.#1",
       "src/conversation/sessions.ts:complexity:Async method 'ensure' has a complexity of 20. Maximum allowed is 10.#1",
-      "src/conversation/slack-adapter.ts:complexity:Async method 'buildPrompt' has a complexity of 16. Maximum allowed is 10.#1",
       "src/conversation/slack-adapter.ts:complexity:Async method 'onEvent' has a complexity of 73. Maximum allowed is 10.#1",
       "src/conversation/telemetry.ts:complexity:Function 'emitConversationTelemetry' has a complexity of 22. Maximum allowed is 10.#1",
       "src/conversation/turn-execution.ts:complexity:Arrow function has a complexity of 24. Maximum allowed is 10.#1",

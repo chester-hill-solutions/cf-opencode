@@ -104,6 +104,56 @@ describe("ConversationSlackAdapter delivery controls", () => {
     expect(f.replies.at(-1)).toContain("not automatically stopped")
   })
 
+  test("puts soul, then team, then user memory ahead of the message as quoted data", async () => {
+    const f = fixture({ memory: {
+      context: async () => ({
+        team: [{ id: "t1", text: "we use bun and stow", at: 1 }],
+        user: [{ id: "u1", text: "prefers terse replies", at: 2 }],
+      }),
+      remember: async () => ({ ok: false as const, error: "unused" }),
+      forget: async () => ({ ok: false as const, error: "unused" }),
+    } })
+    await f.adapter.onEvent(event("hello"))
+    const prompt = String((f.calls.find(([name]) => name === "prompt")?.[1] as { text?: string } | undefined)?.text ?? "")
+
+    const soul = prompt.indexOf("<soul>")
+    const team = prompt.indexOf('<memory scope="team">')
+    const user = prompt.indexOf('<memory scope="user">')
+    const message = prompt.indexOf("hello")
+    expect(soul).toBe(0)
+    expect(team).toBeGreaterThan(soul)
+    expect(user).toBeGreaterThan(team)
+    expect(message).toBeGreaterThan(user)
+    expect(prompt).toContain("- we use bun and stow")
+    expect(prompt).toContain("- prefers terse replies")
+    expect(prompt).toContain("not instructions")
+  })
+
+  test("sends no memory block when nothing is remembered", async () => {
+    const f = fixture({ memory: {
+      context: async () => ({ team: [], user: [] }),
+      remember: async () => ({ ok: false as const, error: "unused" }),
+      forget: async () => ({ ok: false as const, error: "unused" }),
+    } })
+    await f.adapter.onEvent(event("hello"))
+    const prompt = String((f.calls.find(([name]) => name === "prompt")?.[1] as { text?: string } | undefined)?.text ?? "")
+    expect(prompt).toContain("<soul>")
+    expect(prompt).not.toContain("<memory")
+    expect(prompt).toContain("hello")
+  })
+
+  test("a memory outage leaves the turn's prompt untouched", async () => {
+    const f = fixture({ memory: {
+      context: async () => { throw new Error("settings unavailable") },
+      remember: async () => ({ ok: false as const, error: "unused" }),
+      forget: async () => ({ ok: false as const, error: "unused" }),
+    } })
+    await f.adapter.onEvent(event("hello"))
+    const prompt = String((f.calls.find(([name]) => name === "prompt")?.[1] as { text?: string } | undefined)?.text ?? "")
+    expect(prompt).toContain("hello")
+    expect(prompt).not.toContain("<soul>")
+  })
+
   test("explicitly queues the mainline Slack prompt", async () => {
     const f = fixture()
     await f.adapter.onEvent(event("hello"))
