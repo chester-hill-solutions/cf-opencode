@@ -229,9 +229,24 @@ export class ConversationAdmissions {
     void this.options.delivery.count("queue.enqueued")
     this.emitLifecycle({ event: "queue.enqueued", result: "scheduled", reasonCode: "queued" })
     if (slack) {
-      await this.options.delivery.postChunked(slack.channel, "⏳ Container busy — queued; I'll retry shortly.", slack.replyTs).catch(() => {})
+      await this.options.delivery.postChunked(slack.channel, await this.queuedNotice(), slack.replyTs).catch(() => {})
     }
     return outcome
+  }
+
+  /**
+   * What a queued message is actually waiting for. A paused settlement retains
+   * a dispatched reservation, which blocks every drain, so promising a retry
+   * there would name work nothing is going to do.
+   */
+  private async queuedNotice(): Promise<string> {
+    const state = await this.options.store.get().catch(() => undefined)
+    if (!state?.settlementError || !state.budgetReservation?.dispatched) {
+      return "⏳ Container busy — queued; I'll retry shortly."
+    }
+    return "⏳ Queued, but this thread is waiting on an unsettled previous turn " +
+      `(${state.settlementError}). It will not start on its own: that turn has to settle first. ` +
+      "`!status` shows the details."
   }
 
   async scheduleQueuedRetry(

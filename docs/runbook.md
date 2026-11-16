@@ -414,6 +414,32 @@ No live recovery action, deployment or production cutover has been performed by
 the local implementation work. Release/acquisition handling must roll out together
 after the existing staging/container checks.
 
+### Missing evented proof
+
+`AccountingPolicyError: evented canary runtime did not confirm persistent events`
+means the container answered `/start` with `accountingPolicy` and an OpenCode
+generation but without `eventPersistence: true`. A queued message retries five
+times, then replies `Couldn't start the session`; the conversation stays bound to
+the evented image and repeats the refusal on every later message.
+
+Every control-server build that can return `accountingPolicy` also reports
+`eventPersistence` on a successful start, because `startOpencode()` sets it after
+`/api/info` readiness. A missing field therefore means the process that answered
+is not the expected control server. Check, in order:
+
+1. `container.proof.missing_event_persistence` logs the `configuredEventedImage`
+   and the `proofFields` that did arrive. A proof without `eventPersistence` but
+   with `accountingPolicy` is a version skew, not a transient failure.
+2. The pinned `containers[].images.evented` digest in `wrangler.jsonc` — rebuild
+   and re-pin it from the deployed commit. A hand-built or stale digest is the
+   usual cause.
+3. `CONTAINER_URL` as a Worker secret. When it is set, the control server is an
+   external process and can answer from a different build than the pinned image.
+
+Nothing in Slack clears this: `!stop` interrupts the turn but settlement still
+needs the runtime, and the recovery API's `retry` releases no hold. Fix the image
+or the endpoint, then let the held turn settle before resending.
+
 ## Metrics
 
 `GET /api/metrics` returns today's counters, incremented by the conversation DOs:
@@ -568,6 +594,7 @@ cannot be exported over OTLP.
 | `checkpoint.saved` / `checkpoint.skipped` / `checkpoint.failed` | `bytes` |
 | `checkpoint.retry` / `checkpoint.recovered` / `checkpoint.abandoned` | `attempts` |
 | `admission.failed` / `admission.stale` / `settlement.stale` | `transport`, `durationMs` |
+| `container.proof.missing_event_persistence` | `proofFields`, `configuredEventedImage` |
 | `container.recycled` | — |
 
 ```sh

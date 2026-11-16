@@ -399,4 +399,67 @@ describe("Conversation Lifecycle job cutover", () => {
     expect(result.claim).toEqual(result.expectedClaim)
     expect(result.bootstrapPresent).toBe(false)
   })
+
+  it("polls a paused settlement slowly once the turn has outlived its timeout", async () => {
+    const stub = env.CONVERSATION.getByName("C1:jobs-paused-settlement-backoff")
+    const result = await runInDurableObject(stub, async (instance, runtime) => {
+      instance.transport = observationTransport({ count: 0 })
+      await runtime.storage.put("state", {
+        phase: "running",
+        runStartedAt: Date.now() - 26 * 60_000,
+        sessionID: "ses_existing",
+        budgetReservation: { reservationID: "backoff-hold", date: "2026-11-14", dispatched: true },
+        seen: [],
+        pending: {},
+      } satisfies ConversationState)
+      await startLegacyBootstrap(instance, runtime.storage)
+      await driveConversationJobs(instance, runtime.storage, ["turn:observe"])
+      await driveConversationJobs(instance, runtime.storage, ["turn:observe"])
+      const job = runtime.storage.sql.exec<{ time: number }>(
+        "SELECT time FROM cf_agents_jobs WHERE id = ?",
+        "turn:observe",
+      ).toArray()[0]
+      return { state: await runtime.storage.get<ConversationState>("state"), jobTime: job?.time }
+    })
+    expect(result.state?.settlementError).toContain("time limit")
+    expect(result.jobTime).toBeGreaterThan(Date.now() + 30_000)
+  })
+
+  it("does not retry a queue blocked by a held dispatched turn every two seconds", async () => {
+    const stub = env.CONVERSATION.getByName("C1:jobs-blocked-queue-backoff")
+    const result = await runInDurableObject(stub, async (instance, runtime) => {
+      instance.transport = (port) => ({
+        async fetch(input: Request | string | URL): Promise<Response> {
+          const request = input instanceof Request ? input : new Request(input)
+          const url = new URL(request.url)
+          if (port === 4001) {
+            if (url.pathname === "/status") return Response.json({ initialized: true })
+            if (url.pathname === "/start") return Response.json({ error: "container unavailable" }, { status: 503 })
+            return Response.json({ ok: true })
+          }
+          return Response.json({ data: {} })
+        },
+      })
+      const queued = await instance.fetch(new Request("https://conversation/message", {
+        method: "POST",
+        body: JSON.stringify({ text: "wait for the held turn" }),
+      }))
+      expect(queued.status).toBe(202)
+      const before = await runtime.storage.get<ConversationState>("state")
+      await runtime.storage.put("state", {
+        ...(before ?? {}),
+        seen: before?.seen ?? [],
+        pending: before?.pending ?? {},
+        budgetReservation: { reservationID: "held-turn", date: "2026-11-14", dispatched: true },
+      } satisfies ConversationState)
+      await driveConversationJobs(instance, runtime.storage, ["admission:retry"], { queued: true })
+      const job = runtime.storage.sql.exec<{ time: number }>(
+        "SELECT time FROM cf_agents_jobs WHERE id = ?",
+        "admission:retry",
+      ).toArray()[0]
+      return { state: await runtime.storage.get<ConversationState>("state"), jobTime: job?.time }
+    })
+    expect(result.state?.queue?.[0]).toBeDefined()
+    expect(result.jobTime).toBeGreaterThan(Date.now() + 30_000)
+  })
 })

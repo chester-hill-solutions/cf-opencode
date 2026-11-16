@@ -17,6 +17,26 @@ const OPENCODE_PORT = 4000
 const CONTROL_PORT = 4001
 const ONBOARDING_KEY = "onboarding"
 
+/**
+ * Every control-server build that can return `accountingPolicy` also reports
+ * `eventPersistence` on a successful start, so a missing field means the
+ * container that answered is not running the expected control server: a stale
+ * or hand-built evented image, or a mismatched endpoint. Report which image was
+ * configured and which fields did arrive, then keep the accounting refusal.
+ */
+function missingEventPersistence(
+  conversationID: string,
+  proof: Record<string, unknown> | undefined,
+  container: RuntimeContainer | undefined,
+): AccountingPolicyError {
+  logEvent("container.proof.missing_event_persistence", {
+    conversationID,
+    proofFields: Object.keys(proof ?? {}).sort(),
+    configuredEventedImage: container?.images?.evented,
+  })
+  return new AccountingPolicyError("evented canary runtime did not confirm persistent events")
+}
+
 type RuntimeContainer = NonNullable<DurableObjectState["container"]>
 type OpenCodeClient = ReturnType<typeof makeClient>
 type ReadinessEnv = Pick<Env,
@@ -265,7 +285,7 @@ export class ConversationReadiness {
     }
     // Proof fields are committed together only after policy verification succeeds.
     if (this.options.runtime.imageVariant === "evented" && proof.eventPersistence !== true) {
-      throw new AccountingPolicyError("evented canary runtime did not confirm persistent events")
+      throw missingEventPersistence(this.options.identity.id, proof, container)
     }
     if (repository) {
       try {

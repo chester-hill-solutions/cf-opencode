@@ -6,6 +6,37 @@ import { ConversationStore } from "../src/state"
 import type { ConversationTelemetryEnvelope } from "../src/conversation/telemetry"
 
 describe("runtime and admission lifecycle telemetry", () => {
+  /** Shared admission wiring; only the observable seams differ per test. */
+  function makeAdmissions(
+    runtime: { id: DurableObjectId; storage: DurableObjectStorage },
+    hooks: {
+      store: ConversationStore
+      telemetry?(event: ConversationTelemetryEnvelope): void
+      scheduled?(kind: string): void
+      posted?(text: string): void
+    },
+  ): ConversationAdmissions {
+    return new ConversationAdmissions({
+      conversationID: runtime.id.toString(),
+      ...(hooks.telemetry ? { telemetry: hooks.telemetry } : {}),
+      storage: runtime.storage,
+      store: hooks.store,
+      budgetReservations: {} as never,
+      session: { ensure: async () => "ses-telemetry", baseline: async () => undefined },
+      recovery: { active: () => false, pumping: () => false, pendingUpgrade: async () => false },
+      jobs: { schedule: async (kind) => { hooks.scheduled?.(kind) } },
+      prompt: async () => {},
+      settings: async () => ({ streaming: false }),
+      delivery: {
+        event: async () => {},
+        postChunked: async (_channel, text) => { hooks.posted?.(text) },
+        count: async () => {},
+      },
+      startStream: async () => {},
+      waitUntil: () => {},
+    })
+  }
+
   it("emits native start and confirmed stop events with stable fields", async () => {
     const stub = env.CONVERSATION.getByName("C1:runtime-telemetry-start-stop")
     const events = await runInDurableObject(stub, async (_instance, runtime) => {
@@ -59,22 +90,10 @@ describe("runtime and admission lifecycle telemetry", () => {
       const emitted: ConversationTelemetryEnvelope[] = []
       const sequence: string[] = []
       const store = new ConversationStore(runtime.storage)
-      const admissions = new ConversationAdmissions({
-        conversationID: runtime.id.toString(),
-        telemetry: (event) => { emitted.push(event); sequence.push(`event:${event.event}`) },
-        storage: runtime.storage,
+      const admissions = makeAdmissions(runtime, {
         store,
-        budgetReservations: {} as never,
-        session: { ensure: async () => "ses-telemetry", baseline: async () => undefined },
-        recovery: { active: () => false, pumping: () => false, pendingUpgrade: async () => false },
-        jobs: {
-          schedule: async (kind) => { sequence.push(`job:${kind}`) },
-        },
-        prompt: async () => {},
-        settings: async () => ({ streaming: false }),
-        delivery: { event: async () => {}, postChunked: async () => {}, count: async () => {} },
-        startStream: async () => {},
-        waitUntil: () => {},
+        telemetry: (event) => { emitted.push(event); sequence.push(`event:${event.event}`) },
+        scheduled: (kind) => { sequence.push(`job:${kind}`) },
       })
 
       const claimed = await admissions.claim()
@@ -105,6 +124,26 @@ describe("runtime and admission lifecycle telemetry", () => {
     expect(events.emitted[4]).toMatchObject({ result: "settled", reasonCode: "dispatch_ambiguous" })
     expect(events.sequence.indexOf("job:turn:observe")).toBeLessThan(events.sequence.indexOf("event:turn.started"))
     expect(events.state.phase).toBe("running")
+  })
+
+  it("does not promise a retry while the previous turn is unsettled", async () => {
+    const stub = env.CONVERSATION.getByName("C1:queue-notice-paused-settlement")
+    const posted = await runInDurableObject(stub, async (_instance, runtime) => {
+      const replies: string[] = []
+      const store = new ConversationStore(runtime.storage)
+      const admissions = makeAdmissions(runtime, { store, posted: (text) => { replies.push(text) } })
+      const slack = { channel: "C1", replyTs: "1.1" }
+      await admissions.enqueue("first", slack)
+      await store.patch({
+        settlementError: "turn exceeded its time limit; dispatched reservation retained while context is checked",
+        budgetReservation: { reservationID: "held-turn", date: "2026-11-14", dispatched: true },
+      })
+      await admissions.enqueue("second", slack)
+      return replies
+    })
+    expect(posted[0]).toContain("I'll retry shortly")
+    expect(posted[1]).toContain("waiting on an unsettled previous turn")
+    expect(posted[1]).not.toContain("I'll retry shortly")
   })
 
   it("does not report a failed native destroy as stopped", async () => {
