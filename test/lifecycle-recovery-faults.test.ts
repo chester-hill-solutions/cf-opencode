@@ -202,8 +202,11 @@ describe("Conversation recovery fault regressions", () => {
       usageExecution: { startedSeq: 8, terminalSeq: 5, latestStepSeq: 7 },
       usageCursor: { seq: 5 },
     })
-    expect(result.jobs).toHaveLength(1)
-    expect(result.jobs[0]).toMatchObject({
+    // Startup may restore unrelated lifecycle jobs; the duplicate retry must
+    // still produce exactly one recovery wake, not a second queued row.
+    const wakes = result.jobs.filter((job) => job.id === "recovery:wake")
+    expect(wakes).toHaveLength(1)
+    expect(wakes[0]).toMatchObject({
       id: "recovery:wake",
       fn: "recoveryWake",
       payload: { reservationID: "reservation-sealed-recovery", sessionID: "ses_sealed_recovery" },
