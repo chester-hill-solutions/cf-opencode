@@ -1,6 +1,6 @@
 # R1-4a caller contract — inventory and frozen proposal
 
-> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is the contract proposal awaiting sign-off; its six decisions and acceptance matrix are folded into roadmap W3. The roadmap controls sequencing and gate status.
+> **Not a planning authority.** The single canonical plan is [docs/roadmap.md](../roadmap.md). This document is the contract proposal awaiting sign-off; its seven decisions and acceptance matrix are folded into roadmap W3. The roadmap controls sequencing and gate status.
 
 Status: inventory complete, contract proposed 2026-11-14. Awaiting API/product
 sign-off before implementation. No code changed, no live resources touched.
@@ -102,13 +102,16 @@ admission, event, usage and recovery machinery.
 
 ```jsonc
 POST /api/conversations/:key/messages
-{ "text": "…", "user": "…", "idempotencyKey": "…" }
+{ "text": "…", "user": "…", "idempotencyKey": "…",
+  "delivery": "queue" | "steer" | "interrupt",   // default: queue
+  "replaceQueue": false }                        // interrupt only
 
 200 { "ok": true, "replayed": false,
       "turn": { "id": "turn_…", "state": "accepted" | "queued",
                 "acceptedAt": "…", "queuePosition": 1, "sessionID": "ses_…" } }
 200 { "ok": true, "replayed": true, "turn": { … identical body … } }
 409 { "ok": false, "error": "idempotency_conflict", "turnID": "turn_…" }
+429 { "ok": false, "error": "queue_full", "depth": 10, "limit": 10 }
 ```
 
 - One persisted `turns/<turnID>` record per accepted request: request digest,
@@ -118,6 +121,15 @@ POST /api/conversations/:key/messages
   replays the original turn; same key + different digest is `409`.
 - Expiry is explicit and returned (`"replayWindow": "24h"` on the turn). A replay
   of an expired key is a new turn, never a silent duplicate or a silent prompt.
+- Delivery modes share the envelope but not the identity. `steer` joins the
+  active turn: the response carries that turn's `id` and `state: "running"`, and
+  no new turn record is created — `409 no_active_turn` when nothing is running.
+  `interrupt` with a follow-up creates a new turn after the stop; without a
+  follow-up it reports the interrupted turn. `queue` is the only mode that
+  creates a `queued` turn.
+- The key window (24 h) and the turn window (50 turns or 72 h) are independent.
+  Reusing an expired key starts a new turn; replaying a key whose turn was
+  pruned is `410 turn_expired`, never a `500` and never a resurrected turn.
 
 ### 5.2 Status
 
@@ -132,13 +144,21 @@ GET /api/conversations/:key/turns/:turnID
         "output": { "available": true, "replay": "retained" | "expired" | "none" },
         "accounting": { "reservedUSD": 0.1, "settledUSD": 0.0017,
                         "state": "held" | "settled" | "unknown" },
-        "recovery": { "checkpointKey": "…?" , "verifiedAt": "…?", "restored": false },
+        "recovery": { "available": true, "fromTurnID": "turn_…" | null,
+                      "verifiedAt": "…?", "ageSeconds": 120, "restored": false },
         "cancellation": { "requested": false, "observedStop": false, "settled": false } } }
 ```
 
 `unknown` is a real state, not an error: ambiguous dispatch keeps a hold and must
 report it. Credential values never appear; a missing fingerprint is `null`, never
 a fabricated digest.
+
+`output.replay` is bounded by the 200-event log, not by the turn record: a
+retained turn can legitimately report `"expired"` after enough traffic. The
+status read never claims more than the event log holds.
+
+`410 turn_expired` is returned once the turn record is pruned; `404` is only for
+an id that never existed.
 
 ### 5.3 Interactions
 
@@ -154,7 +174,10 @@ POST /api/conversations/:key/questions/:id
 ```
 
 This generalizes the existing permission route; Slack's button flow renders the
-same pending-form outcomes. Unreadable pending state returns `503`, never `[]`.
+same pending-form outcomes. The first answer wins and is attempted once — a
+second answer, from HTTP or Slack, is `409 not_pending` and must not be retried
+by the client. Unreadable pending state returns `503`, never `[]`; a question
+whose turn was pruned is simply absent, not an error.
 
 ### 5.4 Cancellation
 
@@ -178,18 +201,55 @@ never resends a prompt.
 
 ## 6. Decisions to lock
 
-1. Turn id format (`turn_` + UUID) and retention: 50 turns or 72 h per
-   conversation, whichever ends last, with explicit expiry in the response.
-2. Whether `queued` is surfaced as a separate state or `accepted` plus
-   `queuePosition` (proposal: separate state, one queued follow-up only).
-3. Source of the configuration fingerprint: settings version + selected image
-   digest + applied flags, recorded at dispatch, `null` when unknown.
-4. Questions: polling `GET /questions` only, or also an SSE `question` frame
-   (proposal: both; the frame is the fast path, polling is the recovery path).
-5. Whether `GET /api/conversations/:key` keeps returning raw state during the
-   migration window (proposal: keep for operators, document as unstable).
-6. Reuse of `recovery` GET vs folding its snapshot into turn status (proposal:
-   turn status for callers, `recovery` stays operator-only).
+The packet below is the sign-off target. Each row states what exists today, the
+choice to lock and the recommendation. Delivery modes are the seventh decision
+added by R0-20; the earlier "one queued follow-up" wording is superseded.
+
+| # | Decision | Current behaviour | Recommendation |
+|---|---|---|---|
+| D1 | Turn identity and retention | No turn reference; `sessionID` spans turns, `turnBaseline` disappears at the next turn, `idempotencyKey` is client-owned and expires | `turn_<uuid>`; retain 50 turns or 72 h, whichever ends last; never prune a turn named by the queue, a hold, an interrupt intent or the active manifest; key and turn windows are independent (`410` on a pruned replay, new turn on an expired key) |
+| D2 | Queued state | Durable FIFO queue, bound by `QUEUE_LIMIT` (default 10); `202 {ok:true,queued:true}`; full is `429 queue_full` | A distinct `queued` state with `queuePosition`; multiple entries within the bound; the bound is configuration, reported in `429 depth`/`limit`; `replaceQueue` is the only bypass; no budget hold while queued. Supersedes the one-follow-up proposal |
+| D3 | Configuration fingerprint | `settingsVersion` exists; runtime identity is not recorded per turn | Settings version + selected image digest + applied flags, captured once at dispatch and immutable for the turn; a later upgrade or recycle shows as `runtimeGeneration`, never as a rewritten fingerprint; `null` when unknown |
+| D4 | Questions transport | Slack-only pending forms; an HTTP caller stalls until timeout | Both: an SSE `question` frame is the fast path, `GET /questions` is the recovery path; first answer wins, later answers are `409 not_pending`; unreadable state is `503`, never `[]`; stale/foreign answers are rejected |
+| D5 | Raw GET during migration | `GET /api/conversations/:key` returns raw `ConversationState`; `DELETE` on the same key removes checkpoints | Keep GET operator-facing and documented unstable; `/turns/:id` is the caller API; move `DELETE` to operator-only in the same change; remove the raw GET once no bundled caller reads it |
+| D6 | Recovery visibility | `/recovery` is privileged and exposes snapshot IDs | Turn status carries `{available, fromTurnID, verifiedAt, ageSeconds, restored}` and never an R2 key or snapshot digest; `/recovery` stays operator-only |
+| D7 | Delivery modes | `delivery: queue \| steer \| interrupt` and `replaceQueue` are implemented in R0-20 | Lock as implemented: queue is the default FIFO (no hold); steer joins the active turn and creates no turn (`409 no_active_turn` otherwise); interrupt with a follow-up creates a new turn, without one reports the interrupted turn; a replayed interrupt returns its original outcome, not `409 interrupt_pending`; ambiguous is `502` + `unknown`, never a duplicate; Slack and HTTP agree |
+
+### Sign-off
+
+- [ ] D1 turn identity and retention
+- [ ] D2 queued state
+- [ ] D3 configuration fingerprint
+- [ ] D4 questions transport
+- [ ] D5 raw GET migration
+- [ ] D6 recovery visibility
+- [ ] D7 delivery modes
+
+Signed by: ____________________  Date: ____________
+
+No implementation starts until all seven are locked. The §7 acceptance matrix is
+the review target; the record is bounded status, not an exactly-once receipt.
+
+### 6.1 Invariants the decisions rely on
+
+1. **Pruning order.** Turn records, split archives and the event log prune under
+   one ordering, and nothing named by the active manifest, a queue entry, an
+   open hold, an interrupt intent or a pending question is ever deleted. This is
+   the issue #2 class of bug; a status read must not be able to point at a part
+   that pruning removed.
+2. **Replay beats delivery state.** An idempotent replay returns the original
+   request's status verbatim, including interrupt's `200`, `202` or `502`.
+   `409 interrupt_pending` applies only to a different key targeting the same
+   turn, so a retrying client can never turn success into a conflict.
+3. **Status reads are cheap and bounded.** `GET /turns/:id` is rate-limited per
+   client and returns an `ETag`; status is pull-only. The event stream is the
+   only push channel, so a polling caller cannot pin the Durable Object.
+4. **Every window is advertised.** Key (24 h), turn (50/72 h) and event (200)
+   windows differ; each response names the one that applied through
+   `replayWindow` and `output.replay`, rather than leaving the caller to infer it.
+5. **Configuration is captured, not recomputed.** The fingerprint is written once
+   at dispatch. Settings changes and runtime upgrades during a turn surface as
+   `runtimeGeneration`; rewriting the fingerprint would misreport what ran.
 
 ## 7. Acceptance matrix
 
@@ -204,7 +264,11 @@ never resends a prompt.
 | Cancel after dispatch reports requested vs observed stop vs settled | new fixture with a stub runtime |
 | Question/permission answered over HTTP and rejected when stale/foreign | new fixture plus existing Slack regressions |
 | Replay gap returns `reset`, then status answers from current state | existing `worker.test.ts` cursor tests extended |
-| No credential value or internal state field in any response | snapshot assertions on the three new routes |
+| Queue full is `429` with `depth`/`limit` and creates no turn | fixture at `QUEUE_LIMIT` |
+| Steer reports the active turn and creates no new turn; `409` when idle | fixture with a stub runtime |
+| A replayed interrupt returns its original outcome for each of `200`/`202`/`502` | fixture over the three outcomes |
+| Pruned turn is `410`; expired key is a new turn; neither is a `500` | fixture over the 50-turn and 72 h boundaries |
+| No credential, R2 key, snapshot digest or internal state field in any response | snapshot assertions on the three new routes and turn status |
 
 ## 8. Not in this slice
 
