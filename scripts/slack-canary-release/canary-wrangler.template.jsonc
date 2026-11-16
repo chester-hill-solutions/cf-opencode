@@ -1,0 +1,92 @@
+// Isolated namespace/bucket only. Fill verified remote manifest pin after image push.
+// Delegated SLACK_SIGNING_SECRET and all other secrets are supplied privately at release.
+// NEW_THREADS stays false and START_TS empty until qualification; no TENANCY binding.
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "cf-opencode-arfin-canary-20261115",
+  "account_id": "ad5ec479b9a421faa2ed06c3d1c2b23a",
+  "main": "../../src/index.ts",
+  "assets": {
+    "directory": "../../public"
+  },
+  "compatibility_date": "2026-11-15",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1
+    }
+  },
+  "vars": {
+    "WORKSPACE_REPO": "",
+    "OPENCODE_MODEL": "opencode/deepseek-v4.1-flash",
+    "POLL_SECONDS": "2",
+    "EVENTED_FRESH_CONVERSATIONS": "true",
+    "IDLE_CLOSE_SECONDS": "300",
+    "CONTAINER_INSTANCE_PROFILE": "custom-1cpu-2gib",
+    "ALLOW_PLAINTEXT_ARCHIVES": "0",
+    "CHECK_COLLECTOR_ID": "__SET_FIXED_OPERATOR_COLLECTOR_UUID__",
+    "CHECK_RUNNER_IMAGE_ID": "sha256:416095926dcfb1c8e255691117c3c5504579e875bbb58fc3657fc2469076c516",
+    "CHECK_RUNNER_PLATFORM": "linux/arm64",
+    "CHECK_RUNNER_TIMEOUT_MS": "20000",
+    "CHECK_SLACK_CHANNEL_ID": "C0A5YNXLP6C",
+    "SLACK_CANARY_CHANNEL": "C0A5YNXLP6C",
+    "SLACK_CANARY_NEW_THREADS": "false",
+    "SLACK_CANARY_START_TS": ""
+  },
+  "containers": [
+    {
+      "class_name": "Conversation",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "base": {
+          "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/aboiteau-checks-agent@sha256:0aab4cba01bd119499e60dc37525eb9e789f7e62efcf939b062eac29b9b1b9d1"
+        },
+        "evented": {
+          "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/aboiteau-checks-agent@sha256:0aab4cba01bd119499e60dc37525eb9e789f7e62efcf939b062eac29b9b1b9d1"
+        }
+      }
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "Conversation",
+        "name": "CONVERSATION"
+      },
+      {
+        "class_name": "Settings",
+        "name": "SETTINGS"
+      }
+    ]
+  },
+  "r2_buckets": [
+    {
+      "binding": "CHECKPOINTS",
+      "bucket_name": "cf-opencode-arfin-canary-20261115-checkpoints"
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "API_RATE_LIMIT",
+      "namespace_id": "7151101",
+      "simple": {
+        "limit": 60,
+        "period": 60
+      }
+    }
+  ],
+  "exports": {
+    "Conversation": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    },
+    "Settings": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  }
+}

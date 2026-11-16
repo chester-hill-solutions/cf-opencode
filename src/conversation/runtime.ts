@@ -226,6 +226,22 @@ export class ConversationRuntime {
     const base = await this.rawPort(number)
     if (number !== 4001) return base
     const token = await this.ports.authorization.controlToken()
+    return this.authorizedControlPort(base, token)
+  }
+
+  /** Passive access only: callers must hold a warm runtime borrow and cached token. */
+  warmControlPort(token: string): ContainerPort {
+    if (!token) throw new Error("warm control authorization unavailable")
+    let base = this.networkPort(4001)
+    if (!base) {
+      const container = this.ports.binding.get()
+      if (container?.running !== true) throw new Error("warm runtime unavailable")
+      base = container.getTcpPort(4001)
+    }
+    return this.authorizedControlPort(base, token)
+  }
+
+  private authorizedControlPort(base: ContainerPort, token: string): ContainerPort {
     return {
       fetch: (input, init) => {
         const request = new Request(input as any, init)
@@ -239,7 +255,7 @@ export class ConversationRuntime {
     return this.port(4001)
   }
 
-  private async rawPort(number: number): Promise<ContainerPort> {
+  private networkPort(number: number): ContainerPort | undefined {
     const transport = this.ports.network.transport()
     if (transport) return transport(number)
     const containerURL = this.ports.network.containerURL()
@@ -255,10 +271,18 @@ export class ConversationRuntime {
             method: original.method,
             headers: original.headers,
             body: original.body,
+            signal: original.signal,
+            redirect: original.redirect,
           })
         },
       }
     }
+    return undefined
+  }
+
+  private async rawPort(number: number): Promise<ContainerPort> {
+    const network = this.networkPort(number)
+    if (network) return network
     const container = this.ports.binding.get()
     if (!container) throw new Error("no container bound")
     const usedSnapshot = container.running ? false : await this.ports.startup.start()

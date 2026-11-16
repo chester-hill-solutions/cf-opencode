@@ -4,6 +4,7 @@ import type { ContainerStartupOptions } from "@cloudflare/workers-types"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
 import { driveConversationJobs } from "./helpers/conversation-jobs"
 import { runtimeCache } from "./helpers/runtime-cache"
+import { ConversationStore } from "../src/state"
 
 const BASE_IMAGE = "registry.cloudflare.com/test/conversation-base@sha256:base"
 const EVENTED_IMAGE = "registry.cloudflare.com/test/conversation-evented@sha256:evented"
@@ -17,6 +18,8 @@ type Internal = {
   controlPlane: { token(): Promise<string> }
   startOptions(): ContainerStartupOptions
   snapshotHandle(): Promise<unknown>
+  runtimeContainer(): DurableObjectState["container"]
+  runtime: { port(number: number): Promise<{ fetch(input: string): Promise<Response> }> }
   startContainer(): Promise<boolean>
   startBoundContainer(container: unknown): Promise<boolean>
   readiness: { prepare(): Promise<unknown> }
@@ -140,6 +143,46 @@ function installMessagePorts(
 }
 
 describe("isolated evented container image selection", () => {
+  it("uses the protected container view for runtime ports without replacing native state", async () => {
+    const stub = env.CONVERSATION.getByName("image-selection-protected-container-view")
+    const result = await runInDurableObject(stub, async (instance) => {
+      const { container } = installContainer(instance, { base: BASE_IMAGE, evented: EVENTED_IMAGE })
+      const internal = instance as unknown as Internal
+      const context = (instance as unknown as { ctx: DurableObjectState }).ctx
+      let lookups = 0
+      const view = {
+        running: true,
+        getTcpPort(number: number) {
+          if (number !== 4242) throw new Error("unexpected runtime port")
+          return { async fetch() { return new Response("protected-runtime-view") } }
+        },
+      }
+      internal.runtimeContainer = () => { lookups++; return view as unknown as NonNullable<DurableObjectState["container"]> }
+      const port = await internal.runtime.port(4242)
+      return { text: await (await port.fetch("http://container/probe")).text(), lookups, nativeUnchanged: Object.is(context.container, container) }
+    })
+    expect(result.text).toBe("protected-runtime-view")
+    expect(result.lookups).toBeGreaterThan(0)
+    expect(result.nativeUnchanged).toBe(true)
+  })
+
+  it("delegates runtime launch and snapshot lookup through protected qualification hooks", async () => {
+    const stub = env.CONVERSATION.getByName("image-selection-protected-launch-hooks")
+    const result = await runInDurableObject(stub, async (instance) => {
+      const { container, starts } = installContainer(instance, { base: BASE_IMAGE, evented: EVENTED_IMAGE })
+      const internal = instance as unknown as Internal
+      const originalOptions = internal.startOptions.bind(instance)
+      let lookups = 0
+      internal.startOptions = () => ({ ...originalOptions(), enableInternet: false })
+      internal.snapshotHandle = async () => { lookups++; return undefined }
+      await internal.startBoundContainer(container)
+      return { starts, lookups }
+    })
+    expect(result.starts).toHaveLength(1)
+    expect(result.starts[0]?.enableInternet).toBe(false)
+    expect(result.lookups).toBe(1)
+  })
+
   it("reports the actual binding state separately from runtime readiness", async () => {
     const stub = env.CONVERSATION.getByName("runtime-debug-running-state")
     const result = await runInDurableObject(stub, async (instance) => {
@@ -488,6 +531,29 @@ describe("isolated evented container image selection", () => {
     expect(result.prompts).toBe(1)
     expect(result.image).toBe(EVENTED_IMAGE)
     expect(result.binding).toBe("evented")
+  })
+
+  it("retains fresh image eligibility for proven benign Slack controls and a pending repository selection", async () => {
+    for (const forged of [false, true]) {
+      const stub = env.CONVERSATION.getByName(`image-selection-slack-controls-${forged}`)
+      await runInDurableObject(stub, async (instance, runtime) => {
+        const restore = enableFreshEventedRouting(instance)
+        try {
+          const store = new ConversationStore(runtime.storage)
+          await store.claimEvent("repo-event", "repo")
+          await store.markTombstone("repo-event", "repo")
+          const selected = await store.selectWorkspaceRepository({ repository: "https://github.com/example/image", baseBranch: "main", workingBranch: "task/image" }, crypto.randomUUID())
+          expect(selected.kind).toBe("selected")
+          if (forged) {
+            const state = await store.get()
+            await runtime.storage.put("state", { ...state, slackControlHistory: { ...state.slackControlHistory, events: [{ id: "repo-event", command: "unknown" }] } })
+          }
+          const fake = installContainer(instance, { base: BASE_IMAGE, evented: EVENTED_IMAGE })
+          await (instance as unknown as Internal).startContainer()
+          expect(fake.starts[0]?.image).toBe(forged ? BASE_IMAGE : EVENTED_IMAGE)
+        } finally { restore() }
+      })
+    }
   })
 
   it("fails before durable writes when fresh routing is enabled without its image", async () => {

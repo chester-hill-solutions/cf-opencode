@@ -3,6 +3,9 @@ import { withSpan } from "../telemetry"
 import type { ConversationRuntime } from "./runtime"
 import { LEGACY_ALARM_MIGRATION_KEY, isFreshLegacyAlarmMigration } from "./job-state"
 import type { ConversationState } from "../state"
+import { hasBenignSlackControlHistory } from "../state"
+import { isWorkspaceLifecycleMetadata } from "../workspace-profile"
+import { parseWorkspaceRepositoryBinding } from "../workspace-repository"
 
 type RuntimeContainer = NonNullable<DurableObjectState["container"]>
 
@@ -86,7 +89,8 @@ export class ConversationImages {
   private async isFreshUnstartedConversation(container: RuntimeContainer): Promise<boolean> {
     if (container.running) return false
     const stored = await this.options.storage.list()
-    for (const key of stored.keys()) {
+    for (const [key, value] of stored) {
+      if (isWorkspaceLifecycleMetadata(key, value)) continue
       if (key === "state") continue
       if (key === "conversationJobEpoch") {
         const epoch = await this.options.storage.get<number>(key)
@@ -115,8 +119,15 @@ export class ConversationImages {
       "phase", "seen", "pending", "slackEngaged", "modelOverride",
       "transport", "slack", "announcedForms", "admissionID", "admissionStartedAt",
       "queue", "permissionNotifications",
+      "workspaceRepository",
+      "slackControlHistory",
     ])
     if (Object.entries(state).some(([key, field]) => field !== undefined && !allowed.has(key))) return false
+    if (state.slackControlHistory !== undefined && (!Array.isArray(state.seen) || !hasBenignSlackControlHistory(state as unknown as ConversationState))) return false
+    if (state.workspaceRepository !== undefined) {
+      try { if (parseWorkspaceRepositoryBinding(state.workspaceRepository).status !== "pending") return false }
+      catch { return false }
+    }
     if (state.phase !== undefined && state.phase !== "idle" && state.phase !== "admitting") return false
     if (state.seen !== undefined &&
       (!Array.isArray(state.seen) || !state.seen.every((id) => typeof id === "string"))) return false
@@ -174,7 +185,8 @@ export class ConversationImages {
 
   private async assertFreshEventedCanary(): Promise<void> {
     const keys = await this.options.storage.list()
-    for (const key of keys.keys()) {
+    for (const [key, value] of keys) {
+      if (isWorkspaceLifecycleMetadata(key, value)) continue
       if (key === "state") continue
       if (key === "conversationJobEpoch") {
         const epoch = await this.options.storage.get<number>(key)
@@ -189,7 +201,17 @@ export class ConversationImages {
     const allowedKeys = new Set([
       "phase", "seen", "pending", "slackEngaged", "modelOverride", "transport", "slack",
       "announcedForms", "admissionID", "admissionStartedAt", "queue", "permissionNotifications",
+      "workspaceRepository",
+      "slackControlHistory",
     ])
+    if (state.slackControlHistory !== undefined && (!Array.isArray(state.seen) || !hasBenignSlackControlHistory(state))) {
+      throw new Error("evented canary requires trusted benign control history")
+    }
+    if (state.workspaceRepository !== undefined) {
+      try {
+        if (parseWorkspaceRepositoryBinding(state.workspaceRepository).status !== "pending") throw new Error()
+      } catch { throw new Error("evented canary requires a fresh pending repository binding") }
+    }
     if (Object.keys(state).some((key) => !allowedKeys.has(key)) ||
       state.phase !== "admitting" ||
       (state.seen?.length ?? 0) > 1 ||

@@ -59,6 +59,9 @@ describe("handleSlackCommand", () => {
     expect(replies[0]).toContain("!steer <text>")
     expect(replies[0]).toContain("clear queued follow-ups")
     expect(replies[0]).toContain("!stop <text>")
+    expect(replies[0]).toContain("Workspace first")
+    expect(replies[0]).toContain("repository is optional")
+    expect(replies[0]).toContain("nested agent checkouts are not eligible")
     expect(usageCalls).toBe(0)
   })
 
@@ -175,6 +178,20 @@ describe("handleSlackCommand", () => {
     expect(replies[0]).not.toContain("private input")
   })
 
+  test("status distinguishes a general workspace from an immutable registered root without dispatching work", async () => {
+    const general = fake({ getState: async () => ({ phase: "idle" }) })
+    await handleSlackCommand("!status", general.service)
+    expect(general.replies[0]).toContain("Workspace: general; a repository is optional")
+    expect(general.calls).toEqual([])
+    const registered = fake({ getState: async () => ({ phase: "idle", workspaceRepository: {
+      schemaVersion: 1, bindingID: "11111111-1111-4111-8111-111111111111", status: "pending", baseCommit: null,
+      repository: "https://github.com/owner/repo", baseBranch: "main", workingBranch: "task/work",
+    } }) })
+    await handleSlackCommand("!status", registered.service)
+    expect(registered.replies[0]).toContain("Registered root (pending): https://github.com/owner/repo")
+    expect(registered.calls).toEqual([])
+  })
+
   test("status before a session still reports phase, model, queue, and errors", async () => {
     const { service, replies } = fake({ getState: async () => ({
       phase: "admitting", modelOverride: "openrouter/anthropic/claude-x", queue: [{ text: "pending" }],
@@ -236,4 +253,38 @@ describe("handleSlackCommand", () => {
     expect(await handleSlackCommand("!new", broken.service)).toBe(true)
     expect(broken.replies[0]).toContain("Couldn't run")
   })
+})
+
+test("workspace help makes permanent repository-free work and explicit retention first-class", async () => {
+  const f = fake()
+  await handleSlackCommand("!help", f.service)
+  expect(f.replies[0]).toContain("remain repository-free permanently")
+  expect(f.replies[0]).toContain("no git initialization, commit or remote")
+  expect(f.replies[0]).toContain("persistent is the default")
+  expect(f.replies[0]).toContain("!workspace disposable [name]")
+  expect(f.replies[0]).toContain("finish/idle never auto-discards")
+  expect(f.calls).toEqual([])
+})
+
+test("workspace status and normal status read retention passively without starting model/session work", async () => {
+  const requests: string[] = []
+  const f = fake({ getState: async () => ({}), workspace: {
+    repository: async () => Response.json({ workspaceRepository: null }), check: async () => "", checks: async () => "",
+    workspace: async request => { requests.push(request.method + " " + new URL(request.url).pathname); return Response.json({ workspace: { schemaVersion: 1, profileID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", revision: 2, retention: "disposable", name: "Scratch <notes>", status: "active" } }) },
+  } })
+  expect(await handleSlackCommand("!workspace", f.service)).toBe(true)
+  expect(f.replies[0]).toContain("disposable")
+  expect(f.replies[0]).toContain("Scratch &lt;notes&gt;")
+  expect(f.replies[0]).toContain("checkpoint")
+  await handleSlackCommand("!status", f.service)
+  expect(f.replies[1]).toContain("Retention: disposable")
+  expect(requests).toEqual(["GET /workspace/profile", "GET /workspace/profile"])
+  expect(f.calls).toEqual([])
+})
+
+test("ordinary descriptions of temporary work never become retention changes or discard commands", async () => {
+  const f = fake()
+  expect(await handleSlackCommand("temporary disposable analysis", f.service)).toBe(false)
+  expect(f.calls).toEqual([])
+  expect(f.replies).toEqual([])
 })

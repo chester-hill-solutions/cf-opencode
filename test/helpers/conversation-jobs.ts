@@ -1,7 +1,7 @@
 import type { ConversationState } from "../../src/state"
 import { isContainerIdleRecord } from "../../src/conversation/idle-state"
 
-export type ConversationJobID = "turn:observe" | "admission:retry" | "checkpoint:retry" | "recovery:wake" | "legacy:bootstrap" | "lease:renew" | "container:idle"
+export type ConversationJobID = "turn:observe" | "admission:retry" | "checkpoint:retry" | "recovery:wake" | "legacy:bootstrap" | "lease:renew" | "container:idle" | "reply:deliver"
 
 /** Test-only clock seam: advance named conversation jobs, never every future job. */
 export async function makeConversationJobsDue(

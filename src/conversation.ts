@@ -4,6 +4,7 @@ import { ClientError } from "@opencode/client"
 import { makeClient, portFetch, type ContainerPort } from "./opencode"
 import {
   ConversationStore,
+  isBenignSlackControlTombstones,
   type BudgetReservation,
   type ConversationPhase,
   type ConversationState,
@@ -34,7 +35,10 @@ import { queueCapacity } from "./queue"
 import { projectTurnObservation, type PersistedTurnTimeout } from "./turn-observation"
 import { ConversationAdmissions } from "./conversation/admissions"
 import { ConversationRuntimeUpgrades } from "./conversation/runtime-upgrades"
-import { isFreshLegacyAlarmMigration } from "./conversation/job-state"
+import { ConversationWorkspaceChecks } from "./conversation/workspace-checks"
+import { ConversationWorkspaceCheckDispatcher } from "./conversation/workspace-check-dispatcher"
+import { checkCollectorConfig } from "./workspace-check-collector"
+import { LEGACY_ALARM_MIGRATION_KEY, isFreshLegacyAlarmMigration } from "./conversation/job-state"
 import type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
 export type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
 import type { Env } from "./env"
@@ -44,6 +48,7 @@ import { staleAction } from "./lifecycle"
 import { GITHUB_TOKEN_KEY, workspaceID } from "./vault"
 import { LEGACY_ACCOUNT_STATE_KEY, parseConversationKey } from "./tenancy"
 import { AccountingPolicyError } from "./accounting-policy"
+import { parseWorkspaceRepositorySelection, parseWorkspaceRepositoryBinding, WorkspaceRepositoryConflictError } from "./workspace-repository"
 import { parseOperatorReconciliationProposal } from "./operator-reconciliation"
 import { hasConnectedProvider } from "./onboarding"
 import type { ConversationJobPayload } from "./conversation/jobs"
@@ -51,6 +56,11 @@ import { ConversationScheduler } from "./conversation/scheduler"
 import { ConversationSessions } from "./conversation/sessions"
 import { ConversationSlackAdapter } from "./conversation/slack-adapter"
 import { ConversationProviderOnboarding } from "./conversation/provider-onboarding"
+import { ConversationProviderRepair, ProviderRepairError } from "./conversation/provider-repair"
+import { ConversationWorkspaceLifecycle, WorkspaceMaintenanceError } from "./conversation/workspace-lifecycle"
+import { isWorkspaceLifecycleMetadata } from "./workspace-profile"
+import { ConversationFinalReplies } from "./conversation/final-replies"
+import { readWorkspaceCheckBytes } from "./conversation/workspace-checks"
 import type { MessageRequest, SlackEventRequest } from "./conversation/requests"
 export type { MessageRequest, SlackEventRequest } from "./conversation/requests"
 
@@ -98,10 +108,15 @@ export class Conversation extends DurableObject<Env> {
   private readonly accountingCutover: ConversationAccountingCutover
   private readonly admissions: ConversationAdmissions
   private readonly runtimeUpgrades: ConversationRuntimeUpgrades
+  private readonly workspaceChecks: ConversationWorkspaceChecks
+  private readonly checkDispatcher: ConversationWorkspaceCheckDispatcher
   private readonly sessions: ConversationSessions
   private readonly deliveryControls: ConversationDeliveryControls
   private readonly slackAdapter: ConversationSlackAdapter
   private readonly providerOnboarding: ConversationProviderOnboarding
+  private readonly providerRepair: ConversationProviderRepair
+  private readonly finalReplies: ConversationFinalReplies
+  private readonly workspaceLifecycle: ConversationWorkspaceLifecycle
   private consecutiveFailures = 0
   /** Canonical name when named; forwarded key is only a validated fallback. */
   private key?: string
@@ -123,16 +138,16 @@ export class Conversation extends DurableObject<Env> {
         containerURL: () => this.env.CONTAINER_URL,
       },
       binding: {
-        get: () => this.ctx.container,
+        get: () => this.runtimeContainer(),
       },
       startup: {
         start: () => this.startContainer(),
         prepareImage: (container) => this.images.prepareContainerImageVariant(container),
-        options: () => this.images.startOptions(),
+        options: () => this.startOptions(),
       },
       snapshots: {
-        snapshotHandle: () => this.images.snapshotHandle(),
-        clearSnapshot: () => this.images.clearSnapshot(),
+        snapshotHandle: () => this.snapshotHandle(),
+        clearSnapshot: () => this.clearSnapshot(),
       },
       authorization: { controlToken: () => this.controlPlane.token() },
       lifecycle: { beforeStop: () => this.turnExecution.cancelStream() },
@@ -145,6 +160,7 @@ export class Conversation extends DurableObject<Env> {
       },
     })
     this.runtimeAccess = new ConversationRuntimeAccess({
+      assertAvailable: async () => { if (await this.workspaceLifecycle.hasPending()) throw new WorkspaceMaintenanceError() },
       prepareOwned: () => this.ensureReadyOwned(),
       onUseComplete: () => this.idleClose.touch().then(() => undefined).catch(() => {}),
       identity: () => ({
@@ -176,7 +192,10 @@ export class Conversation extends DurableObject<Env> {
         recoveryWake: (payload) => this.processRecoveryWake(payload),
         leaseRenew: (payload) => this.processLeaseRenew(payload),
         idleClose: (payload) => this.idleClose.run(payload),
+        checkNotify: () => this.checkDispatcher.notify(),
+        replyDeliver: () => this.finalReplies.deliver(),
       },
+      replyWake: () => this.finalReplies.nextAt(),
     })
     this.lifecycle.use(this.scheduler.capability)
     this.recoveryActions = new ConversationRecoveryActions({
@@ -285,6 +304,7 @@ export class Conversation extends DurableObject<Env> {
       jobs: { schedule: (kind, at, payload) => this.scheduler.schedule(kind, at, payload) },
       settings: () => this.settings(),
       releaseBudgetReservation: (reservation) => this.releaseBudgetReservation(reservation),
+      finalReply: (state, text, assistantID) => this.finalReplies.prepare(state, text, assistantID),
       waitUntil: (promise) => this.ctx.waitUntil(promise),
     })
     this.readiness = new ConversationReadiness({
@@ -360,6 +380,7 @@ export class Conversation extends DurableObject<Env> {
         active: () => this.recoveryActions.active,
         pumping: () => this.turnExecution.isPumping,
         pendingUpgrade: () => this.runtimeUpgrades.hasPending(),
+        pendingMaintenance: async () => await this.providerRepair.hasPending() || await this.workspaceLifecycle.hasPending(),
       },
       jobs: { schedule: (kind, at, payload) => this.scheduler.schedule(kind, at, payload) },
       prompt: async (sessionID, text) => {
@@ -396,7 +417,7 @@ export class Conversation extends DurableObject<Env> {
       eligibleNative: () => this.nativeLeaseEnabled(),
       locallyBusy: async () => this.admissions.active || this.turnExecution.isPumping ||
         this.recoveryActions.active || this.providerOnboarding.activeOperations > 0 ||
-        this.scheduler.hasActiveOtherThan("container:idle") || await this.runtimeUpgrades.hasPending(),
+        this.scheduler.hasActiveOtherThan("container:idle") || await this.runtimeUpgrades.hasPending() || await this.providerRepair.hasPending(),
       withAdmissionLock: (task) => this.admissions.withLock(task),
       stopStream: () => this.turnExecution.stopStream(),
       prove: (client, sessionID) => this.runtimeUpgrades.proveSession(client, sessionID),
@@ -427,6 +448,21 @@ export class Conversation extends DurableObject<Env> {
       event: (event) => this.deliver(event, { slack: false }),
     })
     this.slackAdapter = new ConversationSlackAdapter({
+      workspaceCommands: {
+        enabled: target => Boolean(env.CHECK_SLACK_CHANNEL_ID && target.channel === env.CHECK_SLACK_CHANNEL_ID),
+        repository: request => this.workspaceRepository(request),
+        workspace: request => this.workspaceLifecycle.fetch(request),
+        check: async (argv, target, eventID) => {
+          try { return await this.checkDispatcher.queue(argv, target, eventID) }
+          catch (error) {
+            if (error instanceof Error && "code" in error && error.code === "WORKSPACE_CHECK_RUNTIME_NOT_WARM") {
+              return "Check not queued: the workspace is not warm. Use the existing normal message/start workflow first, then retry !check after the agent is idle. This command did not start a runtime or model."
+            }
+            return "Check could not be queued. A bound, idle, warm workspace and the configured trusted collector are required. Inspect !repo and !checks; no check execution was authorized by this refusal."
+          }
+        },
+        checks: () => this.checkDispatcher.status(),
+      },
       observation: () => this.turnObservation(),
       controls: {
         steer: async (text) => {
@@ -499,6 +535,70 @@ export class Conversation extends DurableObject<Env> {
       withClient: (fn, recoverOnRejection) => this.withClient(fn, recoverOnRejection),
       ensureReady: () => this.ensureReady(),
     })
+    this.workspaceChecks = new ConversationWorkspaceChecks({
+      id: ctx.id.toString(), storage: ctx.storage, store: this.store,
+      bucket: env.CHECKPOINTS, checkpoints: this.checkpoints,
+      admission: (task) => this.admissions.withLock(task),
+      usage: (task) => this.usage.serialize(task),
+      isWarm: () => Boolean(this.runtime.ready && this.runtime.apiPort && this.runtime.generation && this.controlPlane.cachedToken &&
+        (this.transport || this.env.CONTAINER_URL || this.ctx.container?.running === true)),
+      useWarmRuntime: (task) => this.runtimeAccess.useWarm(task),
+      control: () => this.runtime.warmControlPort(this.controlPlane.cachedToken ?? ""),
+      blocked: async () => this.admissions.active || this.turnExecution.isPumping || this.recoveryActions.active || await this.runtimeUpgrades.hasPending(),
+    })
+    this.checkDispatcher = new ConversationWorkspaceCheckDispatcher({
+      id: ctx.id.toString(), key: () => this.key ?? ctx.id.name ?? ctx.id.toString(), storage: ctx.storage,
+      checks: this.workspaceChecks, checkpoints: this.checkpoints, bucket: env.CHECKPOINTS,
+      admission: task => this.admissions.withLock(task),
+      config: () => checkCollectorConfig(env),
+      register: async () => {
+        const result = await env.SETTINGS.getByName("global").fetch("https://settings/conversations", {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: this.key ?? ctx.id.name ?? ctx.id.toString() }),
+        })
+        if (!result.ok) throw new Error("check registry unavailable")
+      },
+      schedule: at => this.scheduler.schedule("check:notify", at),
+      notify: async (target, text) => {
+        if (!env.SLACK_BOT_TOKEN) return false
+        const result = await fetch("https://slack.com/api/chat.postMessage", {
+          method: "POST", headers: { authorization: `Bearer ${env.SLACK_BOT_TOKEN}`, "content-type": "application/json" },
+          body: JSON.stringify({ channel: target.channel, thread_ts: target.replyTs, text, unfurl_links: false, unfurl_media: false, parse: "none" }),
+          signal: AbortSignal.timeout(10_000), redirect: "manual",
+        })
+        return result.ok && (await result.json() as { ok?: boolean }).ok === true
+      },
+    })
+    this.providerRepair = new ConversationProviderRepair({
+      id: ctx.id.toString(), storage: ctx.storage, store: this.store, bucket: env.CHECKPOINTS, checkpoints: this.checkpoints,
+      enabled: () => Boolean(env.SLACK_CANARY_CHANNEL === "C0A5YNXLP6C" && this.key && /^C0A5YNXLP6C:\d+\.\d+$/.test(this.key)),
+      admission: task => this.admissions.withLock(task), usage: task => this.usage.serialize(task), exclusive: task => this.runtimeAccess.exclusive(task),
+      warmPort: () => this.runtime.ready && this.runtime.generation && (this.transport || env.CONTAINER_URL || this.ctx.container?.running === true) ? this.runtime.apiPort : undefined,
+      prepareOwned: () => this.ensureReadyOwned(), stopStream: () => this.turnExecution.stopStream(),
+      blocked: async () => this.admissions.active || this.turnExecution.isPumping || this.recoveryActions.active || this.scheduler.activeCount > 0 || await this.runtimeUpgrades.hasPending(),
+      source: async () => {
+        const response = await env.CONVERSATION.getByName("onboarding").fetch("https://conversation/provider-credentials", { headers: { "x-conversation-key": "onboarding" } })
+        if (!response.ok) throw new Error("Provider source unavailable")
+        return JSON.parse(new TextDecoder().decode(await readWorkspaceCheckBytes(response.body, 64 * 1024)))
+      },
+    })
+    this.workspaceLifecycle = new ConversationWorkspaceLifecycle({
+      id: ctx.id.toString(), storage: ctx.storage, admission: task => this.admissions.withLock(task),
+      cleanupOwned: (operation, beforeCleanup, resume) => this.cleanupWorkspaceOwned(operation, beforeCleanup, resume),
+    })
+    this.finalReplies = new ConversationFinalReplies({
+      storage: ctx.storage, store: this.store, schedule: at => this.scheduler.schedule("reply:deliver", at),
+      send: async (target, text) => {
+        if (!env.SLACK_BOT_TOKEN) throw new Error("Slack delivery is unavailable")
+        const response = await fetch("https://slack.com/api/chat.postMessage", {
+          method: "POST", headers: { authorization: `Bearer ${env.SLACK_BOT_TOKEN}`, "content-type": "application/json" },
+          body: JSON.stringify({ channel: target.channel, ...(target.replyTs ? { thread_ts: target.replyTs } : {}), text, parse: "none", unfurl_links: false, unfurl_media: false }),
+          signal: AbortSignal.timeout(10000), redirect: "manual",
+        })
+        if (!response.ok) { void response.body?.cancel().catch(() => {}); throw new Error("Slack delivery was not acknowledged") }
+        const body = JSON.parse(new TextDecoder().decode(await readWorkspaceCheckBytes(response.body, 32 * 1024, 10000))) as { ok?: boolean }
+        if (body.ok !== true) throw new Error("Slack delivery was not acknowledged")
+      },
+    })
   }
 
   private nativeLeaseEnabled(): boolean {
@@ -516,6 +616,13 @@ export class Conversation extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     const identityError = this.acceptForwardedIdentity(request)
     if (identityError) return identityError
+    // Passive inspection cannot start lifecycle recovery, jobs or lease adoption.
+    if (new URL(request.url).pathname === "/workspace/preflight") return this.workspacePreflight(request)
+    if (["/workspace/profile", "/workspace/discard"].includes(new URL(request.url).pathname)) return this.workspaceLifecycle.fetch(request)
+    if (new URL(request.url).pathname === "/workspace/repository") return this.workspaceRepository(request)
+    if (new URL(request.url).pathname === "/providers/repair") return this.providerRepair.fetch(request)
+    if (/^\/workspace\/check-collector(?:\/|$)/.test(new URL(request.url).pathname)) return this.checkDispatcher.fetch(request)
+    if (/^\/workspace\/checks(?:\/|$)/.test(new URL(request.url).pathname)) return this.workspaceCheckRequest(request)
     await this.scheduler.captureLegacyAlarmMigration(false)
     return this.lifecycle.fetch(request)
   }
@@ -526,6 +633,9 @@ export class Conversation extends DurableObject<Env> {
     try {
       return await this.routeRequest(request)
     } catch (error) {
+      if (error instanceof WorkspaceRepositoryConflictError) {
+        return Response.json({ error: "workspace repository conflicts with the selected task; use a new conversation", code: "WORKSPACE_REPOSITORY_CONFLICT" }, { status: 409 })
+      }
       if (error instanceof IdleClosePendingError) {
         return Response.json({ error: "container close is pending; retry after stop recovery", retryable: true }, { status: 503 })
       }
@@ -535,8 +645,25 @@ export class Conversation extends DurableObject<Env> {
 
   private async routeRequest(request: Request): Promise<Response> {
     const url = new URL(request.url)
+    if (url.pathname === "/workspace/preflight") return this.workspacePreflight(request)
+    if (url.pathname === "/workspace/profile" || url.pathname === "/workspace/discard") return this.workspaceLifecycle.fetch(request)
+    if (url.pathname === "/workspace/repository") return this.workspaceRepository(request)
+    if (url.pathname === "/providers/repair") return this.providerRepair.fetch(request)
+    if (/^\/workspace\/check-collector(?:\/|$)/.test(url.pathname)) return this.checkDispatcher.fetch(request)
+    if (/^\/workspace\/checks(?:\/|$)/.test(url.pathname)) return this.workspaceCheckRequest(request)
     if (url.pathname === "/message") return this.onMessage((await request.json()) as MessageRequest)
-    if (url.pathname === "/slack") return this.slackAdapter.onEvent((await request.json()) as SlackEventRequest)
+    if (url.pathname === "/slack") {
+      const input = await request.json() as SlackEventRequest
+      if (await this.workspaceLifecycle.hasPending() && !/^\s*(?:<@[^>]+>\s*)?!workspace(?:\s|$)/i.test(input.event.text ?? "")) {
+        if (input.event.channel) await this.slackAdapter.postChunked(input.event.channel, "Workspace cleanup is pending. Use !workspace to inspect or resume the same discard; no message was queued.", input.replyTs).catch(() => {})
+        return Response.json({ error: "workspace maintenance pending", code: "WORKSPACE_DISCARD_PENDING" }, { status: 409 })
+      }
+      if (await this.providerRepair.hasPending()) {
+        if (input.event.channel) await this.slackAdapter.postChunked(input.event.channel, "Provider credential repair is pending. No message was queued; an operator must finish the same repair first.", input.replyTs).catch(() => {})
+        return Response.json({ error: "provider repair pending", code: "PROVIDER_REPAIR_PENDING" }, { status: 409 })
+      }
+      return this.slackAdapter.onEvent(input)
+    }
     if (url.pathname === "/permission") return this.controlPlane.onPermission((await request.json()) as PermissionRequest)
     if (url.pathname === "/form" && request.method === "POST") return this.controlPlane.onSlackForm((await request.json()) as SlackFormRequest)
     if (url.pathname === "/events") return this.onEvents(request)
@@ -668,9 +795,143 @@ export class Conversation extends DurableObject<Env> {
     return undefined
   }
 
+  /** Export intent and collector execution retain their separate provenance. */
+  private async workspaceCheckRequest(request: Request): Promise<Response> {
+    const response = await this.workspaceChecks.fetch(request)
+    const match = /^\/workspace\/checks\/([a-f0-9-]+)$/.exec(new URL(request.url).pathname)
+    if (request.method !== "GET" || !match || !response.ok) return response
+    try {
+      const body = await response.json() as { workspaceCheck: unknown }
+      return Response.json({ ...body, execution: await this.checkDispatcher.get(match[1]!) ?? null }, { headers: { "cache-control": "no-store" } })
+    } catch { return Response.json({ error: "Workspace check status is unavailable." }, { status: 503, headers: { "cache-control": "no-store" } }) }
+  }
+
+  /** Select a fresh task without preparing Linux, sessions or accounting. */
+  private async workspaceRepository(request: Request): Promise<Response> {
+    const reply = (body: unknown, status = 200) => Response.json(body, { status, headers: { "cache-control": "no-store" } })
+    if (request.method === "GET") {
+      try {
+        const value = (await this.store.get()).workspaceRepository
+        return reply({ workspaceRepository: value === undefined ? null : parseWorkspaceRepositoryBinding(value) })
+      } catch {
+        return reply({ error: "workspace repository state is unavailable", code: "WORKSPACE_REPOSITORY_UNAVAILABLE" }, 503)
+      }
+    }
+    if (request.method !== "PUT") {
+      return Response.json({ error: "method not allowed" }, { status: 405, headers: { allow: "GET, PUT", "cache-control": "no-store" } })
+    }
+    let input: unknown
+    try { input = await request.json() } catch { return reply({ error: "valid JSON is required" }, 400) }
+    if (!isRecord(input) || Object.keys(input).some((key) => !["repository", "baseBranch", "workingBranch"].includes(key)) ||
+      typeof input.workingBranch !== "string" ||
+      (input.repository !== undefined && typeof input.repository !== "string") ||
+      (input.baseBranch !== undefined && typeof input.baseBranch !== "string")) {
+      return reply({ error: "repository selection requires a workingBranch and optional repository/baseBranch" }, 400)
+    }
+    const body = input
+    return this.admissions.withLock(async () => {
+      let selection: ReturnType<typeof parseWorkspaceRepositorySelection>
+      try {
+        const existing = (await this.store.get()).workspaceRepository
+        const defaults = existing ? parseWorkspaceRepositoryBinding(existing) :
+          (body.repository === undefined || body.baseBranch === undefined ? await this.settings() : undefined)
+        selection = parseWorkspaceRepositorySelection({
+          repository: body.repository ?? (defaults && ("repository" in defaults ? defaults.repository : defaults.workspaceRepo)),
+          baseBranch: body.baseBranch ?? (defaults && ("baseBranch" in defaults ? defaults.baseBranch : defaults.workspaceBranch)),
+          workingBranch: body.workingBranch,
+        })
+      } catch {
+        return reply({ error: "invalid repository selection" }, 400)
+      }
+      const conflict = () => reply({ error: "workspace is already bound or has accepted work; use a new conversation", code: "WORKSPACE_REPOSITORY_CONFLICT" }, 409)
+      const current = (await this.store.get()).workspaceRepository
+      if (current) {
+        const result = await this.store.selectWorkspaceRepository(selection, crypto.randomUUID())
+        return result.kind === "existing" ? reply({ workspaceRepository: result.binding }) : conflict()
+      }
+      return this.runtimeAccess.exclusive(async () => {
+        if (this.admissions.active || this.turnExecution.isPumping || this.recoveryActions.active ||
+          this.runtime.ready || this.runtime.generation || this.ctx.container?.running || await this.runtimeUpgrades.hasPending()) return conflict()
+        const stored = await this.ctx.storage.list()
+        for (const [key, value] of stored) {
+          if (key === "state") continue
+          if (isWorkspaceLifecycleMetadata(key, value)) continue
+          if (key === "conversationJobEpoch" && Number.isSafeInteger(value) && (value as number) > 0) continue
+          if (key === LEGACY_ALARM_MIGRATION_KEY && isFreshLegacyAlarmMigration(value)) continue
+          if (/^tombstones:\d{4}-\d{2}-\d{2}$/.test(key) && isBenignSlackControlTombstones(value, await this.store.get())) continue
+          return conflict()
+        }
+        const result = await this.store.selectWorkspaceRepository(selection, crypto.randomUUID())
+        if (result.kind === "selected") return reply({ workspaceRepository: result.binding }, 201)
+        if (result.kind === "existing") return reply({ workspaceRepository: result.binding })
+        return conflict()
+      })
+    })
+  }
+
+  /** Read only an already verified runtime, without preparation or idle renewal. */
+  private async workspacePreflight(request: Request): Promise<Response> {
+    if (request.method !== "GET") {
+      return Response.json({ error: "method not allowed" }, { status: 405, headers: { allow: "GET" } })
+    }
+    const notRunning = () => Response.json({
+      error: "WORKSPACE_NOT_RUNNING",
+      code: "WORKSPACE_NOT_RUNNING",
+      message: "Workspace inspection requires an already running workspace. Use the existing message/start workflow first.",
+    }, { status: 409, headers: { "cache-control": "no-store" } })
+    // A verified warm runtime already has its control token; never create one here.
+    if (!this.runtime.ready || !this.runtime.generation || !this.controlPlane.cachedToken) return notRunning()
+    try {
+      return await this.runtimeAccess.useWarm(async () => {
+        const control = this.runtime.warmControlPort(this.controlPlane.cachedToken ?? "")
+        const response = await control.fetch("http://container/workspace/preflight", {
+          method: "GET",
+          signal: AbortSignal.timeout(10_000),
+          redirect: "manual",
+        })
+        // Retain the runtime borrow through the bounded response, so a stop or
+        // workspace handoff cannot overlap an inspection still producing output.
+        const reader = response.body?.getReader()
+        const chunks: Uint8Array[] = []
+        let size = 0
+        try {
+          if (reader) for (;;) {
+            const next = await reader.read()
+            if (next.done) break
+            size += next.value.byteLength
+            if (size > 256 * 1024) throw new Error("workspace preflight response exceeds limit")
+            chunks.push(next.value)
+          }
+        } catch (error) {
+          await reader?.cancel().catch(() => {})
+          throw error
+        } finally {
+          reader?.releaseLock()
+        }
+        const body = new Uint8Array(size)
+        let offset = 0
+        for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength }
+        const headers = new Headers(response.headers)
+        headers.set("cache-control", "no-store")
+        return new Response(response.body === null ? null : body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers,
+        })
+      })
+    } catch {
+      if (!this.runtime.ready || !this.runtime.generation ||
+        (!this.transport && !this.env.CONTAINER_URL && this.ctx.container?.running !== true)) return notRunning()
+      return Response.json({ error: "WORKSPACE_PREFLIGHT_UNAVAILABLE", code: "WORKSPACE_PREFLIGHT_UNAVAILABLE", message: "Workspace inspection is unavailable; retry later." }, {
+        status: 503, headers: { "cache-control": "no-store" },
+      })
+    }
+  }
+
   // --------------------------------------------------------------- HTTP adapter
 
   private async onMessage(input: MessageRequest): Promise<Response> {
+    if (await this.providerRepair.hasPending()) return Response.json({ error: "provider repair pending", code: "PROVIDER_REPAIR_PENDING" }, { status: 409 })
     // Body shape is not guaranteed by the route; reject anything non-string
     // before calling string methods on it.
     const text = typeof input.text === "string" ? input.text.trim() : ""
@@ -681,6 +942,9 @@ export class Conversation extends DurableObject<Env> {
       (delivery === "steer" && input.replaceQueue !== undefined)) {
       return Response.json({ ok: false, error: "invalid delivery options" }, { status: 400 })
     }
+    // Ordinary queued delivery waits for cleanup's admission lock. It may
+    // enter the successor after success; claim/enqueue refuse a retained fence.
+    if (delivery !== "queue" && await this.workspaceLifecycle.hasPending()) return Response.json({ error: "workspace maintenance pending", code: "WORKSPACE_DISCARD_PENDING" }, { status: 409 })
     if (await this.runtimeUpgrades.hasPending()) return Response.json({ ok: false, error: "runtime upgrade is pending; no message was queued" }, { status: 409 })
 
     const idempotencyKey = typeof input.idempotencyKey === "string" ? input.idempotencyKey : undefined
@@ -737,6 +1001,10 @@ export class Conversation extends DurableObject<Env> {
       void this.count("admission.failed")
       logEvent("admission.failed", { transport: "http" })
       await this.store.patch({ phase: "idle", admissionID: undefined, admissionStartedAt: undefined })
+      if (err instanceof WorkspaceRepositoryConflictError) {
+        await releaseClaim()
+        return Response.json({ ok: false, error: "workspace repository verification failed; no message was queued", code: "WORKSPACE_REPOSITORY_CONFLICT" }, { status: 409 })
+      }
       return queueResponse()
     }
 
@@ -842,31 +1110,7 @@ export class Conversation extends DurableObject<Env> {
   }
 
   /** Hard reset: drop the container and this conversation's stored state. */
-  private async onReset(): Promise<Response> {
-    return this.admissions.withLock(async () => {
-      if (await this.runtimeUpgrades.hasPending()) return Response.json({ error: "runtime upgrade is pending; resume it before reset" }, { status: 409 })
-      const blocked = await this.blockLifecycleDuringActiveTurn()
-      if (blocked) return blocked
-      if (!await this.turnExecution.stopStream()) {
-        return Response.json({ ok: false, error: "runtime stream did not drain; state was kept" }, { status: 503 })
-      }
-      return this.withUsageLifecycle(async () => {
-        if (!(await this.runtime.stop())) {
-          return Response.json({ ok: false, error: "container stop was not confirmed; state was kept" }, { status: 503 })
-        }
-        if (!(await this.leases.releaseAfterStop())) {
-          return Response.json({ ok: false, error: "container lease release is pending; state was kept" }, { status: 503 })
-        }
-        // A reset must not leave a checkpoint that the next cold start would
-        // restore over the freshly cleared conversation.
-        await this.checkpoints.deleteAll()
-        await this.scheduler.reset()
-        this.controlPlane.clearCache()
-        this.readiness.resetProviderSync()
-        return Response.json({ ok: true })
-      })
-    })
-  }
+  private async onReset(): Promise<Response> { return this.workspaceLifecycle.legacyCleanup("reset") }
 
   /**
    * Recycle the container so the next call starts the current image. State is
@@ -898,40 +1142,47 @@ export class Conversation extends DurableObject<Env> {
   }
 
   /** Remove the workspace archives and this conversation's stored state. */
-  private async onDelete(): Promise<Response> {
-    return this.admissions.withLock(async () => {
-      if (await this.runtimeUpgrades.hasPending()) return Response.json({ error: "runtime upgrade is pending; resume it before deleting this conversation" }, { status: 409 })
+  private async onDelete(): Promise<Response> { return this.workspaceLifecycle.legacyCleanup("delete") }
+
+  /** Caller holds admission. Publication runs after safety/accounting preflight,
+   * before any stop/archive deletion. A frozen retry needs no runtime startup. */
+  private async cleanupWorkspaceOwned(operation: "reset" | "delete", beforeCleanup: () => Promise<void>, resume: boolean): Promise<Response> {
+    if (await this.runtimeUpgrades.hasPending()) return Response.json({ error: "runtime upgrade is pending" }, { status: 409 })
+    const blocked = await this.blockLifecycleDuringActiveTurn()
+    if (blocked) return blocked
+    if (!await this.turnExecution.stopStream()) return Response.json({ ok: false, error: "runtime stream did not drain; state was kept" }, { status: 503 })
+    return this.withUsageLifecycle(async () => {
       const blocked = await this.blockLifecycleDuringActiveTurn()
       if (blocked) return blocked
-      if (!await this.turnExecution.stopStream()) {
-        return Response.json({ ok: false, error: "runtime stream did not drain; state was kept" }, { status: 503 })
-      }
-      return this.withUsageLifecycle(async () => {
-        if (!(await this.runtime.stop())) {
-          return Response.json({ ok: false, error: "container stop was not confirmed; state was kept" }, { status: 503 })
-        }
-        if (!(await this.leases.releaseAfterStop())) {
-          return Response.json({ ok: false, error: "container lease release is pending; state was kept" }, { status: 503 })
-        }
-        await this.checkpoints.deleteAll()
-        await this.scheduler.reset()
-        this.controlPlane.clearCache()
-        this.readiness.resetProviderSync()
-        logEvent("conversation.deleted")
-        return Response.json({ ok: true })
-      })
-    })
+      await beforeCleanup()
+      if (!(await this.runtime.stop())) return Response.json({ ok: false, error: "container stop was not confirmed; state was kept" }, { status: 503 })
+      if (!(await this.leases.releaseAfterStop())) return Response.json({ ok: false, error: "container lease release is pending; state was kept" }, { status: 503 })
+      await this.checkpoints.deleteAll()
+      await this.workspaceChecks.clear()
+      await this.checkDispatcher.clear()
+      await this.providerRepair.clear()
+      await this.finalReplies.clear()
+      await this.scheduler.reset()
+      this.controlPlane.clearCache()
+      this.readiness.resetProviderSync()
+      if (operation === "delete") logEvent("conversation.deleted")
+      return Response.json({ ok: true })
+    }, resume)
   }
 
   /** Do not destroy state or archives while a turn or owned hold is unresolved. */
   private async blockLifecycleDuringActiveTurn(): Promise<Response | undefined> {
+    if (!this.workspaceLifecycle.cleanupActive && await this.workspaceLifecycle.hasPending()) return Response.json({ error: "workspace cleanup pending", code: "WORKSPACE_DISCARD_PENDING" }, { status: 409 })
+    if (await this.finalReplies.hasPending()) return Response.json({ error: "final reply delivery is pending", code: "FINAL_REPLY_PENDING" }, { status: 409 })
+    if (await this.providerRepair.hasPending()) return Response.json({ error: "provider repair pending", code: "PROVIDER_REPAIR_PENDING" }, { status: 409 })
+    if (await this.checkDispatcher.hasUnresolved()) return Response.json({ error: "workspace check execution or delivery is unresolved; reconcile the collector before reset/delete", code: "CHECK_EXECUTION_UNRESOLVED" }, { status: 409 })
     if (await this.ctx.storage.get<boolean>("lifecycleJobsSealed")) {
       return Response.json({ ok: false, error: "lifecycle jobs are sealed; inspect recovery and retry before cleanup" }, { status: 409 })
     }
     const state = await this.store.get()
     const phase = state.phase ?? "idle"
     const active = phase === "admitting" || phase === "running" || phase === "settling" || phase === "queued" || Boolean(state.queue?.length)
-    if (state.budgetReservation || active || this.recoveryActions.active || this.scheduler.activeCount > 0 || state.checkpointPending) {
+    if (Object.keys(state.pending).length || state.budgetReservation || active || this.recoveryActions.active || this.scheduler.activeCount > 0 || state.checkpointPending) {
       return Response.json(
         { ok: false, error: "conversation has unresolved work; wait for it to settle before reset or delete" },
         { status: 409 },
@@ -941,11 +1192,11 @@ export class Conversation extends DurableObject<Env> {
   }
 
   /** Keep the usage queue locked through cleanup so a late replay cannot resurrect state. */
-  private withUsageLifecycle(cleanup: () => Promise<Response>): Promise<Response> {
+  private withUsageLifecycle(cleanup: () => Promise<Response>, cleanupAlreadyFenced = false): Promise<Response> {
     return this.usage.serialize(async () => {
       try {
         const state = await this.store.get()
-        if (state.sessionID) {
+        if (state.sessionID && !cleanupAlreadyFenced) {
           await this.usage.replayLogLocked(state.sessionID)
           const refreshed = await this.store.get()
           const execution = refreshed.usageExecution
@@ -978,6 +1229,10 @@ export class Conversation extends DurableObject<Env> {
   // ------------------------------------------------------------ container start
 
   /** Protected seams retained for qualification and subclass tests. */
+  protected runtimeContainer(): DurableObjectState["container"] {
+    return this.ctx.container
+  }
+
   protected startOptions(): ContainerStartupOptions {
     return this.images.startOptions()
   }
@@ -1235,7 +1490,7 @@ export class Conversation extends DurableObject<Env> {
       this.consecutiveFailures = 0
       return result
     } catch (error) {
-      if (error instanceof AccountingPolicyError || error instanceof IdleClosePendingError) throw error
+      if (error instanceof AccountingPolicyError || error instanceof IdleClosePendingError || error instanceof WorkspaceRepositoryConflictError || error instanceof ProviderRepairError || error instanceof WorkspaceMaintenanceError) throw error
       // An invalid command/form or an unsupported optional endpoint does not
       // prove the container is wedged. Never recycle live work for that. Real
       // transport failures keep the existing recovery behavior.
@@ -1276,8 +1531,12 @@ export class Conversation extends DurableObject<Env> {
   /** Prepare the runtime without acquiring a second RuntimeAccess borrow. */
   private async ensureReadyOwned(): Promise<ContainerPort> {
     if (!this.key) throw new Error("conversation identity unavailable; runtime preparation is blocked")
+    if (await this.workspaceLifecycle.hasPending()) throw new WorkspaceMaintenanceError()
+    if (!this.providerRepair.active && await this.providerRepair.hasPending()) throw new ProviderRepairError("PROVIDER_REPAIR_PENDING")
     await this.idleClose.beforePrepareOwned()
-    return this.runtime.ensureReady(() => this.readiness.prepare())
+    const port = await this.runtime.ensureReady(() => this.readiness.prepare())
+    if (!this.providerRepair.active) await this.providerRepair.verifyPrepared(port)
+    return port
   }
 
   /** Start the container, restore the checkpoint on first boot, start OpenCode. */

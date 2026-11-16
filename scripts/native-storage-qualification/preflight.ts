@@ -1,10 +1,17 @@
 import { resolve } from "node:path"
+import { createHash } from "node:crypto"
 import { QUALIFICATION_ARTIFACT } from "./artifact"
+import { withFrozenQualificationController } from "./source-guard"
 
 /** Offline build validation only: no resources, secrets, image pushes or deploys. */
 const root = resolve(import.meta.dir, "../..")
 const output = resolve(root, ".wrangler/native-storage-preflight")
 const accountID = "00000000000000000000000000000000"
+const controller = await Bun.file(resolve(root, "control-server.ts")).arrayBuffer()
+const controllerSHA256 = createHash("sha256").update(new Uint8Array(controller)).digest("hex")
+// Refuse drift before generating any configs or starting a subprocess. Ordinary
+// source tests remain valid without claiming qualification of this frozen image.
+await withFrozenQualificationController(controllerSHA256, async () => {
 for (const [fixture, templateName, main, doClass, envInterface] of [
   ["native-storage", "wrangler.template.jsonc", "worker.ts", "QualificationConversation", "QualificationBindings"],
   ["account-seed", "account-seed-wrangler.template.jsonc", "account-seed.ts", "AccountSeedConversation", "AccountSeedBindings"],
@@ -40,3 +47,4 @@ for (const [fixture, templateName, main, doClass, envInterface] of [
   }
 }
 console.log(`Offline preflight passed. Generated files: ${output}; no resources were created.`)
+})

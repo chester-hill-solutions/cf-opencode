@@ -11,6 +11,7 @@ import { AccountingPolicyError, ACCOUNTING_POLICY_ID, assertAccountingPolicy } f
 import { accountStateKey, parseConversationKey } from "../tenancy"
 import { parseRuntimeUpgradePending, verifyRestoredRuntimeUpgrade, type RuntimeUpgradePending } from "../runtime-upgrade"
 import { logEvent } from "../log"
+import { parseWorkspaceRepositoryBinding, parseWorkspaceRepositoryReceipt, WorkspaceRepositoryConflictError } from "../workspace-repository"
 
 const OPENCODE_PORT = 4000
 const CONTROL_PORT = 4001
@@ -82,6 +83,14 @@ export class ConversationReadiness {
     }
     const settings = await this.options.configuration.settings()
     const state = await this.options.store.get()
+    const repositoryConflict = () => {
+      this.options.runtime.pauseServer()
+      return new WorkspaceRepositoryConflictError()
+    }
+    let repository: ReturnType<typeof parseWorkspaceRepositoryBinding> | undefined
+    try {
+      if (state.workspaceRepository !== undefined) repository = parseWorkspaceRepositoryBinding(state.workspaceRepository)
+    } catch { throw repositoryConflict() }
     if (!container && !this.options.env().CONTAINER_URL && !this.options.platform.transportEnabled()) {
       throw new Error("no container bound")
     }
@@ -103,7 +112,8 @@ export class ConversationReadiness {
 
     // A settings change is applied between runs: destroying mid-run loses the turn.
     if (container && versionChanged && container.running && busy) {
-      if (this.options.runtime.ready && this.options.runtime.apiPort && this.options.runtime.generation) {
+      if (this.options.runtime.ready && this.options.runtime.apiPort && this.options.runtime.generation &&
+        (!repository || repository.status === "bound")) {
         return this.options.runtime.apiPort
       }
       // A restarted DO can lack the old port cache while an accepted prompt is
@@ -125,7 +135,8 @@ export class ConversationReadiness {
 
     // Fast path: this instance already verified the container for this spec.
     if (!upgradePending && this.options.runtime.ready && this.options.runtime.apiPort && this.options.runtime.generation &&
-      (!container || container.running) && !versionChanged && (!providerSyncNeeded || busy)) {
+      (!container || container.running) && !versionChanged && (!providerSyncNeeded || busy) &&
+      (!repository || (busy && repository.status === "bound"))) {
       return this.options.runtime.apiPort
     }
 
@@ -206,32 +217,61 @@ export class ConversationReadiness {
 
     // Configure after restore: /restore replaces /workspace, including the config.
     // A warm container on the same spec already has its config.
-    if (!upgradePending && (!status.initialized || (versionChanged && !deferSettingsRestart))) {
-      const githubToken = await this.options.configuration.githubToken()
-      await control.fetch("http://container/configure", {
+    if ((!upgradePending && (!status.initialized || (versionChanged && !deferSettingsRestart))) || repository) {
+      // The opt-in public-repository path never inherits the legacy hostname-wide
+      // clone credential. Scoped private Git authorization remains separate work.
+      const githubToken = repository ? undefined : await this.options.configuration.githubToken()
+      const { workspaceRepo: _defaultRepo, workspaceBranch: _defaultBranch, ...boundSettings } = settings
+      // Restore/re-observation can need the trusted binding even while accepted
+      // work is unresolved. Do not change its live model/permission configuration.
+      const bindingOnly = repository && (busy || upgradePending)
+      const configured = await control.fetch("http://container/configure", {
         method: "POST",
-        body: JSON.stringify({ ...settings, ...(githubToken ? { githubToken } : {}) }),
+        body: JSON.stringify({ ...(bindingOnly ? {} : repository ? boundSettings : settings), ...(githubToken ? { githubToken } : {}),
+          ...(repository ? { workspaceRepository: repository } : {}) }),
         signal: AbortSignal.timeout(10_000),
       })
+      if (!configured.ok) {
+        await configured.body?.cancel().catch(() => {})
+        if (repository) throw repositoryConflict()
+        throw new Error("container configuration was refused")
+      }
     }
 
     const startedAt = Date.now()
     const started = await control.fetch("http://container/start", { method: "POST", signal: AbortSignal.timeout(120_000) })
-    if (!started.ok) throw new Error("container start failed: " + await started.text())
+    if (!started.ok) {
+      if (repository) {
+        await started.body?.cancel().catch(() => {})
+        throw repositoryConflict()
+      }
+      throw new Error("container start failed: " + await started.text())
+    }
     const proof = await started.json().catch(() => undefined) as {
       ok?: unknown
       accountingPolicy?: unknown
       opencodeGeneration?: unknown
       eventPersistence?: unknown
       timings?: unknown
+      workspaceRepository?: unknown
     } | undefined
+    // A legacy/unbound conversation must never adopt somebody else's already
+    // materialized task through an initialized external control endpoint.
+    if (!repository && proof && Object.hasOwn(proof, "workspaceRepository")) throw repositoryConflict()
     if (proof?.ok !== true || proof.accountingPolicy !== ACCOUNTING_POLICY_ID ||
       typeof proof.opencodeGeneration !== "string" || !proof.opencodeGeneration) {
+      if (repository) throw repositoryConflict()
       throw new AccountingPolicyError("container start returned no valid accounting runtime proof")
     }
     // Proof fields are committed together only after policy verification succeeds.
     if (this.options.runtime.imageVariant === "evented" && proof.eventPersistence !== true) {
       throw new AccountingPolicyError("evented canary runtime did not confirm persistent events")
+    }
+    if (repository) {
+      try {
+        const receipt = parseWorkspaceRepositoryReceipt(proof.workspaceRepository)
+        if (!(await this.options.store.acknowledgeWorkspaceRepository(receipt))) throw repositoryConflict()
+      } catch { throw repositoryConflict() }
     }
     const runtimeChanged = this.options.runtime.generation !== proof.opencodeGeneration
     // Verify effective OpenCode config before allowing any provider request.

@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7.1
 # OpenCode harness container.
 #
 # Trust split: the control server runs as root for the synthetic empty Workspace
@@ -48,6 +49,9 @@ COPY --from=stow-builder /out/stow-s3 /usr/local/bin/stow-s3
 
 WORKDIR /app
 COPY control-server.ts entrypoint.sh ./
+COPY workspace-preflight.ts ./workspace-preflight.ts
+COPY workspace-repository.ts ./workspace-repository.ts
+COPY workspace-check-snapshot.ts ./workspace-check-snapshot.ts
 COPY runtime/opencode/package.json runtime/opencode/bun.lock ./runtime/opencode/
 # Install and prune in one layer: a later RUN cannot shrink an earlier layer, and
 # Bun hardlinks node_modules to its install cache. Removing the cache here leaves
@@ -65,6 +69,9 @@ RUN cd /app/runtime/opencode \
 COPY runtime/opencode/server.ts runtime/opencode/options.ts ./runtime/opencode/
 COPY src/permissions.ts ./src/permissions.ts
 COPY src/control-auth.ts ./src/control-auth.ts
+COPY src/workspace-preflight.ts ./src/workspace-preflight.ts
+COPY src/workspace-repository.ts ./src/workspace-repository.ts
+COPY src/workspace-check-snapshot.ts ./src/workspace-check-snapshot.ts
 COPY src/tar.ts ./src/tar.ts
 COPY src/accounting-policy.ts ./src/accounting-policy.ts
 COPY stow-workspace.ts ./stow-workspace.ts

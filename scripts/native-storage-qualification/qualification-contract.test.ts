@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test"
 import { onlyWhenQualificationBucketEmpty, projectSafeProbe } from "./qualification-contract"
 import { QUALIFICATION_ARTIFACT, matchesQualificationRuntime, matchesQualificationReceipt } from "./artifact"
 import { NATIVE_STORAGE_PROBE } from "./container-probe"
-import { createHash } from "node:crypto"
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
+import { withFrozenQualificationController } from "./source-guard"
 import { ALL_CASE_IDS, CONTAINER_CASE_IDS, MATRIX_VERSION, matrixPassed, preparationPassed, projectMatrix, type CaseResult } from "./matrix"
 
 describe("staging qualification safety contract", () => {
@@ -40,19 +40,60 @@ describe("staging qualification safety contract", () => {
     expect(matchesQualificationReceipt({ ...receipt, runtime: { ...receipt.runtime, requested: "standard-1" } })).toBe(false)
   })
 
-  test("the generated probe parses and the frozen controller matches current source", () => {
+  test("the generated probe parses and retains frozen provenance pins", () => {
     // Parse the actual generated program without executing its filesystem/S3 work.
     const transformed = new Bun.Transpiler({ loader: "ts" }).transformSync(NATIVE_STORAGE_PROBE)
     expect(transformed).toContain(QUALIFICATION_ARTIFACT.controllerSHA256)
     expect(transformed).toContain(QUALIFICATION_ARTIFACT.binarySHA256)
-    const controller = readFileSync(resolve(import.meta.dir, "../../control-server.ts"))
-    expect(createHash("sha256").update(controller).digest("hex")).toBe(QUALIFICATION_ARTIFACT.controllerSHA256)
     const dockerfile = readFileSync(resolve(import.meta.dir, "../../Dockerfile"), "utf8")
     expect(dockerfile).toContain(`ARG STOW_VERSION=${QUALIFICATION_ARTIFACT.stowVersion}\n`)
     const template = JSON.parse(readFileSync(resolve(import.meta.dir, "wrangler.template.jsonc"), "utf8")
       .replace(/^\s*\/\/.*$/gm, ""))
     expect(template.vars.CONTAINER_INSTANCE_PROFILE).toBe(QUALIFICATION_ARTIFACT.profile)
     expect(template.vars.IDLE_CLOSE_SECONDS).toBe("300")
+  })
+
+  test("the source guard admits only the frozen controller before qualification side effects", async () => {
+    const effects: string[] = []
+    for (const digest of ["", "0".repeat(64), QUALIFICATION_ARTIFACT.controllerSHA256.toUpperCase()]) {
+      await expect(withFrozenQualificationController(digest, () => { effects.push("write/spawn"); return "built" }))
+        .rejects.toThrow("QUALIFICATION_SOURCE_DRIFT")
+      expect(effects).toEqual([])
+    }
+    expect(await withFrozenQualificationController(QUALIFICATION_ARTIFACT.controllerSHA256, () => {
+      effects.push("write/spawn")
+      return "built"
+    })).toBe("built")
+    expect(effects).toEqual(["write/spawn"])
+  })
+
+  test("the actual preflight rejects changed controller bytes before any write or spawn", () => {
+    const root = resolve(import.meta.dir, "../..")
+    const controllerPath = resolve(root, "control-server.ts")
+    const preflightPath = resolve(import.meta.dir, "preflight.ts")
+    // Run the real entry point in an isolated process. Deliberately drift the
+    // source read and intercept every mutating build action, without editing it.
+    const script = `
+      const effects = [];
+      const file = Bun.file;
+      Bun.file = (path, ...args) => String(path) === ${JSON.stringify(controllerPath)}
+        ? { arrayBuffer: async () => new TextEncoder().encode("deliberately changed controller bytes").buffer }
+        : file(path, ...args);
+      Bun.write = () => { effects.push("write"); throw new Error("unexpected write"); };
+      Bun.spawn = () => { effects.push("spawn"); throw new Error("unexpected spawn"); };
+      try {
+        await import(${JSON.stringify(preflightPath)});
+        console.log(JSON.stringify({ error: null, effects }));
+      } catch (error) {
+        console.log(JSON.stringify({ error: error.message, effects }));
+      }
+    `
+    const child = Bun.spawnSync([process.execPath, "--eval", script], { cwd: root, stdout: "pipe", stderr: "pipe", timeout: 10_000 })
+    expect(child.exitCode).toBe(0)
+    expect(child.stderr.toString()).toBe("")
+    const result = JSON.parse(child.stdout.toString())
+    expect(result.error).toContain("QUALIFICATION_SOURCE_DRIFT")
+    expect(result.effects).toEqual([])
   })
 
   test("a global account-seed object blocks startup before the callback runs", async () => {

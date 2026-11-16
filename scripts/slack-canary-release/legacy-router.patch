@@ -1,0 +1,269 @@
+diff --git a/src/env.ts b/src/env.ts
+index 86eafe9..898a47e 100644
+--- a/src/env.ts
++++ b/src/env.ts
+@@ -1,4 +1,9 @@
+ export interface Env {
++  /** Exact-channel delegation; legacy Slack signing secret never leaves this Worker. */
++  SLACK_CANARY_CHANNEL?: string
++  SLACK_CANARY_SIGNING_SECRET?: string
++  SLACK_CANARY_ORIGIN?: string
++  SLACK_CANARY?: Fetcher
+   /** Slack adapter is optional; without these the Slack routes return 503. */
+   SLACK_SIGNING_SECRET?: string
+   SLACK_BOT_TOKEN?: string
+diff --git a/src/index.ts b/src/index.ts
+index 4bb5ae1..f5c79a9 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -1,3 +1,4 @@
++import { routeSlackCanary } from "./slack-canary-router"
+ import { parseInteractionBody, verifySlackSignature, type SlackEventEnvelope } from "./adapters/slack"
+ import type { Env } from "./env"
+ import type { MessageRequest, PermissionRequest, SlackEventRequest } from "./conversation"
+@@ -81,6 +82,9 @@ export default {
+     })
+     if (!valid) return new Response("invalid signature", { status: 401 })
+ 
++    const canary = await routeSlackCanary(request, body, env)
++    if (canary) return canary
++
+     if (url.pathname === "/slack/events") {
+       let payload: SlackEventEnvelope
+       try {
+diff --git a/wrangler.jsonc b/wrangler.jsonc
+index e15997b..5f3008b 100644
+--- a/wrangler.jsonc
++++ b/wrangler.jsonc
+@@ -12,7 +12,10 @@
+     "traces": { "enabled": true, "head_sampling_rate": 1 }
+   },
+   "triggers": { "crons": ["*/15 * * * *"] },
++  "services": [{ "binding": "SLACK_CANARY", "service": "cf-opencode-arfin-canary-20261115" }],
+   "vars": {
++    "SLACK_CANARY_CHANNEL": "C0A5YNXLP6C",
++    "SLACK_CANARY_ORIGIN": "https://cf-opencode-arfin-canary-20261115.chester-hill-solutions.workers.dev",
+     "WORKSPACE_REPO": "https://github.com/chester-hill-solutions/opencode-slack",
+     "OPENCODE_MODEL": "opencode/deepseek-v4.1-flash",
+     "POLL_SECONDS": "2",
+diff --git a/src/slack-canary-router.ts b/src/slack-canary-router.ts
+new file mode 100644
+--- /dev/null
++++ b/src/slack-canary-router.ts
+@@ -0,0 +1,85 @@
++/** Copied into the isolated 15a916a release checkout; called only after real Slack HMAC validation. */
++export interface SlackCanaryRouterBindings {
++  SLACK_CANARY_CHANNEL?: string
++  SLACK_CANARY_SIGNING_SECRET?: string
++  SLACK_CANARY_ORIGIN?: string
++  SLACK_CANARY?: { fetch(request: Request): Promise<Response> }
++}
++const TS = /^[0-9]{1,16}\.[0-9]{1,16}$/
++function object(value: unknown): Record<string, unknown> | undefined { return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined }
++function candidate(path: string, body: string): { channel: string; threadTs?: string } | undefined {
++  try {
++    if (path === "/slack/events") {
++      const event = object(object(JSON.parse(body))?.event)
++      if (typeof event?.channel !== "string") return undefined
++      const ts = event.thread_ts ?? event.ts
++      return { channel: event.channel, ...(typeof ts === "string" && TS.test(ts) ? { threadTs: ts } : {}) }
++    }
++    if (path === "/slack/interactivity") {
++      const raw = new URLSearchParams(body).get("payload"), payload = raw ? object(JSON.parse(raw)) : undefined
++      const channel = object(payload?.channel)?.id
++      if (typeof channel !== "string") return undefined
++      const message = object(payload?.message), direct = message?.thread_ts
++      if (typeof direct === "string" && TS.test(direct)) return { channel, threadTs: direct }
++      const actions = payload?.actions, action = Array.isArray(actions) ? object(actions[0]) : undefined
++      if (typeof action?.value === "string" && action.value.length <= 4096) {
++        const key = object(JSON.parse(action.value))?.key
++        if (typeof key === "string" && key.startsWith(channel + ":") && TS.test(key.slice(channel.length + 1))) return { channel, threadTs: key.slice(channel.length + 1) }
++      }
++      return { channel }
++    }
++  } catch {}
++  return undefined
++}
++async function signature(secret: string, timestamp: string, body: string): Promise<string> {
++  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
++  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`v0:${timestamp}:${body}`))
++  return "v0=" + Array.from(new Uint8Array(mac), byte => byte.toString(16).padStart(2, "0")).join("")
++}
++async function boundedRequest(service: NonNullable<SlackCanaryRouterBindings["SLACK_CANARY"]>, request: Request, timeoutMs: number, json: boolean): Promise<{ status: number; value?: unknown; text?: string; contentType?: string }> {
++  let stopped = false
++  let timer: ReturnType<typeof setTimeout> | undefined, reader: { cancel(reason?: unknown): Promise<void> } | undefined
++  const controller = new AbortController()
++  const operation = (async () => {
++    const response = await service.fetch(new Request(request, { signal: controller.signal }))
++    if (stopped || response.status !== 200) { void response.body?.cancel().catch(() => {}); return { status: response.status } }
++    if (!response.body) throw new Error("Missing route proof")
++    const bodyReader = response.body.getReader(); reader = bodyReader
++    let bytes = 0, text = ""
++    const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false })
++    for (;;) {
++      const part = await bodyReader.read(); if (part.done) break
++      bytes += part.value.byteLength; if (bytes > (json ? 1024 : 8192)) throw new Error("Route proof limit")
++      text += decoder.decode(part.value, { stream: true })
++    }
++    text += decoder.decode()
++    return json ? { status: response.status, value: JSON.parse(text) as unknown } : { status: response.status, text, contentType: response.headers.get("content-type") ?? "text/plain" }
++  })()
++  try { return await Promise.race([operation, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Canary deadline")), timeoutMs) })]) }
++  finally { stopped = true; if (timer) clearTimeout(timer); controller.abort(); try { void reader?.cancel().catch(() => {}) } catch {} }
++}
++
++/** Undefined means unchanged legacy dispatch. A route/proof/forwarding failure never falls back. */
++export async function routeSlackCanary(request: Request, body: string, env: SlackCanaryRouterBindings): Promise<Response | undefined> {
++  const path = new URL(request.url).pathname, target = candidate(path, body)
++  if (!env.SLACK_CANARY_CHANNEL || target?.channel !== env.SLACK_CANARY_CHANNEL) return undefined
++  try {
++    if (!env.SLACK_CANARY || !env.SLACK_CANARY_SIGNING_SECRET || env.SLACK_CANARY_SIGNING_SECRET.length < 32 || body.length > 262144 || !env.SLACK_CANARY_ORIGIN) throw new Error("Canary unavailable")
++    const origin = new URL(env.SLACK_CANARY_ORIGIN)
++    if (origin.protocol !== "https:" || origin.username || origin.password || origin.pathname !== "/" || origin.search || origin.hash) throw new Error("Canary origin invalid")
++    const timestamp = String(Math.floor(Date.now() / 1000)), headers = new Headers({ "content-type": path === "/slack/events" ? "application/json" : "application/x-www-form-urlencoded", "x-slack-request-timestamp": timestamp, "x-slack-signature": await signature(env.SLACK_CANARY_SIGNING_SECRET, timestamp, body) })
++    for (const name of ["x-slack-retry-num", "x-slack-retry-reason"]) { const value = request.headers.get(name); if (value && value.length <= 128) headers.set(name, value) }
++    const make = (pathname: string, search = "") => new Request(new URL(pathname + search, origin).toString(), { method: "POST", headers, body, redirect: "manual" })
++    const proof = await boundedRequest(env.SLACK_CANARY, make("/slack/canary-route", "?kind=" + (path === "/slack/events" ? "events" : "interactivity")), 1200, true)
++    const value = object(proof.value)
++    if (proof.status !== 200 || !value || Object.keys(value).sort().join(",") !== "channel,route,threadTs" || !["canary", "legacy"].includes(String(value.route))) throw new Error("Canary proof unavailable")
++    if (value.route === "legacy") {
++      if (!((value.channel === null && value.threadTs === null) || (value.channel === target.channel && typeof value.threadTs === "string" && TS.test(value.threadTs) && (!target.threadTs || value.threadTs === target.threadTs)))) throw new Error("Legacy proof mismatch")
++      return undefined
++    }
++    if (value.channel !== target.channel || !target.threadTs || value.threadTs !== target.threadTs) throw new Error("Canary proof mismatch")
++    const forwarded = await boundedRequest(env.SLACK_CANARY, make(path), 1200, false)
++    if (forwarded.status !== 200) throw new Error("Canary dispatch unavailable")
++    return new Response(forwarded.text ?? "ok", { headers: { "content-type": forwarded.contentType?.startsWith("application/json") ? "application/json" : "text/plain" } })
++  } catch { return new Response("canary routing unavailable", { status: 503 }) }
++}
+diff --git a/test/slack-canary-delegation.test.ts b/test/slack-canary-delegation.test.ts
+new file mode 100644
+--- /dev/null
++++ b/test/slack-canary-delegation.test.ts
+@@ -0,0 +1,46 @@
++import { expect, it } from "vitest"
++import { createExecutionContext, env } from "cloudflare:test"
++import worker from "../src/index"
++import type { Env } from "../src/env"
++import { verifySlackSignature } from "../src/adapters/slack"
++const channel = "C0A5YNXLP6C", ts = "1794780000.000001", delegation = "synthetic-delegation-" + "a".repeat(32)
++async function signed(body: string, valid = true) {
++  const timestamp = String(Math.floor(Date.now() / 1000)), bytes = new TextEncoder()
++  const key = await crypto.subtle.importKey("raw", bytes.encode("test-secret"), { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
++  const mac = await crypto.subtle.sign("HMAC", key, bytes.encode(`v0:${timestamp}:${body}`))
++  return new Request("https://legacy.example/slack/events", { method: "POST", body, headers: { "content-type": "application/json", "x-slack-request-timestamp": timestamp, "x-slack-signature": valid ? "v0=" + Array.from(new Uint8Array(mac), b => b.toString(16).padStart(2, "0")).join("") : "v0=invalid" } })
++}
++function fixture(route: "canary" | "legacy" = "canary") {
++  let legacy = 0, delegated = 0
++  const refuse = <T extends object>(namespace: T): T => new Proxy(namespace, { get(target, property, receiver) { if (property === "getByName") return () => { legacy++; throw new Error("Legacy dispatch observed") }; return Reflect.get(target, property, receiver) } })
++  const config: Env = { ...env, CONVERSATION: refuse(env.CONVERSATION), SETTINGS: refuse(env.SETTINGS), SLACK_CANARY_CHANNEL: channel, SLACK_CANARY_ORIGIN: "https://isolated.example", SLACK_CANARY_SIGNING_SECRET: delegation, SLACK_CANARY: {
++    connect() { throw new Error("Unexpected connect") },
++    async fetch(input, init) {
++      delegated++
++      const req = new Request(input, init), body = await req.text()
++      expect(await verifySlackSignature({ signingSecret: delegation, timestamp: req.headers.get("x-slack-request-timestamp"), signature: req.headers.get("x-slack-signature"), body })).toBe(true)
++      return new URL(req.url).pathname === "/slack/canary-route" ? Response.json({ route, channel, threadTs: ts }) : new Response("ok")
++    },
++  } }
++  return { config, counts: () => ({ legacy, delegated }) }
++}
++it("invalid real Slack signature never reaches delegated probe or either legacy namespace", async () => {
++  const f = fixture(), body = JSON.stringify({ type: "event_callback", event: { type: "app_mention", channel, ts, text: "!help" } })
++  expect((await worker.fetch(await signed(body, false), f.config, createExecutionContext())).status).toBe(401)
++  expect(f.counts()).toEqual({ legacy: 0, delegated: 0 })
++})
++it("owned target forwards after real HMAC and before any legacy registry or conversation access", async () => {
++  const f = fixture(), body = JSON.stringify({ type: "event_callback", event: { type: "app_mention", channel, ts, text: "!help" } })
++  expect((await worker.fetch(await signed(body), f.config, createExecutionContext())).status).toBe(200)
++  expect(f.counts()).toEqual({ legacy: 0, delegated: 2 })
++})
++it("unowned old thread still reaches original legacy dispatch", async () => {
++  const f = fixture("legacy"), body = JSON.stringify({ type: "event_callback", event: { type: "app_mention", channel, ts, thread_ts: ts, text: "!help" } })
++  await expect(worker.fetch(await signed(body), f.config, createExecutionContext())).rejects.toThrow("Legacy dispatch observed")
++  expect(f.counts().legacy).toBeGreaterThan(0); expect(f.counts().delegated).toBe(1)
++})
++it("other channels never probe canary and still reach original dispatch", async () => {
++  const f = fixture(), body = JSON.stringify({ type: "event_callback", event: { type: "app_mention", channel: "COLD", ts, text: "!help" } })
++  await expect(worker.fetch(await signed(body), f.config, createExecutionContext())).rejects.toThrow("Legacy dispatch observed")
++  expect(f.counts().legacy).toBeGreaterThan(0); expect(f.counts().delegated).toBe(0)
++})
+diff --git a/tests/slack-canary-router.test.ts b/tests/slack-canary-router.test.ts
+new file mode 100644
+--- /dev/null
++++ b/tests/slack-canary-router.test.ts
+@@ -0,0 +1,75 @@
++import { expect, test } from "bun:test"
++import { routeSlackCanary, type SlackCanaryRouterBindings } from "../src/slack-canary-router"
++import { verifySlackSignature } from "../src/adapters/slack"
++const channel = "C0A5YNXLP6C", ts = "1794780000.000001", secret = "delegation-test-only-" + "a".repeat(32)
++const event = (extra = {}) => JSON.stringify({ type: "event_callback", event: { type: "app_mention", channel, ts, ...extra } })
++const request = (path = "/slack/events") => new Request("https://legacy.example" + path, { method: "POST", headers: { "x-slack-signature": "v0=real-secret-signature-do-not-forward", "x-slack-retry-num": "1" } })
++function setup(proof: unknown = { route: "canary", channel, threadTs: ts }, options: { status?: number; dispatch?: string; dispatchStatus?: number } = {}) {
++  const seen: string[] = [], bodies: string[] = []
++  const env: SlackCanaryRouterBindings = { SLACK_CANARY_CHANNEL: channel, SLACK_CANARY_SIGNING_SECRET: secret, SLACK_CANARY_ORIGIN: "https://isolated.example", SLACK_CANARY: { async fetch(req) {
++    seen.push(req.url); bodies.push(await req.text())
++    expect(req.headers.get("x-slack-signature")).not.toBe(request().headers.get("x-slack-signature"))
++    expect(await verifySlackSignature({ signingSecret: secret, timestamp: req.headers.get("x-slack-request-timestamp"), signature: req.headers.get("x-slack-signature"), body: bodies.at(-1)! })).toBe(true)
++    expect(req.headers.get("x-slack-retry-num")).toBe("1")
++    return new URL(req.url).pathname === "/slack/canary-route" ? Response.json(proof, { status: options.status ?? 200 }) : new Response(options.dispatch ?? "ok", { status: options.dispatchStatus ?? 200, headers: { "content-type": "application/json" } })
++  } } }
++  return { env, seen, bodies }
++}
++
++test("exact channel canary event re-signs unchanged bytes without forwarding the production secret", async () => {
++  const f = setup(), body = event()
++  expect((await routeSlackCanary(request(), body, f.env))?.status).toBe(200)
++  expect(f.bodies).toEqual([body, body])
++  expect(f.seen).toEqual(["https://isolated.example/slack/canary-route?kind=events", "https://isolated.example/slack/events"])
++})
++
++test("other channels, URL verification and missing opt-in remain legacy without touching canary", async () => {
++  const f = setup()
++  for (const body of [event({ channel: "COLD" }), JSON.stringify({ type: "url_verification", challenge: "abc" })]) expect(await routeSlackCanary(request(), body, f.env)).toBeUndefined()
++  expect(await routeSlackCanary(request(), event(), { ...f.env, SLACK_CANARY_CHANNEL: undefined })).toBeUndefined()
++  expect(f.seen).toHaveLength(0)
++})
++
++test("unowned old threads preserve legacy dispatch, while owned replies use existing root marker", async () => {
++  const old = setup({ route: "legacy", channel, threadTs: ts })
++  expect(await routeSlackCanary(request(), event({ type: "message", thread_ts: ts }), old.env)).toBeUndefined()
++  expect(old.seen).toHaveLength(1)
++  const owned = setup()
++  expect((await routeSlackCanary(request(), event({ type: "message", ts: "1794780001.000001", thread_ts: ts }), owned.env))?.status).toBe(200)
++  expect(owned.seen).toHaveLength(2)
++})
++
++test("interactive owned thread proof preserves bounded ephemeral response", async () => {
++  const body = new URLSearchParams({ payload: JSON.stringify({ channel: { id: channel }, actions: [{ value: JSON.stringify({ key: channel + ":" + ts }) }] }) }).toString()
++  const f = setup(undefined, { dispatch: '{"response_type":"ephemeral","text":"permission denied"}' })
++  const response = await routeSlackCanary(request("/slack/interactivity"), body, f.env)
++  expect(response?.status).toBe(200)
++  expect(await response?.json()).toEqual({ response_type: "ephemeral", text: "permission denied" })
++  expect(f.seen[0]).toEndWith("?kind=interactivity")
++})
++
++test("unavailable, malformed or mismatched proofs never fall back or forward actual payload", async () => {
++  for (const proof of [null, { route: "canary", channel: "COTHER", threadTs: ts }, { route: "canary", channel, threadTs: "2.3" }, { route: "legacy", channel: "COTHER", threadTs: ts }, { route: "legacy", channel: null, threadTs: ts }]) {
++    const f = setup(proof)
++    expect((await routeSlackCanary(request(), event(), f.env))?.status).toBe(503)
++    expect(f.seen).toHaveLength(1)
++  }
++  const f = setup(undefined, { status: 503 })
++  expect((await routeSlackCanary(request(), event(), f.env))?.status).toBe(503)
++  expect((await routeSlackCanary(request(), event(), { ...f.env, SLACK_CANARY: undefined }))?.status).toBe(503)
++  expect((await routeSlackCanary(request(), event(), { ...f.env, SLACK_CANARY_ORIGIN: "https://user:password@wrong.example" }))?.status).toBe(503)
++})
++
++test("dispatch failure and oversized output fail closed", async () => {
++  const f = setup(undefined, { dispatchStatus: 503 })
++  expect((await routeSlackCanary(request(), event(), f.env))?.status).toBe(503)
++  const large = setup(undefined, { dispatch: "x".repeat(8193) })
++  expect((await routeSlackCanary(request(), event(), large.env))?.status).toBe(503)
++})
++
++test("uncooperative probe has a bounded deadline and cannot later forward actual payload", async () => {
++  let calls = 0
++  const f = setup(), started = Date.now()
++  const response = await routeSlackCanary(request(), event(), { ...f.env, SLACK_CANARY: { fetch: async () => { calls++; return await new Promise<Response>(() => {}) } } })
++  expect(response?.status).toBe(503); expect(Date.now() - started).toBeLessThan(2000); expect(calls).toBe(1)
++})

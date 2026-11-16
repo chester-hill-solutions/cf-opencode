@@ -20,6 +20,8 @@ import {
   type FormAnswer,
 } from "./slack-forms"
 import type { TurnObservation } from "./turn-observation"
+import { parseWorkspaceRepositoryBinding } from "./workspace-repository"
+import { handleSlackWorkspaceCommand, readSlackWorkspaceProfile, type SlackWorkspaceCommandServices } from "./slack-workspace-commands"
 
 export interface SlackCommandServices {
   getState(): Promise<{
@@ -28,6 +30,7 @@ export interface SlackCommandServices {
     modelOverride?: string
     lastTurnError?: string
     settlementError?: string
+    workspaceRepository?: unknown
     queue?: Array<{ id?: string; text: string; enqueuedAt?: number }>
     turnObservation?: TurnObservation
   }>
@@ -47,6 +50,7 @@ export interface SlackCommandServices {
   usageText(): Promise<string>
   reply(text: string): Promise<void>
   setupUrl: string
+  workspace?: SlackWorkspaceCommandServices
 }
 
 const SESSION_DIRECTORY = "/workspace"
@@ -68,6 +72,14 @@ const HELP = [
   "• `!new` — start a fresh session",
   "• `!leave` — detach this thread; in DMs, use `!new` for a fresh session",
   "• `!usage` — show usage information",
+  "• Workspace first — durable projects, scripts, analysis, documents and prototypes may start blank and remain repository-free permanently. Keeping work requires no git initialization, commit or remote.",
+  "• `!workspace` — show retention and name; persistent is the default",
+  "• `!workspace persistent [name]` / `!workspace disposable [name]` — name or change retention in place; files and session are preserved",
+  "• `!workspace discard` — explicitly discard a disposable workspace. Disposable work keeps recovery checkpoints until then; finish/idle never auto-discards it.",
+  "• A repository is optional. If requested, use a public checkout in a new subfolder and carry over chosen files, preserving originals and checking conflicts.",
+  "• `!repo [GitHub URL base working]` — inspect this workspace, or register an optional root repository before work starts",
+  "• `!check` / `!check [\"bun\",\"test\",...]` — request isolated checks on a registered root's committed snapshot; nested agent checkouts are not eligible",
+  "• `!checks` — inspect this thread's check requests and results",
   "• `!setup` / `!connect` — open account setup",
   "• Images — one PNG or JPEG up to 5 MiB; the selected model must support images. If the bot is busy, resend when it is ready.",
 ].join("\n")
@@ -135,6 +147,11 @@ export async function handleSlackCommand(text: string, services: SlackCommandSer
 
   const reply = (message: string) => services.reply(message)
   try {
+    if (["workspace", "repo", "check", "checks"].includes(name)) {
+      try { await reply(await handleSlackWorkspaceCommand(name, args, services.workspace) ?? "Workspace control unavailable.") }
+      catch { await reply("Workspace control could not be completed. Use `!workspace`, `!repo` or `!checks` to inspect retained state before retrying.") }
+      return true
+    }
     if (name === "help") {
       await reply(HELP)
       return true
@@ -257,9 +274,25 @@ export async function handleSlackCommand(text: string, services: SlackCommandSer
     if (name === "status") {
       const state = await services.getState()
       const model = state.modelOverride || await services.getDefaultModel().catch(() => undefined)
+      let workspace = "Workspace: general; a repository is optional."
+      if (state.workspaceRepository !== undefined) {
+        try {
+          const binding = parseWorkspaceRepositoryBinding(state.workspaceRepository)
+          workspace = `Registered root (${binding.status}): ${mrkdwnEscape(binding.repository)}`
+        } catch { workspace = "Root repository status is unavailable; inspect it with `!repo`." }
+      }
+      const retention: string[] = []
+      if (services.workspace?.workspace) {
+        try {
+          const profile = await readSlackWorkspaceProfile(services.workspace.workspace)
+          retention.push(`Retention: ${profile.retention}${profile.name ? ` — ${mrkdwnEscape(profile.name)}` : ""}${profile.status === "discarding" ? " (discard pending)" : ""}.`)
+        } catch { retention.push("Workspace retention status is unavailable; inspect `!workspace` before making changes.") }
+      }
       const lines = [
         state.sessionID ? `Session \`${state.sessionID}\`` : "No session mapped here yet.",
         `Phase: ${state.phase ?? "idle"}`,
+        workspace,
+        ...retention,
         ...(model ? [`Model: \`${model}\``] : []),
       ]
       const queue = state.queue ?? []

@@ -68,6 +68,7 @@ export interface ConversationTurnExecutionOptions {
   }
   settings(): Promise<HarnessSettings>
   releaseBudgetReservation(reservation: BudgetReservation): Promise<boolean>
+  finalReply?(state: ConversationState, text: string, assistantID?: string): Promise<void>
   waitUntil(promise: Promise<unknown>): void
   telemetry?(input: ConversationTelemetryInput): void
 }
@@ -335,6 +336,11 @@ export class ConversationTurnExecution {
       await this.pauseSettlement("terminal usage context is unavailable; reservation retained")
       return
     }
+    const publicReply = reply || (!failure ? "The run finished without a public answer. Send a follow-up to continue." : "")
+    if (publicReply && this.options.finalReply) {
+      const terminalID = messages ? turnMessages(messages, state.turnBaseline).filter(message => message.type === "assistant").at(-1)?.id : undefined
+      await this.options.finalReply(state, publicReply, terminalID)
+    }
     if (state.budgetReservation) {
       if (failure?.message === "turn timed out") {
         await this.pauseSettlement("turn timed out without terminal usage context; reservation retained")
@@ -353,9 +359,9 @@ export class ConversationTurnExecution {
         await this.options.store.patch({ reportedError: key, lastTurnError: failure.message })
       }
     }
-    if (reply && reply !== state.lastSlackReply) {
-      await this.options.delivery.toSlack({ type: "assistant", text: reply })
-      await this.options.store.patch({ lastSlackReply: reply })
+    if (!this.options.finalReply && publicReply && publicReply !== state.lastSlackReply) {
+      await this.options.delivery.toSlack({ type: "assistant", text: publicReply })
+      await this.options.store.patch({ lastSlackReply: publicReply })
     }
     await this.options.delivery.event({ type: "settled" })
     const saved = await this.options.checkpoints.capture()

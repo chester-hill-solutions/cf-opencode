@@ -23,7 +23,10 @@ export interface ConversationSchedulerOptions {
     recoveryWake: DomainWork
     leaseRenew: DomainWork
     idleClose?: DomainWork
+    checkNotify?: DomainWork
+    replyDeliver?: DomainWork
   }
+  replyWake?(): Promise<number | undefined>
 }
 
 /** Owns the Lifecycle job capability and conversation-side durable job fences. */
@@ -42,6 +45,8 @@ export class ConversationScheduler {
       legacyBootstrap: (payload) => this.runLegacyAlarmBootstrap(payload),
       leaseRenew: (payload) => this.handoff("lease:renew", payload, () => options.work.leaseRenew(payload)),
       idleClose: (payload) => this.handoff("container:idle", payload, () => options.work.idleClose?.(payload) ?? Promise.resolve(undefined)),
+      checkNotify: (payload) => this.handoff("check:notify", payload, () => options.work.checkNotify?.(payload) ?? Promise.resolve(undefined)),
+      replyDeliver: (payload) => this.handoff("reply:deliver", payload, () => options.work.replyDeliver?.(payload) ?? Promise.resolve(undefined)),
       onJobError: (kind, payload, error) => this.handleJobError(kind, payload, error),
       onMemoryLimit: (context) => this.onMemoryLimit(context),
     })
@@ -107,6 +112,8 @@ export class ConversationScheduler {
 
   private async installLegacyAlarmBootstrap(): Promise<void> {
     await this.epoch()
+    const replyAt = await this.options.replyWake?.()
+    if (replyAt !== undefined && !await this.options.storage.get<boolean>("lifecycleJobsSealed") && !this.capability.has("reply:deliver")) await this.schedule("reply:deliver", Math.max(Date.now(), replyAt))
     await this.options.storage.transaction(async (txn) => {
       const migration = await txn.get<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY)
       if (!migration || migration.version !== 1 || migration.dueAt === null ||
@@ -219,7 +226,7 @@ export class ConversationScheduler {
         JSON.stringify(state) !== JSON.stringify(expectedState)) {
         throw new Error("sealed recovery evidence changed")
       }
-      for (const kind of ["turn:observe", "admission:retry", "checkpoint:retry", "recovery:wake", "legacy:bootstrap", "lease:renew", "container:idle"] as const) {
+      for (const kind of ["turn:observe", "admission:retry", "checkpoint:retry", "recovery:wake", "legacy:bootstrap", "lease:renew", "container:idle", "reply:deliver"] as const) {
         await this.capability.cancel(kind)
       }
       await txn.put("conversationJobEpoch", nextEpoch)
@@ -229,6 +236,11 @@ export class ConversationScheduler {
       await txn.put<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY, {
         version: 1, dueAt: null, scheduled: false, consumed: true,
       })
+      const replyAt = await this.options.replyWake?.()
+      if (replyAt !== undefined) {
+        const at = Math.max(Date.now(), replyAt)
+        await this.capability.schedule("reply:deliver", at, { epoch: nextEpoch, dueAt: at, reason: "sealed-idle-recovery" })
+      }
       if (state.checkpointPending) {
         const at = Math.max(Date.now(), state.checkpointRetryAt ?? Date.now())
         await this.capability.schedule("checkpoint:retry", at, { epoch: nextEpoch, dueAt: at, reason: "sealed-idle-recovery" })
@@ -260,6 +272,8 @@ export class ConversationScheduler {
       await this.capability.cancel("legacy:bootstrap")
       await this.capability.cancel("lease:renew")
       await this.capability.cancel("container:idle")
+      await this.capability.cancel("check:notify")
+      await this.capability.cancel("reply:deliver")
       await this.options.storage.put<LegacyAlarmMigration>(LEGACY_ALARM_MIGRATION_KEY, {
         version: 1,
         dueAt: null,

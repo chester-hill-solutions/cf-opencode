@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { canTransition, ConversationStore, type KeyValueStorage, type QueuedMessage } from "../src/state"
+import { canTransition, ConversationStore, hasBenignSlackControlHistory, type KeyValueStorage, type QueuedMessage } from "../src/state"
 import { DEFAULT_QUEUE_CAPACITY, MAX_QUEUE_CAPACITY, queueCapacity } from "../src/queue"
 
 function fakeStorage(): KeyValueStorage & { map: Map<string, unknown> } {
@@ -19,6 +19,23 @@ describe("ConversationStore", () => {
   test("starts empty", async () => {
     const store = new ConversationStore(fakeStorage())
     expect(await store.get()).toEqual({ queue: [], seen: [], pending: {}, permissionNotifications: {} })
+  })
+
+  test("typed harmless control tombstones retain dedupe beyond the bounded seen window", async () => {
+    const store = new ConversationStore(fakeStorage())
+    await store.claimEvent("old-help", "help")
+    await store.markTombstone("old-help", "help")
+    for (let index = 0; index < 205; index++) await store.claimEvent("help-" + index, "help")
+    const current = await store.get()
+    expect(current.seen).toHaveLength(200)
+    expect(current.slackControlHistory?.events).toHaveLength(200)
+    expect(hasBenignSlackControlHistory(current)).toBe(true)
+    expect(await store.claimEvent("old-help", "help")).toBe(false)
+    expect(await store.claimEvent("ordinary-work")).toBe(true)
+    expect((await store.get()).slackControlHistory).toBeUndefined()
+    await store.releaseEvent("ordinary-work")
+    await store.claimEvent("later-help", "help")
+    expect(hasBenignSlackControlHistory(await store.get())).toBe(false)
   })
 
   test("claims event ids and releases failed ones", async () => {

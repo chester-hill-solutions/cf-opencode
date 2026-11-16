@@ -90,6 +90,7 @@ case "$RUNTIME" in
     exec_second_agent() { docker exec --user 1001 "$SECOND_NAME" "$@"; }
     copy_to_second() { docker cp "$1" "$SECOND_NAME:$2"; }
     remove_named() { docker rm -f "$1" >/dev/null 2>&1; }
+    stop_main() { docker stop --time 10 "$NAME" >/dev/null; }
     cleanup() {
       [[ "$CREATED_SECOND" == 1 ]] && remove_named "$SECOND_NAME" || true
       [[ "$CREATED_MAIN" == 1 ]] && remove_named "$NAME" || true
@@ -118,6 +119,7 @@ case "$RUNTIME" in
       container stop "$1" >/dev/null 2>&1 || true
       container delete "$1" >/dev/null 2>&1
     }
+    stop_main() { container stop "$NAME" >/dev/null; }
     cleanup() {
       [[ "$CREATED_SECOND" == 1 ]] && remove_named "$SECOND_NAME" || true
       [[ "$CREATED_MAIN" == 1 ]] && remove_named "$NAME" || true
@@ -248,6 +250,17 @@ AUTH=(-H "authorization: Bearer ${CONTROL_TOKEN}")
 # Every operation except /health must require the per-container token.
 code="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/status")"
 [[ "$code" == "401" ]] || fail "unauthenticated /status returned ${code}, expected 401"
+
+# Inspect the native workspace as the agent without preparing either runtime.
+code="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/workspace/preflight")"
+[[ "$code" == "401" ]] || fail "unauthenticated workspace preflight returned ${code}, expected 401"
+preflight_before="$(curl -fsS "${AUTH[@]}" "${BASE}/status" | jq -c '{initialized,running,s3}')"
+curl -fsS "${AUTH[@]}" "${BASE}/workspace/preflight" >"${WORK}/workspace-preflight.json"
+jq -e '.schemaVersion == 1 and .mode == "read_only" and .verification.setup == "not_run" and .verification.checks == "not_run"' \
+  "${WORK}/workspace-preflight.json" >/dev/null || fail "workspace preflight omitted its read-only verification contract"
+preflight_after="$(curl -fsS "${AUTH[@]}" "${BASE}/status" | jq -c '{initialized,running,s3}')"
+[[ "$preflight_before" == "$preflight_after" ]] || fail "workspace preflight changed runtime readiness"
+ok "authenticated workspace preflight stays passive before startup"
 ok "control token required"
 
 curl -fsS "${AUTH[@]}" -X POST "${BASE}/configure" \
@@ -441,6 +454,12 @@ echo "completed runtime start"
 capture_readiness account-checkpoint
 ok "account state checkpoint"
 
+# This smoke qualifies sequential recovery, not concurrent runtime capacity.
+# The source has supplied every required archive/identity; stop it before the
+# recipient starts so emulated amd64 processes do not exhaust a small host VM.
+stop_main
+ok "source stopped after archive capture for sequential recovery profile"
+
 # A second fresh workspace proves account seeding copies only account state.
 echo "starting fresh account-seed recipient ${SECOND_NAME}…"
 run_second_container
@@ -510,6 +529,11 @@ code="$(curl -s -o /dev/null -w '%{http_code}' "${AUTH_SECOND[@]}" -X POST \
 identity_hash_after="$(exec_second sha256sum /var/lib/aboiteau/state/stow/identity.json | awk '{print $1}')"
 [[ "$identity_hash_before" == "$identity_hash_after" ]] || fail "rejected reseed changed recipient identity"
 ok "reseed of initialized runtime refused without changing identity"
+
+# The recipient's assertions are complete. Remove it before starting the fresh
+# cold-restore runtime; preserve the same sequential memory profile throughout.
+remove_named "$SECOND_NAME" || fail "could not remove the owned account-seed recipient"
+CREATED_SECOND=0
 
 # Remove the original container before creating a clean recipient for the same
 # two saved checkpoint parts. This is a local fresh-container restore, not R2.

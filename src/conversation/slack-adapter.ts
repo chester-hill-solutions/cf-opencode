@@ -4,6 +4,8 @@ import type { SlackContextMessage } from "../adapters/slack"
 import { chunkText, formatSlackContext, mrkdwnEscape } from "../adapters/slack"
 import type { BudgetReservation, SlackTarget } from "../state"
 import type { ConversationStore } from "../state"
+import { benignSlackControlCommand } from "../state"
+import { readSlackWorkspaceProfile, slackWorkspaceDiscardRequestID, type SlackWorkspaceCommandServices } from "../slack-workspace-commands"
 import type { SlackEventRequest } from "./requests"
 import type { TurnObservation } from "../turn-observation"
 import type { ConversationAdmissions } from "./admissions"
@@ -38,6 +40,13 @@ export interface ConversationSlackAdapterOptions {
   upgrades: Pick<ConversationRuntimeUpgrades, "hasPending">
   turnExecution: Pick<ConversationTurnExecution, "isPumping" | "startStream">
   controls: { steer(text: string): Promise<string>; stop(followUp?: string, target?: SlackTarget): Promise<string> }
+  workspaceCommands?: {
+    enabled?(target: SlackTarget): boolean
+    workspace?: SlackWorkspaceCommandServices["workspace"]
+    repository: SlackWorkspaceCommandServices["repository"]
+    check(argv: string[], target: SlackTarget, eventID: string | undefined): Promise<string>
+    checks(target: SlackTarget): Promise<string>
+  }
   observation(): Promise<TurnObservation>
   scheduler: Pick<ConversationScheduler, "schedule">
   recovery: Pick<ConversationRecoveryActions, "active">
@@ -56,6 +65,8 @@ export class ConversationSlackAdapter {
   constructor(private readonly options: ConversationSlackAdapterOptions) {}
 
   async handleControl(text: string, input: SlackEventRequest, target: SlackTarget): Promise<void> {
+    const workspace = this.options.workspaceCommands
+    const workspaceEnabled = workspace && (!workspace.enabled || workspace.enabled(target))
     await handleSlackCommand(text, {
       getState: async () => ({ ...await this.options.store.get(), turnObservation: await this.options.observation() }),
       getDefaultModel: async () => (await this.options.settings()).model,
@@ -78,6 +89,13 @@ export class ConversationSlackAdapter {
       usageText: () => this.usageText(),
       reply: (message) => this.postChunked(target.channel, message, target.replyTs),
       setupUrl: input.appUrl ? `${new URL(input.appUrl).origin}/onboarding/` : "the web app's /onboarding/ page",
+      ...(workspaceEnabled ? { workspace: {
+        ...(workspace.workspace ? { workspace: workspace.workspace } : {}),
+        discardRequestID: () => slackWorkspaceDiscardRequestID(this.options.conversationKey(), input.eventID ?? `slack:${target.channel}:${input.event.ts}`),
+        repository: workspace.repository,
+        check: (argv: string[]) => workspace.check(argv, target, input.eventID),
+        checks: () => workspace.checks(target),
+      } } : {}),
     })
   }
 
@@ -136,13 +154,16 @@ export class ConversationSlackAdapter {
     if (!isDm && event.type !== "app_mention" && (!event.thread_ts || !state.slackEngaged)) {
       return Response.json({ ok: true })
     }
-    if (input.eventID && !(await this.options.store.claimEvent(input.eventID))) return Response.json({ ok: true })
-    if (!isDm && event.type === "app_mention") await this.options.store.patch({ slackEngaged: true })
+    const command = parseSlackCommand(text)
     const target: SlackTarget = { channel: event.channel, ...(input.replyTs ? { replyTs: input.replyTs } : {}) }
+    const provenance = command ? benignSlackControlCommand(command.name) : undefined
+    const eventID = input.eventID ?? (command ? `slack:${event.channel}:${event.ts}` : undefined)
+    if (eventID && !(await this.options.store.claimEvent(eventID, provenance))) return Response.json({ ok: true })
+    if (!isDm && event.type === "app_mention") await this.options.store.patch({ slackEngaged: true })
 
-    if (parseSlackCommand(text)) {
-      if (input.eventID) await this.options.store.markTombstone(input.eventID)
-      await this.handleControl(text, input, target)
+    if (command) {
+      if (eventID) await this.options.store.markTombstone(eventID, provenance)
+      await this.handleControl(text, { ...input, ...(eventID ? { eventID } : {}) }, target)
       return Response.json({ ok: true, command: true })
     }
 
@@ -425,8 +446,27 @@ export class ConversationSlackAdapter {
   private async buildPrompt(channel: string, ts: string, threadTs: string | undefined, text: string): Promise<string> {
     const messages = await this.fetchContext(channel, ts, threadTs)
     const context = formatSlackContext(messages, { botUserId: this.options.env().SLACK_BOT_USER_ID ?? "", excludeTs: ts })
-    if (!context) return text
-    return [`<slack_context channel="${channel}" source="${threadTs ? `thread ${threadTs}` : "recent channel history"}">`, context, "</slack_context>", "", "<message>", text, "</message>"].join("\n")
+    const prompt = context ? [`<slack_context channel="${channel}" source="${threadTs ? `thread ${threadTs}` : "recent channel history"}">`, context, "</slack_context>", "", "<message>", text, "</message>"].join("\n") : text
+    const workspace = this.options.workspaceCommands
+    if (!workspace || (workspace.enabled && !workspace.enabled({ channel }))) return prompt
+    const general = !(await this.options.store.get()).workspaceRepository && !(await this.options.settings()).workspaceRepo.trim()
+    let retention = ""
+    if (workspace.workspace) {
+      try {
+        const profile = await readSlackWorkspaceProfile(workspace.workspace)
+        retention = `Workspace retention is explicitly ${profile.retention}; profile status is ${profile.status}. ` +
+          (profile.retention === "persistent" ? "Persistent is the default and keeps existing work in place. " : "A disposable profile uses recovery checkpoints until the user explicitly chooses !workspace discard. ") +
+          "Finishing work or going idle never authorizes automatic deletion. Only explicit user workspace controls change retention; words such as temporary do not authorize disposal. Do not perform workspace disposal with shell tools; direct the user to !workspace discard."
+      } catch { retention = "Workspace retention could not be verified. Do not infer permission to discard or delete workspace data." }
+    }
+    if (!general && !retention) return prompt
+    return [
+      "<workspace_context>",
+      ...(general ? ["/workspace is this conversation's general workspace. No repository is configured; existing files or checkouts may still be present. Durable projects, scripts, analysis, documents, prototypes and new projects may start blank and remain repository-free permanently. Keeping work requires no git initialization, commit or remote. A project name alone does not identify a checkout. Inspect relevant /workspace contents, consult available project context, or ask for the repository/location when needed. Do not blindly search other filesystem roots for a named project."] : []),
+      ...(retention ? [retention] : []),
+      ...(general ? ["If the user explicitly asks to clone, use or create a repository within /workspace and carry existing work, keep a new checkout in a separate subdirectory unless the user chose an existing checkout. Copy only requested work, excluding workspace/runtime metadata; preserve originals and report conflicts before overwriting. Creating a checkout with tools does not register a conversation repository binding or establish credential access. Push or publish only when the user instructs it."] : []),
+      "</workspace_context>", "", prompt,
+    ].join("\n")
   }
 
   private async fetchContext(channel: string, ts: string, threadTs: string | undefined): Promise<SlackContextMessage[]> {

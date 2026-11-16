@@ -28,6 +28,18 @@ export interface Env {
   CONTAINER_URL?: string
   /** Bearer token for the HTTP/SSE adapter. */
   API_TOKEN?: string
+  /** Separate host-only capability. Never forwarded into an agent or checker. */
+  CHECK_COLLECTOR_TOKEN?: string
+  CHECK_COLLECTOR_ID?: string
+  CHECK_RUNNER_IMAGE_ID?: string
+  /** Collector image's actual architecture, not the agent VM architecture. */
+  CHECK_RUNNER_PLATFORM?: string
+  CHECK_RUNNER_TIMEOUT_MS?: string
+  CHECK_SLACK_CHANNEL_ID?: string
+  /** Signed legacy-router probe: restrict new thread ownership to this channel. */
+  SLACK_CANARY_CHANNEL?: string
+  SLACK_CANARY_NEW_THREADS?: string
+  SLACK_CANARY_START_TS?: string
   /** Cloudflare rate-limit binding for message creation; optional in tests. */
   API_RATE_LIMIT?: RateLimit
   /** GitHub OAuth App, used by the onboarding wizard to clone private repos. */

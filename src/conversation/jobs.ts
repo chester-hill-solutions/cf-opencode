@@ -5,7 +5,7 @@ import {
   type LifecycleJobOutcome,
 } from "agents/lifecycle"
 
-export type ConversationJobKind = "turn:observe" | "admission:retry" | "checkpoint:retry" | "recovery:wake" | "legacy:bootstrap" | "lease:renew" | "container:idle"
+export type ConversationJobKind = "turn:observe" | "admission:retry" | "checkpoint:retry" | "recovery:wake" | "legacy:bootstrap" | "lease:renew" | "container:idle" | "check:notify" | "reply:deliver"
 
 export interface ConversationJobPayload {
   idleID?: string
@@ -32,6 +32,8 @@ export interface ConversationJobHandlers {
   legacyBootstrap(payload: ConversationJobPayload): Promise<LifecycleJobOutcome>
   leaseRenew(payload: ConversationJobPayload): Promise<LifecycleJobOutcome>
   idleClose?(payload: ConversationJobPayload): Promise<LifecycleJobOutcome>
+  checkNotify?(payload: ConversationJobPayload): Promise<LifecycleJobOutcome>
+  replyDeliver?(payload: ConversationJobPayload): Promise<LifecycleJobOutcome>
   onJobError(kind: ConversationJobKind, payload: ConversationJobPayload, error: unknown): Promise<LifecycleJobOutcome>
   onMemoryLimit(context: MemoryLimitContext): Promise<void>
 }
@@ -44,6 +46,8 @@ const JOBS: Record<ConversationJobKind, { id: string; fn: string }> = {
   "legacy:bootstrap": { id: "legacy:bootstrap", fn: "legacyBootstrap" },
   "lease:renew": { id: "lease:renew", fn: "leaseRenew" },
   "container:idle": { id: "container:idle", fn: "idleClose" },
+  "check:notify": { id: "check:notify", fn: "checkNotify" },
+  "reply:deliver": { id: "reply:deliver", fn: "replyDeliver" },
 }
 
 const KIND_BY_FUNCTION = new Map(Object.entries(JOBS).map(([kind, value]) => [value.fn, kind as ConversationJobKind]))
@@ -118,6 +122,8 @@ export class ConversationJobs extends LifecycleCapability {
         case "legacy:bootstrap": return this.handlers.legacyBootstrap(payload)
         case "lease:renew": return this.handlers.leaseRenew(payload)
         case "container:idle": return this.handlers.idleClose?.(payload)
+        case "check:notify": return this.handlers.checkNotify?.(payload)
+        case "reply:deliver": return this.handlers.replyDeliver?.(payload)
       }
     }) as LifecycleJobOutcome
   }

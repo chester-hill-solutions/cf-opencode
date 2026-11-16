@@ -65,7 +65,7 @@ export class ConversationEventStream extends LifecycleCapability {
       // The slow-subscriber limit is measured in bytes, so make
       // desiredSize byte-based instead of the default chunk count.
       highWaterMark: 0,
-      size: (chunk) => chunk.byteLength,
+      size: (chunk) => chunk?.byteLength ?? 0,
     })
 
     const response = new Response(stream, {

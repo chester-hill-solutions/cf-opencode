@@ -17,6 +17,7 @@
  *
  *   GET  /health      liveness
  *   GET  /status      { initialized, running, s3, stateCheckpoint }
+ *   GET  /workspace/preflight  passive repository prerequisites; never starts runtime
  *   POST /start       start stow-s3 and opencode serve, wait until ready
  *   POST /restore?part=workspace|state   body = tar.gz, replaces that root
  *   POST /seed-state  body = tar.gz of the state root, seeds config + credentials
@@ -34,11 +35,13 @@
 import { spawn } from "bun"
 import { createHash, randomBytes } from "node:crypto"
 import {
+  constants,
   chownSync,
   chmodSync,
   existsSync,
   lstatSync,
   readFileSync,
+  readlinkSync,
   mkdirSync,
   readdirSync,
   renameSync,
@@ -47,6 +50,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs"
+import { open } from "node:fs/promises"
 import { posix, relative } from "node:path"
 import { buildPermissionRules, type PermissionLists } from "./src/permissions"
 import {
@@ -54,6 +58,10 @@ import {
   ACCOUNTING_POLICY_ID,
 } from "./src/accounting-policy"
 import { bearerAuthorized } from "./src/control-auth"
+import { parseWorkspacePreflight, type WorkspacePreflight } from "./src/workspace-preflight"
+import { WorkspaceRepositoryHost, invokeRepositoryAction } from "./workspace-repository"
+import { parseWorkspaceRepositoryBinding, WorkspaceRepositoryConflictError, WorkspaceRepositoryValidationError, type WorkspaceRepositoryReceipt } from "./src/workspace-repository"
+import { invokeWorkspaceCheckSnapshot } from "./workspace-check-snapshot"
 import { createLifecycleGate, stopChild } from "./control-lifecycle"
 import { assertSafeArchiveMembers, linkStaysInside, safeRelativeLink } from "./src/tar"
 import {
@@ -96,6 +104,84 @@ let workspaceIdentity: WorkspaceIdentity | undefined
 let opencodePassword = ""
 const runLifecycle = createLifecycleGate()
 const enqueueLifecycle = runLifecycle
+const repositoryHost = new WorkspaceRepositoryHost({
+  workspace: WORKSPACE, stateRoot: STATE_ROOT, runDir: RUN_DIR,
+  perform: input => invokeRepositoryAction(input, asAgentCommand),
+})
+
+/** Fixed, trusted inspector only; repository scripts are never executed here. */
+async function workspacePreflight(): Promise<WorkspacePreflight> {
+  const child = spawn(asAgentCommand([process.execPath, `${import.meta.dir}/workspace-preflight.ts`, WORKSPACE]), {
+    cwd: import.meta.dir,
+    env: {
+      PATH: "/usr/local/bin:/usr/bin:/bin",
+      HOME: "/nonexistent",
+      LANG: "C",
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_TERMINAL_PROMPT: "0",
+    },
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "ignore",
+    detached: true,
+  })
+  const reader = child.stdout.getReader()
+  let deadline: ReturnType<typeof setTimeout> | undefined
+  const output = async () => {
+    const chunks: Uint8Array[] = []
+    let bytes = 0
+    for (;;) {
+      const next = await reader.read()
+      if (next.done) break
+      bytes += next.value.byteLength
+      if (bytes > 64 * 1024) throw new Error("preflight output limit")
+      chunks.push(next.value)
+    }
+    return Buffer.concat(chunks).toString("utf8")
+  }
+  try {
+    const [code, stdout] = await Promise.race([
+      Promise.all([child.exited, output()]),
+      new Promise<never>((_, reject) => {
+        deadline = setTimeout(() => reject(new Error("preflight timed out")), 10_000)
+      }),
+    ])
+    if (code !== 0) throw new Error("preflight inspector failed")
+    return parseWorkspacePreflight(JSON.parse(stdout))
+  } finally {
+    if (deadline !== undefined) clearTimeout(deadline)
+    // The trusted inspector and its fixed git probes share this process group.
+    // A timeout/output failure must not leave descendants holding lifecycle work.
+    try { process.kill(-child.pid, "SIGKILL") } catch (error) {
+      if (!(error && typeof error === "object" && "code" in error && error.code === "ESRCH")) {
+        child.kill("SIGKILL")
+      }
+    }
+    void reader.cancel().catch(() => {})
+    const stopped = await Promise.race([
+      child.exited.then(() => true),
+      Bun.sleep(2_000).then(() => false),
+    ])
+    if (!stopped) throw new Error("preflight inspector stop unconfirmed")
+  }
+}
+
+async function workspaceCheckRequest(request: Request): Promise<Record<string, unknown>> {
+  if (!request.body) throw new Error("missing check request")
+  const reader = request.body.getReader(), decoder = new TextDecoder("utf-8", { fatal: true })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const read = async () => {
+      let bytes = 0, text = ""
+      for (;;) { const part = await reader.read(); if (part.done) break; bytes += part.value.byteLength; if (bytes > 4096) throw new Error("check request limit"); text += decoder.decode(part.value, { stream: true }) }
+      const value: unknown = JSON.parse(text + decoder.decode())
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid check request")
+      return value as Record<string, unknown>
+    }
+    return await Promise.race([read(), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("check request timeout")), 5_000) })])
+  } finally { if (timer) clearTimeout(timer); void reader.cancel().catch(() => {}) }
+}
 
 function basicAuth(password: string): Record<string, string> {
   return { authorization: `Basic ${Buffer.from(`opencode:${password}`).toString("base64")}` }
@@ -511,7 +597,8 @@ function stateFiles(root = STATE_ROOT, base = root, out: string[] = []): string[
  * checkpoint and silently lose the edit. Hash the diff and untracked plus
  * ignored contents — the archive includes ignored files, so an ignored-only
  * edit must not be skipped either. Non-Git workspaces have no diff to hash,
- * so their fingerprint covers every archived path with size and mtime.
+ * so their fingerprint covers archived entry types, modes, link targets and
+ * streamed file contents as well as size and mtime.
  */
 export async function workspaceFingerprint(workspace = WORKSPACE): Promise<string> {
   if (existsSync(`${workspace}/.git`)) {
@@ -567,16 +654,80 @@ export async function workspaceFingerprint(workspace = WORKSPACE): Promise<strin
     }
     return createHash("sha256").update(`${head}\n${status}\n${diff}\n${files.join("\n")}`).digest("hex")
   }
-  const entries = existsSync(workspace) ? workspaceFileEntries(workspace) : []
-  const hash = createHash("sha256")
-  for (const file of entries) {
-    let stat
-    try {
-      stat = statSync(file)
-    } catch {
-      continue
+  // File-content reads must retain the same agent privilege boundary as Git.
+  if (process.getuid?.() === 0) return fingerprintAsAgent(workspace)
+  return nonGitWorkspaceFingerprint(workspace)
+}
+
+async function fingerprintAsAgent(workspace: string): Promise<string> {
+  const child = spawn(asAgentCommand([process.execPath, "--no-env-file", "--no-install", "--config=/dev/null", import.meta.path, "--non-git-workspace-fingerprint", posix.resolve(workspace)]), {
+    cwd: import.meta.dir, env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: "/nonexistent" },
+    stdin: "ignore", stdout: "pipe", stderr: "ignore",
+  })
+  const reader = child.stdout.getReader()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const output = async () => {
+      let bytes = 0, text = ""
+      for (;;) {
+        const part = await reader.read()
+        if (part.done) return text
+        bytes += part.value.byteLength
+        if (bytes > 65) throw new Error("workspace fingerprint output exceeded limit")
+        text += new TextDecoder().decode(part.value)
+      }
     }
-    hash.update(`${relative(workspace, file)}\0${stat.size}\0${stat.mtimeMs}\n`)
+    const [code, text] = await Promise.race([
+      Promise.all([child.exited, output()]),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("workspace fingerprint timed out")), 120_000) }),
+    ])
+    if (code !== 0 || !/^[a-f0-9]{64}\n?$/.test(text)) throw new Error("workspace fingerprint unavailable")
+    return text.trim()
+  } finally {
+    if (timer) clearTimeout(timer)
+    if (child.exitCode === null) child.kill("SIGKILL")
+    void reader.cancel().catch(() => {})
+    if (await Promise.race([child.exited.then(() => true), Bun.sleep(2_000).then(() => false)]) !== true) throw new Error("workspace fingerprint stop unconfirmed")
+  }
+}
+
+async function nonGitWorkspaceFingerprint(workspace: string): Promise<string> {
+  const entries = existsSync(workspace) ? [workspace, ...workspaceFileEntries(workspace, workspace, [], true)] : []
+  const hash = createHash("sha256")
+  // Bound resident file bytes independently of workspace/file size. Read only
+  // the opened size, so a concurrent append cannot keep hashing indefinitely.
+  const buffer = Buffer.alloc(64 * 1024)
+  for (const file of entries) {
+    const before = lstatSync(file), path = relative(workspace, file) || "."
+    const unchanged = (after: typeof before) => before.dev === after.dev && before.ino === after.ino &&
+      before.mode === after.mode && before.size === after.size && before.mtimeMs === after.mtimeMs && before.ctimeMs === after.ctimeMs
+    if (before.isSymbolicLink()) {
+      const target = readlinkSync(file)
+      if (!unchanged(lstatSync(file))) throw new Error("workspace link changed during fingerprint")
+      hash.update(JSON.stringify([path, "symlink", before.mode & 0o7777, target]) + "\n")
+    } else if (before.isDirectory()) {
+      hash.update(JSON.stringify([path, "directory", before.mode & 0o7777]) + "\n")
+    } else if (before.isFile()) {
+      // Never turn a final-component symlink/FIFO replacement into a read of
+      // another target or an unbounded blocking open. Reject changing inputs.
+      const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+      const content = createHash("sha256")
+      try {
+        const opened = await handle.stat()
+        if (!opened.isFile() || !unchanged(opened)) throw new Error("workspace file changed during fingerprint")
+        let offset = 0
+        while (offset < opened.size) {
+          const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, opened.size - offset), offset)
+          if (!bytesRead) throw new Error("workspace file changed during fingerprint")
+          content.update(buffer.subarray(0, bytesRead))
+          offset += bytesRead
+        }
+        if (!unchanged(await handle.stat()) || !unchanged(lstatSync(file))) throw new Error("workspace file changed during fingerprint")
+      } finally { await handle.close() }
+      hash.update(JSON.stringify([path, "file", before.mode & 0o7777, before.size, before.mtimeMs, content.digest("hex")]) + "\n")
+    } else {
+      throw new Error("unsupported workspace entry during fingerprint")
+    }
   }
   return hash.digest("hex")
 }
@@ -595,13 +746,15 @@ function tryLstat(path: string): ReturnType<typeof lstatSync> | undefined {
 }
 
 /** Every archived file under a non-Git workspace, minus the tar excludes. */
-function workspaceFileEntries(root: string, base = root, out: string[] = []): string[] {
+function workspaceFileEntries(root: string, base = root, out: string[] = [], includeDirectories = false): string[] {
   const entries = readdirSync(base, { withFileTypes: true })
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (entry.name === "node_modules") continue
     const path = `${base}/${entry.name}`
-    if (entry.isDirectory()) workspaceFileEntries(root, path, out)
-    else out.push(path)
+    if (entry.isDirectory()) {
+      if (includeDirectories) out.push(path)
+      workspaceFileEntries(root, path, out, includeDirectories)
+    } else out.push(path)
   }
   return out
 }
@@ -690,11 +843,11 @@ async function assertSafeArchive(path: string): Promise<string> {
   return text
 }
 
-/** Account seeds must never transplant a conversation's Stow identity. */
+/** Account seeds must not transplant workspace identity or repository binding. */
 export function accountSeedContainsStow(members: string): boolean {
   return members.split("\n").some((member) => {
     const normalized = posix.normalize(member.replace(/\\/g, "/"))
-    return normalized === "stow" || normalized.startsWith("stow/")
+    return normalized === "stow" || normalized.startsWith("stow/") || normalized === "workspace-repository.json" || normalized.startsWith("workspace-repository.json.") || normalized.startsWith("workspace-repository.json/")
   })
 }
 
@@ -806,7 +959,21 @@ async function startRuntime(): Promise<Response> {
   }
   timer.mark("workspaceIdentity")
 
-  if (!initialized() && workspaceRepo) {
+  let repositoryReceipt: WorkspaceRepositoryReceipt | undefined
+  let boundWorkspace = false
+  try { boundWorkspace = repositoryHost.hasBinding() } catch {
+    return Response.json({ error: "Workspace repository binding conflicts with existing workspace state.", code: "WORKSPACE_REPOSITORY_CONFLICT" }, { status: 409 })
+  }
+  if (boundWorkspace) {
+    try {
+      if (repositoryHost.selection()?.status === "pending" && opencode?.exitCode === null) throw new WorkspaceRepositoryConflictError()
+      repositoryReceipt = await repositoryHost.prepare()
+      fixWorkspacePermissions()
+    } catch {
+      return Response.json({ error: "Workspace repository binding conflicts with existing workspace state.", code: "WORKSPACE_REPOSITORY_CONFLICT", timings: timer.snapshot() }, { status: 409 })
+    }
+    timer.mark("workspaceRepository")
+  } else if (!initialized() && workspaceRepo) {
     const tmp = `/tmp/workspace-clone-${randomBytes(8).toString("hex")}`
     const clone = spawn(asAgentCommand(["git", ...cloneArgs(workspaceRepo), tmp]), {
       stdout: "ignore",
@@ -877,6 +1044,7 @@ async function startRuntime(): Promise<Response> {
     accountingPolicy: ACCOUNTING_POLICY_ID,
     opencodeGeneration,
     ...(opencodeEventPersistence ? { eventPersistence: true } : {}),
+    ...(repositoryReceipt ? { workspaceRepository: repositoryReceipt } : {}),
     timings: timer.snapshot(),
   })
 }
@@ -996,7 +1164,7 @@ async function archiveState(archive: string, accountSeed = false): Promise<numbe
   if (accountSeed) {
     // GNU tar is already required here for --transform below. Anchored patterns
     // exclude only the state-root Stow registry and initialization marker.
-    args.push("--anchored", "--exclude=./stow", "--exclude=./initialized", "--no-anchored")
+    args.push("--anchored", "--exclude=./stow", "--exclude=./initialized", "--exclude=./workspace-repository.json", "--exclude=./workspace-repository.json.*", "--no-anchored")
   }
   if (relativeDatabase) args.push("--exclude", `${relativeDatabase}*`)
   args.push(".")
@@ -1010,6 +1178,16 @@ async function archiveState(archive: string, accountSeed = false): Promise<numbe
 
 /** Both checkpoint parts advertise the split layout with this header. */
 const SPLIT_HEADER = { "x-aboiteau-checkpoint": "split" } as const
+
+// Fixed helper entrypoint: the root controller invokes this after dropping to
+// the workspace owner, with no control token or inherited service credentials.
+if (import.meta.main && process.argv[2] === "--non-git-workspace-fingerprint") {
+  try {
+    if (process.getuid?.() === 0 || process.argv.length !== 4) throw new Error("unprivileged fingerprint required")
+    console.log(await nonGitWorkspaceFingerprint(process.argv[3]!))
+    process.exit(0)
+  } catch { process.exit(1) }
+}
 
 if (import.meta.main && !CONTROL_TOKEN) {
   console.error("CONTROL_TOKEN is required; refusing to start the control server")
@@ -1029,6 +1207,41 @@ if (import.meta.main) Bun.serve({
     }
 
     if (url.pathname === "/health") return Response.json({ ok: true })
+
+    if (url.pathname === "/workspace/preflight") {
+      if (request.method !== "GET") return new Response("method not allowed", { status: 405, headers: { allow: "GET" } })
+      return enqueueLifecycle(async () => {
+        try {
+          return Response.json(await workspacePreflight(), { headers: { "cache-control": "no-store" } })
+        } catch {
+          return Response.json({ error: "workspace preflight unavailable" }, { status: 503, headers: { "cache-control": "no-store" } })
+        }
+      })
+    }
+
+    if (url.pathname === "/workspace/checks/snapshot" || url.pathname === "/workspace/checks/head") {
+      if (request.method !== "POST") return new Response("method not allowed", { status: 405, headers: { allow: "POST" } })
+      return enqueueLifecycle(async () => {
+        try {
+          const mode = url.pathname.endsWith("/snapshot") ? "snapshot" : "head"
+          const body = await workspaceCheckRequest(request)
+          const keys = Object.keys(body).sort().join(",")
+          if (keys !== (mode === "snapshot" ? "commit,workspaceRepository" : "workspaceRepository") || (mode === "snapshot" && (typeof body.commit !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(body.commit)))) throw new Error("invalid check request")
+          const receipt = repositoryHost.boundReceipt(body.workspaceRepository)
+          const result = await invokeWorkspaceCheckSnapshot({ mode, workspace: WORKSPACE, workspaceRepository: receipt, ...(typeof body.commit === "string" ? { commit: body.commit } : {}) }, asAgentCommand)
+          repositoryHost.boundReceipt(receipt)
+          if (mode === "snapshot") {
+            if (!("canonicalJSON" in result)) throw new Error("invalid snapshot result")
+            const after = await invokeWorkspaceCheckSnapshot({ mode: "head", workspace: WORKSPACE, workspaceRepository: receipt }, asAgentCommand)
+            if (after.commit !== result.commit || after.tree !== result.tree) throw new Error("workspace moved during capture")
+            return new Response(result.canonicalJSON, { headers: { "content-type": "application/json", "cache-control": "no-store" } })
+          }
+          return Response.json(result, { headers: { "cache-control": "no-store" } })
+        } catch {
+          return Response.json({ error: "Committed workspace inspection is unavailable or no longer matches the bound repository.", code: "WORKSPACE_CHECK_SNAPSHOT_UNAVAILABLE" }, { status: 409, headers: { "cache-control": "no-store" } })
+        }
+      })
+    }
 
     // ---- OpenCode proxy ------------------------------------------------------
     // The DO never holds the OpenCode password. This process owns it, so every
@@ -1073,11 +1286,25 @@ if (import.meta.main) Bun.serve({
         model?: string
         permissions?: PermissionLists
         githubToken?: string
+        workspaceRepository?: unknown
       }
-      if (settings.workspaceRepo) workspaceRepo = settings.workspaceRepo
-      if (settings.workspaceBranch) workspaceBranch = settings.workspaceBranch
-      if (typeof settings.githubToken === "string") githubToken = settings.githubToken
-      writeOpencodeConfig(settings.model, settings.permissions)
+      try {
+        const binding = settings.workspaceRepository === undefined ? repositoryHost.selection() : parseWorkspaceRepositoryBinding(settings.workspaceRepository)
+        if (binding && ((settings.workspaceRepo !== undefined && settings.workspaceRepo !== binding.repository) || (settings.workspaceBranch !== undefined && settings.workspaceBranch !== binding.baseBranch))) throw new WorkspaceRepositoryConflictError()
+        if (settings.workspaceRepository !== undefined) repositoryHost.configure(settings.workspaceRepository)
+        if (!binding) {
+          if (settings.workspaceRepo) workspaceRepo = settings.workspaceRepo
+          if (settings.workspaceBranch) workspaceBranch = settings.workspaceBranch
+          if (typeof settings.githubToken === "string") githubToken = settings.githubToken
+        }
+        // Reattaching trusted binding metadata while observing busy work must
+        // not rewrite its effective model or permissions.
+        if (settings.workspaceRepository === undefined || Object.hasOwn(settings, "model") || Object.hasOwn(settings, "permissions")) writeOpencodeConfig(settings.model, settings.permissions)
+      } catch (error) {
+        if (error instanceof WorkspaceRepositoryConflictError) return Response.json({ error: error.message, code: error.code }, { status: 409 })
+        if (error instanceof WorkspaceRepositoryValidationError) return Response.json({ error: error.message, code: error.code }, { status: 400 })
+        return Response.json({ error: "Workspace repository configuration failed.", code: "WORKSPACE_REPOSITORY_CONFLICT" }, { status: 409 })
+      }
       return Response.json({ ok: true })
       })
     }

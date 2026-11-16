@@ -9,6 +9,7 @@ export interface RuntimeIdentity {
 }
 
 export interface ConversationRuntimeAccessOptions {
+  assertAvailable?(): Promise<void>
   prepareOwned(): Promise<ContainerPort>
   identity(): RuntimeIdentity
   onUseComplete?(): Promise<void> | void
@@ -29,7 +30,7 @@ export class ConversationRuntimeAccess {
 
   prepare(): Promise<ContainerPort> {
     if (!this.preparing) {
-      this.preparing = this.gate.exclusive(() => this.options.prepareOwned()).finally(() => {
+      this.preparing = this.gate.exclusive(async () => { await this.options.assertAvailable?.(); return this.options.prepareOwned() }).finally(() => {
         this.preparing = undefined
       })
     }
@@ -48,6 +49,7 @@ export class ConversationRuntimeAccess {
       let result: { matched: false } | { matched: true; value: T }
       try {
         result = await this.gate.use(async () => {
+          await this.options.assertAvailable?.()
           const current = this.options.identity()
           if (!captured.ready || !captured.running || !captured.port ||
             current.ready !== true || current.running !== true ||
@@ -72,6 +74,7 @@ export class ConversationRuntimeAccess {
   /** Borrow an already warm runtime without preparing, touching activity, or extending idle time. */
   async useWarm<T>(operation: (port: ContainerPort) => Promise<T>): Promise<T> {
     return this.gate.use(async () => {
+      await this.options.assertAvailable?.()
       const identity = this.options.identity()
       if (!identity.ready || !identity.running || !identity.port || !identity.generation) {
         throw new Error("warm runtime unavailable")

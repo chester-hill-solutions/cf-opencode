@@ -33,6 +33,7 @@ export interface ConversationAdmissionsOptions {
     active(): boolean
     pumping(): boolean
     pendingUpgrade(): Promise<boolean>
+    pendingMaintenance?(): Promise<boolean>
   }
   jobs: {
     schedule(kind: ConversationJobKind, at: number, payload?: Omit<ConversationJobPayload, "epoch" | "dueAt">): Promise<void>
@@ -79,7 +80,7 @@ export class ConversationAdmissions {
       try {
         await this.options.storage.transaction(async () => {
           const state = await this.options.store.get()
-          if (this.options.recovery.active() || await this.options.recovery.pendingUpgrade() ||
+          if (this.options.recovery.active() || await this.options.recovery.pendingUpgrade() || await this.options.recovery.pendingMaintenance?.() ||
             (state.queue?.length ?? 0) > 0 || isBusyPhase(state.phase)) return
           const admissionID = crypto.randomUUID()
           const admissionStartedAt = Date.now()
@@ -122,9 +123,10 @@ export class ConversationAdmissions {
       attempts: 0,
       nextAttemptAt,
     }
-    let outcome: QueueEnqueueResult & { duplicate?: boolean } | undefined
+    let outcome: (QueueEnqueueResult & { duplicate?: boolean }) | { kind: "unavailable"; message: string } | undefined
     try {
       outcome = await this.withLock(() => this.options.storage.transaction(async () => {
+        if (await this.options.recovery.pendingMaintenance?.()) return { kind: "unavailable" as const, message: "workspace maintenance is pending" }
         if (options.idempotencyKey) {
           const state = await this.options.store.get()
           const position = state.queue?.findIndex((queued) => queued.idempotencyKey === options.idempotencyKey) ?? -1
@@ -191,6 +193,7 @@ export class ConversationAdmissions {
     const queued = await this.withLock(async () => {
       const state = await this.options.store.get()
       // The warm stream stays connected while idle; it must not block the queue.
+      if (await this.options.recovery.pendingMaintenance?.()) return undefined
       const queued = state.queue?.[0]
       if (!queued || this.admitting || this.options.recovery.pumping() ||
         this.options.recovery.active() || state.budgetReservation?.dispatched) return undefined
@@ -348,7 +351,7 @@ export class ConversationAdmissions {
       await this.startRun(baseline)
     } catch {
       this.emitLifecycle({ event: "turn.start.failed", result: "failed", reasonCode: "bookkeeping_failed" })
-      await this.options.store.patch({ phase: "running", turnBaseline: baseline }).catch(() => {})
+      await this.options.store.patch({ phase: "running", turnBaseline: baseline, lastReply: undefined, lastSlackReply: undefined }).catch(() => {})
       const state = await this.options.store.get().catch(() => undefined)
       await this.options.jobs.schedule("turn:observe", Date.now() + POLL_MS, {
         reservationID: state?.budgetReservation?.reservationID,

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest"
 import { ConversationSlackAdapter, type ConversationSlackAdapterOptions } from "../src/conversation/slack-adapter"
 import type { SlackEventRequest } from "../src/conversation/requests"
+import { slackWorkspaceDiscardRequestID } from "../src/slack-workspace-commands"
 import type { TurnObservation } from "../src/turn-observation"
 
 const observation: TurnObservation = {
@@ -17,9 +18,9 @@ function fixture(overrides: Record<string, unknown> = {}) {
     store: {
       get: async () => state,
       patch: async (value: Record<string, unknown>) => { state = { ...state, ...value } },
-      advance: async () => {}, claimEvent: async () => true,
+      advance: async () => {}, claimEvent: async (id: string, command?: string) => { calls.push(["claimEvent", id, command]); return true },
       releaseEvent: async (id: string) => { calls.push(["releaseEvent", id]) },
-      markTombstone: async () => {},
+      markTombstone: async (id: string, command?: string) => { calls.push(["markTombstone", id, command]) },
     },
     sessions: { ensure: async () => "session-1", baseline: async () => "baseline" },
     admissions: {
@@ -58,6 +59,25 @@ function event(text: string, eventID = "event-1"): SlackEventRequest {
 }
 
 describe("ConversationSlackAdapter delivery controls", () => {
+  test("workspace controls use channel gates, typed benign claims and stable event identity without prompt dispatch", async () => {
+    const workspace: Array<unknown[]> = []
+    const f = fixture({ workspaceCommands: {
+      enabled: (target: { channel: string }) => target.channel === "C1",
+      repository: async (request: Request) => { workspace.push([request.method]); return Response.json({ workspaceRepository: null }) },
+      check: async (argv: string[], target: unknown, eventID: unknown) => { workspace.push([argv, target, eventID]); return "Check requested." },
+      checks: async () => "No checks.",
+    } })
+    await f.adapter.onEvent(event("!repo", "repo-event"))
+    await f.adapter.onEvent({ event: { type: "app_mention", channel: "C1", ts: "123.4", text: '!check ["bun","test"]' } })
+    expect(f.calls).toContainEqual(["claimEvent", "repo-event", "repo"])
+    expect(f.calls).toContainEqual(["markTombstone", "repo-event", "repo"])
+    expect(workspace).toContainEqual([["bun", "test"], { channel: "C1" }, "slack:C1:123.4"])
+    expect(f.calls.some(([name]) => name === "prompt")).toBe(false)
+    const before = workspace.length
+    await f.adapter.handleControl("!repo", event("!repo"), { channel: "OTHER" })
+    expect(workspace).toHaveLength(before)
+    expect(f.replies.at(-1)).toContain("unavailable")
+  })
   test("routes steer and stop commands to shared controls and includes turn observation in status", async () => {
     const f = fixture()
     const input = { event: { type: "app_mention", channel: "C1", ts: "1.0", text: "!steer be concise", channel_type: "channel" } } as SlackEventRequest
@@ -109,5 +129,40 @@ describe("ConversationSlackAdapter delivery controls", () => {
     expect(enqueuePhase).toBe("idle")
     expect(f.getState()).toMatchObject({ phase: "idle", admissionID: undefined, admissionStartedAt: undefined })
     expect(await response.json()).toMatchObject({ queued: true, queueResult: { kind: "enqueued", position: 1 } })
+  })
+})
+
+
+describe("Slack workspace retention controls", () => {
+  const profile = { schemaVersion: 1, profileID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", revision: 1, retention: "disposable", name: "Scratch", status: "active" }
+  test("workspace commands carry benign provenance and a stable event-derived discard identity", async () => {
+    const requests: string[] = []
+    const f = fixture({ workspaceCommands: {
+      enabled: () => true, repository: async () => Response.json({ workspaceRepository: null }), check: async () => "", checks: async () => "",
+      workspace: async (request: Request) => {
+        requests.push(request.url)
+        const id = new URL(request.url).searchParams.get("requestID")
+        return Response.json({ discard: { schemaVersion: 1, requestID: id, expectedProfileID: profile.profileID, expectedRevision: 1, status: "complete", createdAt: 1, completedAt: 2 } })
+      },
+    } })
+    await f.adapter.onEvent(event("!workspace discard", "discard-event"))
+    expect(f.calls).toContainEqual(["claimEvent", "discard-event", "workspace"])
+    expect(f.calls).toContainEqual(["markTombstone", "discard-event", "workspace"])
+    expect(requests).toEqual(["https://conversation/workspace/discard?requestID=" + await slackWorkspaceDiscardRequestID("conversation", "discard-event")])
+    expect(f.calls.some(([name]) => name === "prompt")).toBe(false)
+    expect(f.replies[0]).toContain("No new workspace was discarded")
+  })
+
+  test("general prompts know retention and permanent repo-free work; temporary wording has no cleanup effect", async () => {
+    const methods: string[] = []
+    const f = fixture({ settings: async () => ({ workspaceRepo: "", model: "provider/model", streaming: false }), workspaceCommands: {
+      enabled: () => true, repository: async () => Response.json({ workspaceRepository: null }), check: async () => "", checks: async () => "",
+      workspace: async (request: Request) => { methods.push(request.method); return Response.json({ workspace: profile }) },
+    } })
+    await f.adapter.onEvent(event("Do some temporary analysis", "general-profile-event"))
+    expect(f.calls.find(([name]) => name === "prompt")?.[1]).toMatchObject({ text: expect.stringContaining("Workspace retention is explicitly disposable") })
+    expect(f.calls.find(([name]) => name === "prompt")?.[1]).toMatchObject({ text: expect.stringContaining("remain repository-free permanently") })
+    expect(f.calls.find(([name]) => name === "prompt")?.[1]).toMatchObject({ text: expect.stringContaining("words such as temporary do not authorize disposal") })
+    expect(methods).toEqual(["GET"])
   })
 })
