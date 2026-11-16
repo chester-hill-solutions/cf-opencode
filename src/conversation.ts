@@ -22,7 +22,7 @@ import { ConversationIdleClose, IdleClosePendingError, parseIdleCloseMs } from "
 import { ConversationRuntimeAccess } from "./conversation/runtime-access"
 import { ConversationUsage } from "./conversation/usage"
 import { ConversationRecoveryActions } from "./conversation/recovery-actions"
-import { ConversationControlPlane } from "./conversation/control-plane"
+import { ConversationControlPlane, type PermissionRequest, type SlackFormRequest } from "./conversation/control-plane"
 import { ConversationImages } from "./conversation/images"
 import { ConversationLease } from "./conversation/lease"
 import { ConversationBudgetReservations, type BudgetReservationResult } from "./conversation/budget-reservations"
@@ -33,6 +33,7 @@ import { ConversationAccountingCutover } from "./conversation/accounting-cutover
 import { ConversationDeliveryControls, stopMessage } from "./conversation/delivery-controls"
 import { ConversationMessagePipeline } from "./conversation/message-pipeline"
 import { ConversationMemoryShadow, memoryShadowFor } from "./conversation/memory-shadow"
+import { memoryServices } from "./conversation/memory-port"
 import { cancelTurn, passiveReadRoute } from "./conversation/turn-replies"
 import { queueCapacity, queueRetryDelay } from "./queue"
 import { projectTurnObservation, type PersistedTurnTimeout } from "./turn-observation"
@@ -42,7 +43,6 @@ import { ConversationWorkspaceChecks } from "./conversation/workspace-checks"
 import { ConversationWorkspaceCheckDispatcher } from "./conversation/workspace-check-dispatcher"
 import { checkCollectorConfig } from "./workspace-check-collector"
 import { LEGACY_ALARM_MIGRATION_KEY, isFreshLegacyAlarmMigration } from "./conversation/job-state"
-import type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
 export type { PermissionRequest, SlackFormRequest } from "./conversation/control-plane"
 import type { Env } from "./env"
 import { logEvent } from "./log"
@@ -499,6 +499,7 @@ export class Conversation extends DurableObject<Env> {
       withClient: (fn, recoverOnRejection) => this.withClient(fn, recoverOnRejection),
       withUsageLifecycle: (cleanup) => this.withUsageLifecycle(cleanup),
       settings: () => this.settings(),
+      memory: memoryServices(() => this.env.SETTINGS.getByName("global")),
       usageToday: async () => {
         const response = await this.env.SETTINGS.getByName("global").fetch("https://settings/usage/today")
         if (!response.ok) throw new Error("Usage is temporarily unavailable")
@@ -691,9 +692,7 @@ export class Conversation extends DurableObject<Env> {
     }
     if (url.pathname === "/accounting/reconciliation" && request.method === "GET") {
       const kind = url.searchParams.get("kind")
-      if (kind !== "observed_actual" && kind !== "acknowledged_unknown") {
-        return Response.json({ error: "kind must be observed_actual or acknowledged_unknown" }, { status: 400 })
-      }
+      if (kind !== "observed_actual" && kind !== "acknowledged_unknown") return Response.json({ error: "kind must be observed_actual or acknowledged_unknown" }, { status: 400 })
       return this.reconciliation.preview(kind)
     }
     if (url.pathname === "/accounting/reconciliation" && request.method === "POST") {

@@ -25,6 +25,11 @@ import { checkSlackImageModel, downloadSlackImage, formatSlackImageModelSuggesti
 import { parseSlackCommand } from "../slack-command-format"
 import { handleSlackCommand } from "../slack-commands"
 import { isBusyPhase } from "./admissions"
+import { renderMemoryContext, type MemoryContext, type MemoryServices } from "./memory-port"
+
+/** The two halves of the general-workspace brief, kept beside its rendering. */
+const GENERAL_WORKSPACE = "/workspace is this conversation's general workspace. No repository is configured; existing files or checkouts may still be present. Durable projects, scripts, analysis, documents, prototypes and new projects may start blank and remain repository-free permanently. Keeping work requires no git initialization, commit or remote. A project name alone does not identify a checkout. Inspect relevant /workspace contents, consult available project context, or ask for the repository/location when needed. Do not blindly search other filesystem roots for a named project."
+const CARRY_WORK = "If the user explicitly asks to clone, use or create a repository within /workspace and carry existing work, keep a new checkout in a separate subdirectory unless the user chose an existing checkout. Copy only requested work, excluding workspace/runtime metadata; preserve originals and report conflicts before overwriting. Creating a checkout with tools does not register a conversation repository binding or establish credential access. Push or publish only when the user instructs it."
 
 type OpenCodeClient = ReturnType<typeof makeClient>
 
@@ -57,6 +62,8 @@ export interface ConversationSlackAdapterOptions {
   withClient<T>(fn: (client: OpenCodeClient) => Promise<T>, recoverOnRejection?: boolean): Promise<T>
   withUsageLifecycle(cleanup: () => Promise<Response>): Promise<Response>
   settings(): Promise<HarnessSettings>
+  /** Team and user memory; absent when the harness has no memory store wired. */
+  memory?: MemoryServices
   usageToday(): Promise<{ date: string; costUSD: number; reservedUSD: number; input: number; output: number; historicalUsageUnreconciled?: boolean; unknownReconciliationCount?: number }>
   deliver(event: ConversationEvent, options?: { slack?: boolean }): Promise<void>
   waitUntil(promise: Promise<unknown>): void
@@ -71,6 +78,7 @@ export class ConversationSlackAdapter {
   async handleControl(text: string, input: SlackEventRequest, target: SlackTarget): Promise<void> {
     const workspace = this.options.workspaceCommands
     const workspaceEnabled = workspace && (!workspace.enabled || workspace.enabled(target))
+    const memory = this.options.memory
     await handleSlackCommand(text, {
       getState: async () => ({ ...await this.options.store.get(), turnObservation: await this.options.observation() }),
       runtime: () => ({ warm: this.options.runtimeWarm() }),
@@ -100,6 +108,11 @@ export class ConversationSlackAdapter {
         repository: workspace.repository,
         check: (argv: string[]) => workspace.check(argv, target, input.eventID),
         checks: () => workspace.checks(target),
+      } } : {}),
+      ...(memory ? { memory: {
+        context: () => memory.context(input.event.user),
+        remember: (scope, text) => memory.remember(scope, text, input.event.user),
+        forget: (scope, index) => memory.forget(scope, index, input.event.user),
       } } : {}),
     })
   }
@@ -178,7 +191,7 @@ export class ConversationSlackAdapter {
     let imageAttachment: SlackImageAttachment | undefined
     let accepted = false
     try {
-      prompt = await this.buildPrompt(event.channel, event.ts, event.thread_ts, text)
+      prompt = await this.buildPrompt({ channel: event.channel, ts: event.ts, threadTs: event.thread_ts, text, user: event.user })
     } catch (error) {
       logEvent("admission.failed", { transport: "slack", stage: "context" })
       if (hasImage) {
@@ -450,30 +463,69 @@ export class ConversationSlackAdapter {
     return `⚠️ I couldn't prepare the message (${this.errorMessage(priorError)}). Nothing was queued; please retry.`
   }
 
-  private async buildPrompt(channel: string, ts: string, threadTs: string | undefined, text: string): Promise<string> {
-    const messages = await this.fetchContext(channel, ts, threadTs)
-    const context = formatSlackContext(messages, { botUserId: this.options.env().SLACK_BOT_USER_ID ?? "", excludeTs: ts })
-    const prompt = context ? [`<slack_context channel="${channel}" source="${threadTs ? `thread ${threadTs}` : "recent channel history"}">`, context, "</slack_context>", "", "<message>", text, "</message>"].join("\n") : text
-    const workspace = this.options.workspaceCommands
-    if (!workspace || (workspace.enabled && !workspace.enabled({ channel }))) return prompt
-    const general = !(await this.options.store.get()).workspaceRepository && !(await this.options.settings()).workspaceRepo.trim()
-    let retention = ""
-    if (workspace.workspace) {
-      try {
-        const profile = await readSlackWorkspaceProfile(workspace.workspace)
-        retention = `Workspace retention is explicitly ${profile.retention}; profile status is ${profile.status}. ` +
-          (profile.retention === "persistent" ? "Persistent is the default and keeps existing work in place. " : "A disposable profile uses recovery checkpoints until the user explicitly chooses !workspace discard. ") +
-          "Finishing work or going idle never authorizes automatic deletion. Only explicit user workspace controls change retention; words such as temporary do not authorize disposal. Do not perform workspace disposal with shell tools; direct the user to !workspace discard."
-      } catch { retention = "Workspace retention could not be verified. Do not infer permission to discard or delete workspace data." }
-    }
-    if (!general && !retention) return prompt
+  private async buildPrompt(input: {
+    channel: string
+    ts: string
+    threadTs?: string
+    text: string
+    user?: string
+  }): Promise<string> {
+    // Memory and Slack context are independent reads; one round trip, not two.
+    const [messages, memory] = await Promise.all([
+      this.fetchContext(input.channel, input.ts, input.threadTs),
+      this.memoryContext(input.user),
+    ])
+    const context = formatSlackContext(messages, { botUserId: this.options.env().SLACK_BOT_USER_ID ?? "", excludeTs: input.ts })
+    const prompt = context
+      ? [`<slack_context channel="${input.channel}" source="${input.threadTs ? `thread ${input.threadTs}` : "recent channel history"}">`, context, "</slack_context>", "", "<message>", input.text, "</message>"].join("\n")
+      : input.text
+    const remembered = renderMemoryContext(memory)
+    return this.workspacePrompt(input.channel, remembered ? `${remembered}\n\n${prompt}` : prompt)
+  }
+
+  private memoryContext(user: string | undefined): Promise<MemoryContext | undefined> {
+    const memory = this.options.memory
+    if (!memory) return Promise.resolve(undefined)
+    return memory.context(user).catch(() => undefined)
+  }
+
+  /** The workspace brief, wrapped around a message that already carries memory. */
+  private async workspacePrompt(channel: string, message: string): Promise<string> {
+    const workspace = this.describeWorkspace(channel)
+    if (!workspace) return message
+    const [{ workspaceRepository }, settings, retention] = await Promise.all([
+      this.options.store.get(),
+      this.options.settings(),
+      workspace.workspace ? this.retentionPrompt(workspace.workspace) : Promise.resolve(""),
+    ])
+    const general = !workspaceRepository && !settings.workspaceRepo.trim()
+    if (!general && !retention) return message
     return [
       "<workspace_context>",
-      ...(general ? ["/workspace is this conversation's general workspace. No repository is configured; existing files or checkouts may still be present. Durable projects, scripts, analysis, documents, prototypes and new projects may start blank and remain repository-free permanently. Keeping work requires no git initialization, commit or remote. A project name alone does not identify a checkout. Inspect relevant /workspace contents, consult available project context, or ask for the repository/location when needed. Do not blindly search other filesystem roots for a named project."] : []),
+      ...(general ? [GENERAL_WORKSPACE] : []),
       ...(retention ? [retention] : []),
-      ...(general ? ["If the user explicitly asks to clone, use or create a repository within /workspace and carry existing work, keep a new checkout in a separate subdirectory unless the user chose an existing checkout. Copy only requested work, excluding workspace/runtime metadata; preserve originals and report conflicts before overwriting. Creating a checkout with tools does not register a conversation repository binding or establish credential access. Push or publish only when the user instructs it."] : []),
-      "</workspace_context>", "", prompt,
+      ...(general ? [CARRY_WORK] : []),
+      "</workspace_context>", "", message,
     ].join("\n")
+  }
+
+  /** The workspace services when this channel has them enabled. */
+  private describeWorkspace(channel: string): NonNullable<ConversationSlackAdapterOptions["workspaceCommands"]> | undefined {
+    const workspace = this.options.workspaceCommands
+    if (!workspace) return undefined
+    if (workspace.enabled && !workspace.enabled({ channel })) return undefined
+    return workspace
+  }
+
+  private async retentionPrompt(workspace: NonNullable<SlackWorkspaceCommandServices["workspace"]>): Promise<string> {
+    try {
+      const profile = await readSlackWorkspaceProfile(workspace)
+      return `Workspace retention is explicitly ${profile.retention}; profile status is ${profile.status}. ` +
+        (profile.retention === "persistent" ? "Persistent is the default and keeps existing work in place. " : "A disposable profile uses recovery checkpoints until the user explicitly chooses !workspace discard. ") +
+        "Finishing work or going idle never authorizes automatic deletion. Only explicit user workspace controls change retention; words such as temporary do not authorize disposal. Do not perform workspace disposal with shell tools; direct the user to !workspace discard."
+    } catch {
+      return "Workspace retention could not be verified. Do not infer permission to discard or delete workspace data."
+    }
   }
 
   private async fetchContext(channel: string, ts: string, threadTs: string | undefined): Promise<SlackContextMessage[]> {

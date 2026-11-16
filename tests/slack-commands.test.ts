@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { handleSlackCommand, type SlackCommandServices } from "../src/slack-commands"
 import type { Form } from "../src/slack-forms"
+import type { MemoryEntry, MemoryScope } from "../src/memory"
 import type { ModelSummary, SessionSummary } from "../src/slack-command-format"
 
 const model: ModelSummary = { providerID: "opencode", id: "deepseek-v4.1-flash", type: "chat", enabled: true }
@@ -358,5 +359,88 @@ describe("harness-first commands with no execution", () => {
     expect(await handleSlackCommand("!new", f.service)).toBe(true)
     expect(f.replies[0]).toContain("fresh session")
     expect(f.calls).toContainEqual(["newSession"])
+  })
+})
+
+describe("memory commands", () => {
+  const memoryFake = () => {
+    const team: MemoryEntry[] = []
+    const user: MemoryEntry[] = []
+    return {
+      context: async () => ({ team, user }),
+      remember: async (scope: MemoryScope, text: string) => {
+        const entry: MemoryEntry = { id: String(team.length + user.length + 1), text, at: 1 }
+        if (scope === "team") team.push(entry)
+        else user.push(entry)
+        return { ok: true as const, entry }
+      },
+      forget: async (scope: MemoryScope, index: number) => {
+        const list = scope === "team" ? team : user
+        const entry = list[index - 1]
+        if (!entry) return { ok: false as const, error: "no entry at that position" }
+        list.splice(index - 1, 1)
+        return { ok: true as const, entry }
+      },
+    }
+  }
+
+  test("stores a personal note by default and a shared one on request", async () => {
+    const memory = memoryFake()
+    const f = fake({ memory })
+    await handleSlackCommand("!remember I prefer terse replies", f.service)
+    await handleSlackCommand("!remember team we deploy with --containers-rollout none", f.service)
+    expect(f.replies[0]).toContain("Noted: I prefer terse replies")
+    expect(f.replies[1]).toContain("Remembered for the team: we deploy with --containers-rollout none")
+    const { team, user } = await memory.context()
+    expect(team.map((entry) => entry.text)).toEqual(["we deploy with --containers-rollout none"])
+    expect(user.map((entry) => entry.text)).toEqual(["I prefer terse replies"])
+  })
+
+  test("lists both scopes with the numbers !forget uses", async () => {
+    const memory = memoryFake()
+    const f = fake({ memory })
+    await handleSlackCommand("!remember team we use bun", f.service)
+    await handleSlackCommand("!remember I like short answers", f.service)
+    await handleSlackCommand("!memory", f.service)
+    const listing = f.replies.at(-1) ?? ""
+    expect(listing).toContain("*Team*")
+    expect(listing).toContain("1. we use bun")
+    expect(listing).toContain("*You*")
+    expect(listing).toContain("1. I like short answers")
+    await handleSlackCommand("!forget team 1", f.service)
+    expect(f.replies.at(-1)).toContain("Forgot: we use bun")
+    await handleSlackCommand("!forget 1", f.service)
+    expect(f.replies.at(-1)).toContain("Forgot: I like short answers")
+  })
+
+  test("reports a refusal instead of pretending it saved", async () => {
+    const f = fake({ memory: { ...memoryFake(), remember: async () => ({ ok: false as const, error: "That is already remembered." }) } })
+    await handleSlackCommand("!remember we use bun", f.service)
+    expect(f.replies[0]).toContain("already remembered")
+  })
+
+  test("is empty until something is remembered and explains the syntax on misuse", async () => {
+    const f = fake({ memory: memoryFake() })
+    await handleSlackCommand("!memory", f.service)
+    expect(f.replies[0]).toContain("Nothing is remembered yet")
+    await handleSlackCommand("!forget nope", f.service)
+    expect(f.replies[1]).toContain("where n is the number")
+    await handleSlackCommand("!remember", f.service)
+    expect(f.replies[2]).toContain("!remember <something>")
+  })
+
+  test("answers while cold: memory never needs an execution", async () => {
+    const f = fake({
+      runtime: () => ({ warm: false }),
+      getModels: async () => { throw new Error("cold: model catalogue") },
+      getSession: async () => { throw new Error("cold: session") },
+      listSessions: async () => { throw new Error("cold: sessions") },
+      listForms: async () => { throw new Error("cold: forms") },
+      memory: memoryFake(),
+    })
+    await handleSlackCommand("!remember team we use stow", f.service)
+    await handleSlackCommand("!memory", f.service)
+    expect(f.replies[1]).toContain("we use stow")
+    expect(f.calls).toEqual([])
   })
 })
