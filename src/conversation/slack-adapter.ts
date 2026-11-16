@@ -29,6 +29,7 @@ import { renderMemoryContext, type MemoryContext, type MemoryServices } from "./
 
 /** The two halves of the general-workspace brief, kept beside its rendering. */
 const GENERAL_WORKSPACE = "/workspace is this conversation's general workspace. No repository is configured; existing files or checkouts may still be present. Durable projects, scripts, analysis, documents, prototypes and new projects may start blank and remain repository-free permanently. Keeping work requires no git initialization, commit or remote. A project name alone does not identify a checkout. Inspect relevant /workspace contents, consult available project context, or ask for the repository/location when needed. Do not blindly search other filesystem roots for a named project."
+const WORKSPACE_PATH = "/workspace is this conversation's working directory; files, checkouts and scripts live there. Keep a new checkout in its own subdirectory, copy only the work the user asked for, and report conflicts before overwriting."
 const CARRY_WORK = "If the user explicitly asks to clone, use or create a repository within /workspace and carry existing work, keep a new checkout in a separate subdirectory unless the user chose an existing checkout. Copy only requested work, excluding workspace/runtime metadata; preserve originals and report conflicts before overwriting. Creating a checkout with tools does not register a conversation repository binding or establish credential access. Push or publish only when the user instructs it."
 
 type OpenCodeClient = ReturnType<typeof makeClient>
@@ -479,8 +480,10 @@ export class ConversationSlackAdapter {
     const prompt = context
       ? [`<slack_context channel="${input.channel}" source="${input.threadTs ? `thread ${input.threadTs}` : "recent channel history"}">`, context, "</slack_context>", "", "<message>", input.text, "</message>"].join("\n")
       : input.text
+    // Soul, then memory, then the workspace brief, then the message: stability
+    // first, so the volatile part of the prompt stays at the end.
     const remembered = renderMemoryContext(memory)
-    return this.workspacePrompt(input.channel, remembered ? `${remembered}\n\n${prompt}` : prompt)
+    return [remembered, await this.workspaceBrief(), prompt].filter((block) => block.length > 0).join("\n\n")
   }
 
   private memoryContext(user: string | undefined): Promise<MemoryContext | undefined> {
@@ -489,32 +492,25 @@ export class ConversationSlackAdapter {
     return memory.context(user).catch(() => undefined)
   }
 
-  /** The workspace brief, wrapped around a message that already carries memory. */
-  private async workspacePrompt(channel: string, message: string): Promise<string> {
-    const workspace = this.describeWorkspace(channel)
-    if (!workspace) return message
+  /** Where this conversation works; sent with every prompt, not gated by the check channel. */
+  private async workspaceBrief(): Promise<string> {
+    const workspace = this.options.workspaceCommands
+    if (!workspace) return ""
     const [{ workspaceRepository }, settings, retention] = await Promise.all([
       this.options.store.get(),
       this.options.settings(),
       workspace.workspace ? this.retentionPrompt(workspace.workspace) : Promise.resolve(""),
     ])
+    // The brief is not gated on the check-channel feature: every session is told
+    // where it works. What stays gated is the check-channel command surface.
     const general = !workspaceRepository && !settings.workspaceRepo.trim()
-    if (!general && !retention) return message
     return [
       "<workspace_context>",
-      ...(general ? [GENERAL_WORKSPACE] : []),
+      ...(general ? [GENERAL_WORKSPACE] : [WORKSPACE_PATH]),
       ...(retention ? [retention] : []),
       ...(general ? [CARRY_WORK] : []),
-      "</workspace_context>", "", message,
+      "</workspace_context>",
     ].join("\n")
-  }
-
-  /** The workspace services when this channel has them enabled. */
-  private describeWorkspace(channel: string): NonNullable<ConversationSlackAdapterOptions["workspaceCommands"]> | undefined {
-    const workspace = this.options.workspaceCommands
-    if (!workspace) return undefined
-    if (workspace.enabled && !workspace.enabled({ channel })) return undefined
-    return workspace
   }
 
   private async retentionPrompt(workspace: NonNullable<SlackWorkspaceCommandServices["workspace"]>): Promise<string> {
