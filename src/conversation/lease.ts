@@ -111,6 +111,26 @@ export class ConversationLease {
     })
   }
 
+  /**
+   * Release a hold whose container is no longer running. Nothing can be using
+   * the slot, so no stop acknowledgement is required, and a lease that outlived
+   * its runtime must never keep renewing against the harness-wide cap.
+   */
+  releaseUnused(): Promise<boolean> {
+    return this.serialize(async () => {
+      const existing = await this.status()
+      if (!existing) return true
+      const record: ConversationLeaseRecord = {
+        version: 1,
+        desired: "released",
+        status: "pending",
+        requestStartedAt: Date.now(),
+      }
+      await this.persistIntent(record, "lease-release-retry")
+      return this.releasePendingUnchecked(record)
+    })
+  }
+
   /** Retry only durable intent; a missing record never reacquires a lease. */
   maintain(): Promise<void> {
     return this.serialize(async () => {
@@ -180,6 +200,11 @@ export class ConversationLease {
       this.emitTelemetry("lease.failed", "failed", "stopped_unconfirmed")
       return false
     }
+    return this.releasePendingUnchecked(record)
+  }
+
+  /** The Settings release itself; callers decide whether a stop was proven. */
+  private async releasePendingUnchecked(record: ConversationLeaseRecord): Promise<boolean> {
     const pending: ConversationLeaseRecord = {
       ...record,
       version: 1,

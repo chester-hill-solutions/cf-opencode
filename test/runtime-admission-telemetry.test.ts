@@ -146,6 +146,25 @@ describe("runtime and admission lifecycle telemetry", () => {
     expect(posted[1]).not.toContain("I'll retry shortly")
   })
 
+  it("names a capacity wait instead of a generic busy notice", async () => {
+    const stub = env.CONVERSATION.getByName("C1:queue-notice-capacity")
+    const posted = await runInDurableObject(stub, async (_instance, runtime) => {
+      const replies: string[] = []
+      const store = new ConversationStore(runtime.storage)
+      const admissions = makeAdmissions(runtime, { store, posted: (text) => { replies.push(text) } })
+      const slack = { channel: "C1", replyTs: "1.1" }
+      await admissions.enqueue("first", slack)
+      const head = (await store.get()).queue?.[0]
+      if (!head) throw new Error("expected a queued entry")
+      await store.updateQueueHead(head.id, { lastError: "container capacity reached" })
+      await admissions.enqueue("second", slack)
+      return replies
+    })
+    expect(posted[1]).toContain("No container slot is free")
+    expect(posted[1]).toContain("retries every 30 seconds")
+    expect(posted[1]).not.toContain("Container busy")
+  })
+
   it("does not report a failed native destroy as stopped", async () => {
     const stub = env.CONVERSATION.getByName("C1:runtime-telemetry-stop-failed")
     const events = await runInDurableObject(stub, async (_instance, runtime) => {

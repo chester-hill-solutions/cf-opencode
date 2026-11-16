@@ -4,7 +4,7 @@ import type { ConversationJobKind, ConversationJobPayload } from "./jobs"
 import type { HarnessSettings } from "../settings"
 import type { ConversationEvent } from "../events"
 import { nextBudgetReset } from "../budget"
-import { CAPACITY_RETRY_MS, isCapacityRejection, queueCapacity } from "../queue"
+import { CAPACITY_ERROR, CAPACITY_RETRY_MS, isCapacityRejection, queueCapacity } from "../queue"
 import { waitingKey, type TurnRecord } from "../turns"
 import { emitConversationTelemetry, type ConversationTelemetrySink } from "./telemetry"
 
@@ -241,12 +241,18 @@ export class ConversationAdmissions {
    */
   private async queuedNotice(): Promise<string> {
     const state = await this.options.store.get().catch(() => undefined)
-    if (!state?.settlementError || !state.budgetReservation?.dispatched) {
-      return "⏳ Container busy — queued; I'll retry shortly."
+    if (state?.settlementError && state.budgetReservation?.dispatched) {
+      return "⏳ Queued, but this thread is waiting on an unsettled previous turn " +
+        `(${state.settlementError}). It will not start on its own: that turn has to settle first. ` +
+        "`!status` shows the details."
     }
-    return "⏳ Queued, but this thread is waiting on an unsettled previous turn " +
-      `(${state.settlementError}). It will not start on its own: that turn has to settle first. ` +
-      "`!status` shows the details."
+    // Capacity is the one wait a user can understand: every slot is held by
+    // another conversation, so this stays harness-only until one frees.
+    if (state?.queue?.[0]?.lastError === CAPACITY_ERROR) {
+      return `⏳ No container slot is free right now (${state.queue.length} queued). ` +
+        "Your message retries every 30 seconds; `!status` shows the queue. Nothing was lost."
+    }
+    return "⏳ Container busy — queued; I'll retry shortly."
   }
 
   async scheduleQueuedRetry(
