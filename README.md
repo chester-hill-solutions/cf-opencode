@@ -233,7 +233,7 @@ Apple `container` needs macOS 26+ on Apple silicon. `wrangler dev` with containe
   Slack signature/routing, SSE, concurrency and admission-queue regressions, a
   latency guard). Current pass counts and evidence dates live in the roadmap.
 - `bun run check:config` — fails CI when the prod and test Wrangler configs drift on bindings, exports or vars.
-- `bun run check:quality` — the [RatchetStrap gold set](https://github.com/chester-hill-solutions/chester-hill-solutions/blob/main/packages/ratchet-strap/src/gold/README.md): ESLint identities, strict compiler diagnostics, duplication, telemetry boundaries and file-size ceilings. Baselines live in `scripts/baselines/` and may only tighten; `bun run tools:*:baseline` seeds a first adoption or removes repaired debt. The zero-tolerance client-bundle scan is `bun run check:client-bundle`, and `tests/gold-set.test.ts` asserts that CI covers every gold member.
+- `bun run check:quality` — the RatchetStrap gold set: six repository-wide gates defined in the package's `src/gold/` folder, namely ESLint identities, strict compiler diagnostics, duplication, telemetry boundaries and file-size ceilings. Baselines live in `scripts/baselines/` and may only tighten; `bun run tools:*:baseline` seeds a first adoption or removes repaired debt. The zero-tolerance client-bundle scan is `bun run check:client-bundle`, and `tests/gold-set.test.ts` asserts that CI covers every gold member.
 - `bun run ci:local` — the same aggregate gate CI runs: config drift, typecheck, provider-egress preflight, UI build, quality ratchets, client-bundle budget, unit tests and Worker tests.
 - `bench/measure.ts` — deployed Worker/SSE/turn latency.
 - `bench/container.sh` — cold start, checkpoint size/time, restore time.
