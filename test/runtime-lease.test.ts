@@ -287,6 +287,35 @@ describe("Conversation lease job integration", () => {
     expect(second.remainingJob).toBeUndefined()
   }, 12000)
 
+  it("releases a hold whose container is no longer running", async () => {
+    const stub = env.CONVERSATION.getByName("C1:lease-released-when-container-gone")
+    const result = await runInDurableObject(stub, async (instance, runtime) => {
+      const container = {
+        running: false,
+        async destroy() { throw new Error("nothing to destroy") },
+        async setInactivityTimeout() {},
+        getTcpPort() { throw new Error("runtime port should not be used by lease renewal") },
+      }
+      Object.defineProperty((instance as unknown as { ctx: object }).ctx, "container", { configurable: true, value: container })
+      const internal = instance as unknown as { leases: ConversationLease }
+      await instance.fetch(new Request("https://conversation/state", {
+        headers: { "x-conversation-key": "C1:lease-released-when-container-gone" },
+      }))
+      container.running = true
+      await internal.leases.ensureHeld()
+      container.running = false
+      await driveConversationJobs(instance, runtime.storage, ["lease:renew"])
+      return {
+        lease: await runtime.storage.get("containerLease"),
+        job: runtime.storage.sql.exec<{ id: string }>(
+          "SELECT id FROM cf_agents_jobs WHERE id = ?", "lease:renew",
+        ).toArray()[0],
+      }
+    })
+    expect(result.lease).toBeUndefined()
+    expect(result.job).toBeUndefined()
+  }, 12000)
+
   it("adopts a pre-service running native container without an old lease record", async () => {
     const stub = env.CONVERSATION.getByName("C1:lease-job-adoption")
     const result = await runInDurableObject(stub, async (instance, runtime) => {

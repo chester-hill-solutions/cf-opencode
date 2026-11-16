@@ -1361,7 +1361,7 @@ export class Conversation extends DurableObject<Env> {
       }
       return undefined
     }
-    await this.leases.maintain()
+    await (this.ctx.container?.running === false ? this.leases.releaseUnused() : this.leases.maintain())
     return undefined
   }
 
