@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { assertNoStaleVaultRecords } from "../src/vault-records"
 import { env, runInDurableObject } from "cloudflare:test"
-import { Settings } from "../src/settings-do"
 
 /**
  * The Settings Durable Object is a singleton shared by every conversation.
