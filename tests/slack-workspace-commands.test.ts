@@ -73,7 +73,7 @@ test("workspace control failures do not leak service diagnostics and are never p
   } satisfies Partial<SlackCommandServices>
   // Only workspace/reply services are invoked for these leading commands.
   const complete: SlackCommandServices = {
-    getState: async () => ({}), getDefaultModel: async () => "", getModels: async () => [], getSession: async () => { throw new Error("unexpected") }, listSessions: async () => [],
+    getState: async () => ({}), runtime: () => ({ warm: true }), getDefaultModel: async () => "", getModels: async () => [], getSession: async () => { throw new Error("unexpected") }, listSessions: async () => [],
     switchModel: async () => {}, selectSession: async () => {}, newSession: async () => {}, steer: async () => "", stop: async () => "", leave: async () => "", listForms: async () => [], answerForm: async () => {}, cancelForm: async () => {}, usageText: async () => "", setupUrl: "", ...service,
   }
   expect(await handleSlackCommand("!repo", complete)).toBe(true)

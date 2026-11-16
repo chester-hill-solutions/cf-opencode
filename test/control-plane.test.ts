@@ -22,6 +22,7 @@ function makeControlPlane(
         upstreamCalls.count++
         throw new Error("unexpected upstream call")
       },
+      withWarmClient: async <T>(_fn: (client: Client) => Promise<T>): Promise<T> => { throw new Error("warm runtime unavailable") },
       withAdmissionLock: async <T>(task: () => Promise<T>) => task(),
       hasPendingRuntimeUpgrade: options.pendingUpgrade ?? (async () => false),
       scheduleObservation: async () => {},

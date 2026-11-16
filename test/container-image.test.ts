@@ -141,7 +141,6 @@ function installMessagePorts(
     imageStarts,
   }
 }
-
 describe("isolated evented container image selection", () => {
   it("uses the protected container view for runtime ports without replacing native state", async () => {
     const stub = env.CONVERSATION.getByName("image-selection-protected-container-view")
@@ -634,6 +633,7 @@ describe("isolated evented container image selection", () => {
       vi.stubGlobal("fetch", async () => Response.json({ ok: true }))
       try {
         const fake = installMessagePorts(instance, { eventPersistence: true })
+        await (instance as unknown as { ensureReady(): Promise<unknown> }).ensureReady() // model commands need a warm runtime
         const command = async (eventID: string, text: string) => instance.fetch(new Request("https://conversation/slack", {
           method: "POST",
           headers: { "x-conversation-key": "image-selection-help-model-prompt" },

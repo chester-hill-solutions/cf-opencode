@@ -111,7 +111,7 @@ describe("HTTP delivery modes", () => {
       let externalCalls = 0
       const controls = new ConversationDeliveryControls({
         storage: runtime.storage, store, withLock: task => task(),
-        unavailable: async () => false, admitting: () => false, queueLimit: 10,
+        unavailable: async () => false, runtimeAvailable: () => true, admitting: () => false, queueLimit: 10,
         steer: async () => { externalCalls++ }, interrupt: async () => { externalCalls++ },
         schedule: async () => { throw new Error("scheduler write failed") }, event: async () => {},
       })

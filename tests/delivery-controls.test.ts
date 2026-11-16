@@ -42,6 +42,7 @@ function harness(options: {
   queueLimit?: number
   interruptError?: boolean
   scheduleError?: boolean
+  runtimeAvailable?: boolean
 } = {}) {
   const storage = fakeStorage()
   const store = new ConversationStore(fakeKV(storage))
@@ -51,6 +52,7 @@ function harness(options: {
     store,
     withLock: async (task) => task(),
     unavailable: async () => options.unavailable ?? false,
+    runtimeAvailable: () => options.runtimeAvailable ?? true,
     admitting: () => options.admitting ?? false,
     queueLimit: options.queueLimit ?? 4,
     steer: async (sessionID, text) => { calls.push(["steer", sessionID, text]) },
@@ -127,6 +129,7 @@ describe("ConversationDeliveryControls", () => {
       store: h.store,
       withLock: async (task) => task(),
       unavailable: async () => false,
+      runtimeAvailable: () => true,
       admitting: () => false,
       queueLimit: 4,
       steer: async () => {},
@@ -201,5 +204,26 @@ describe("ConversationDeliveryControls", () => {
     expect(await h.control.stop()).toMatchObject({ ok: false, status: 503 })
     expect(h.calls).toEqual([])
     expect(h.storage.map.has("interruptIntent")).toBe(false)
+  })
+  it("stops an active phase with no runtime by handling the queue only", async () => {
+    const h = harness({ runtimeAvailable: false, queue: [queueItem("q1")] })
+    await h.setup()
+    const cleared = await h.control.stop()
+    const afterClear = await h.store.get()
+
+    expect(cleared).toMatchObject({
+      ok: true, status: 200, delivery: "interrupt", stopRequested: false, runtimeAbsent: true,
+    })
+    expect(afterClear.queue).toEqual([])
+    expect(afterClear.phase).toBe("running")
+    expect(h.storage.map.has("interruptIntent")).toBe(false)
+
+    const replaced = await h.control.stop("replacement message", { replaceQueue: true })
+    expect(replaced).toMatchObject({
+      ok: true, status: 202, delivery: "interrupt", stopRequested: false, runtimeAbsent: true,
+    })
+    expect((await h.store.get()).queue).toMatchObject([{ text: "replacement message" }])
+    // Nothing was interrupted, because there is nothing running to interrupt.
+    expect(h.calls.filter(([name]) => name === "interrupt")).toHaveLength(0)
   })
 })

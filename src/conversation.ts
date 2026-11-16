@@ -30,7 +30,7 @@ import { ConversationTurnExecution } from "./conversation/turn-execution"
 import { ConversationReadiness } from "./conversation/readiness"
 import { ConversationReconciliation } from "./conversation/reconciliation"
 import { ConversationAccountingCutover } from "./conversation/accounting-cutover"
-import { ConversationDeliveryControls } from "./conversation/delivery-controls"
+import { ConversationDeliveryControls, stopMessage } from "./conversation/delivery-controls"
 import { ConversationMessagePipeline } from "./conversation/message-pipeline"
 import { cancelTurn, passiveReadRoute } from "./conversation/turn-replies"
 import { queueCapacity, queueRetryDelay } from "./queue"
@@ -223,6 +223,7 @@ export class Conversation extends DurableObject<Env> {
       storage: ctx.storage,
       store: this.store,
       withClient: (fn, recoverOnRejection) => this.withClient(fn, recoverOnRejection),
+      withWarmClient: (fn) => this.runtimeAccess.useWarm((port) => this.withClientOwned(fn, port)),
       withAdmissionLock: (task) => this.admissions.withLock(task),
       hasPendingRuntimeUpgrade: () => this.runtimeUpgrades.hasPending(),
       scheduleObservation: (at, payload) => this.scheduler.schedule("turn:observe", at, payload),
@@ -435,6 +436,7 @@ export class Conversation extends DurableObject<Env> {
       store: this.store,
       withLock: (task) => this.admissions.withLock(task),
       unavailable: async () => this.recoveryActions.active || await this.runtimeUpgrades.hasPending(),
+      runtimeAvailable: () => this.runtimeAccess.warm,
       admitting: () => this.admissions.active,
       queueLimit: queueCapacity(env.QUEUE_LIMIT),
       steer: async (sessionID, text) => { await this.withClient((client) => client.session.prompt({ sessionID, text, delivery: "steer", resume: false }), false) },
@@ -473,13 +475,8 @@ export class Conversation extends DurableObject<Env> {
           if (result.error === "no_active_turn") return "No running turn to steer. Send a normal message to start or queue work."
           return result.ok ? "Guidance accepted; the running turn may use it at its next step. No new budget hold was created." : `Steering ${result.outcome === "ambiguous" ? "outcome is unknown; do not resend automatically" : "was refused"}: ${result.error}`
         },
-        stop: async (followUp, target) => {
-          const result = await this.deliveryControls.stop(followUp, { replaceQueue: true, slack: target })
-          if (!result.ok) return `Stop ${result.outcome === "ambiguous" ? "outcome is unknown; the hold and follow-up are retained" : "was refused"}: ${result.error}`
-          return result.stopRequested
-            ? `Stop requested; runtime stop is unconfirmed. Usage settlement must finish before ${followUp ? "the queued follow-up" : "another turn"}.`
-            : followUp ? "Follow-up queued; no active turn needed interruption." : "Queued follow-ups cleared; no active turn needed interruption."
-        },
+        stop: async (followUp, target) =>
+          stopMessage(await this.deliveryControls.stop(followUp, { replaceQueue: true, slack: target }), followUp),
       },
       store: this.store,
       sessions: this.sessions,
@@ -493,6 +490,8 @@ export class Conversation extends DurableObject<Env> {
       turnExecution: this.turnExecution,
       scheduler: this.scheduler,
       recovery: this.recoveryActions,
+      runtimeWarm: () => this.runtimeAccess.warm,
+      withWarmClient: (fn) => this.runtimeAccess.useWarm((port) => this.withClientOwned(fn, port)),
       withClient: (fn, recoverOnRejection) => this.withClient(fn, recoverOnRejection),
       withUsageLifecycle: (cleanup) => this.withUsageLifecycle(cleanup),
       settings: () => this.settings(),
