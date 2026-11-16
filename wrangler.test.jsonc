@@ -10,6 +10,8 @@
     "WORKSPACE_REPO": "https://github.com/chester-hill-solutions/opencode-slack",
     "OPENCODE_MODEL": "opencode/deepseek-v4.1-flash",
     "POLL_SECONDS": "2",
+    "DECISION_URL": "https://decision.test/v1/systemone",
+    "DECISION_MODEL": "jev-1.13",
     "EVENTED_CANARY_KEY": "event-retention-canary-test",
     "EVENTED_FRESH_CONVERSATIONS": "false",
     "IDLE_CLOSE_SECONDS": "300"
