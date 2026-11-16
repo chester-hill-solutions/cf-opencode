@@ -9,6 +9,21 @@ export const CAPACITY_ERROR = "container capacity reached"
 /** Retry cadence while the cap is full. Leases outlive a turn, so keep waiting. */
 export const CAPACITY_RETRY_MS = 30_000
 
+/** Retry cadence while a dispatched turn still holds the conversation. */
+export const BLOCKED_QUEUE_RETRY_MS = 60_000
+
+/**
+ * A dispatched reservation blocks every drain until its own turn settles, and
+ * settlement schedules the next admission wake. Retrying the refusal at the
+ * normal poll cadence therefore repeats a decision that cannot have changed.
+ */
+export function queueRetryDelay(
+  state: { budgetReservation?: { dispatched?: boolean } },
+  pollMs: number,
+): number {
+  return state.budgetReservation?.dispatched ? BLOCKED_QUEUE_RETRY_MS : pollMs
+}
+
 /** Maximum configurable FIFO depth; invalid values fall back to the default. */
 export const DEFAULT_QUEUE_CAPACITY = 10
 export const MAX_QUEUE_CAPACITY = 100

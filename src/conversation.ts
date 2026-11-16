@@ -33,7 +33,7 @@ import { ConversationAccountingCutover } from "./conversation/accounting-cutover
 import { ConversationDeliveryControls } from "./conversation/delivery-controls"
 import { ConversationMessagePipeline } from "./conversation/message-pipeline"
 import { cancelTurn, passiveReadRoute } from "./conversation/turn-replies"
-import { queueCapacity } from "./queue"
+import { queueCapacity, queueRetryDelay } from "./queue"
 import { projectTurnObservation, type PersistedTurnTimeout } from "./turn-observation"
 import { ConversationAdmissions } from "./conversation/admissions"
 import { ConversationRuntimeUpgrades } from "./conversation/runtime-upgrades"
@@ -1291,7 +1291,7 @@ export class Conversation extends DurableObject<Env> {
       await this.admissions.drainQueue()
       const after = await this.store.get()
       if (!after.queue?.[0] || after.queue?.[0].id !== payload.queueID) return undefined
-      return { rescheduleAt: Math.max(after.queue?.[0].nextAttemptAt ?? 0, Date.now() + POLL_MS) }
+      return { rescheduleAt: Math.max(after.queue[0].nextAttemptAt ?? 0, Date.now() + queueRetryDelay(after, POLL_MS)) }
     }
     return undefined
   }

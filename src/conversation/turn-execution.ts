@@ -77,6 +77,9 @@ const POLL_MS = 2_000
 const STREAM_STOP_WAIT_MS = 10_000
 const DELIVERY_RETRY_BASE_MS = 5_000
 const DELIVERY_RETRY_MAX_MS = 5 * 60_000
+/** A settlement that outlived its turn may need an operator, so poll it slowly. */
+const PAUSED_SETTLEMENT_BACKOFF_AFTER_MS = 20 * 60_000
+const PAUSED_SETTLEMENT_POLL_MS = 60_000
 
 interface FormRetries {
   sessionID: string
@@ -267,9 +270,15 @@ export class ConversationTurnExecution {
   async pauseSettlement(message: string): Promise<void> {
     const current = await this.options.store.get()
     const newlyPaused = current.settlementError !== message
+    // A fresh turn is retried at the poll cadence; one that has outlived its own
+    // timeout may need an operator, and a 2-second alarm loop only burns
+    // invocations without changing the outcome.
+    const started = current.runStartedAt
+    const stale = typeof started === "number" && Number.isFinite(started) && started > 0 &&
+      Date.now() - started > PAUSED_SETTLEMENT_BACKOFF_AFTER_MS
     await this.options.storage.transaction(async () => {
       if (newlyPaused) await this.options.store.patch({ settlementError: message })
-      await this.options.jobs.schedule("turn:observe", Date.now() + POLL_MS, {
+      await this.options.jobs.schedule("turn:observe", Date.now() + (stale ? PAUSED_SETTLEMENT_POLL_MS : POLL_MS), {
         reservationID: current.budgetReservation?.reservationID,
         reservationDate: current.budgetReservation?.date,
         sessionID: current.sessionID,
