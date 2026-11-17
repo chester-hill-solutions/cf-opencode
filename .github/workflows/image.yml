@@ -16,6 +16,10 @@ name: Image
 # Until IMAGE_CI is true only the manual dispatch runs; a push that changes the
 # Dockerfile stays green and simply does not build, rather than failing on a
 # missing secret.
+#
+# The digest PR is opened with GITHUB_TOKEN, so GitHub does not start CI on it:
+# the pull request shows no checks and merges on review alone. That is expected,
+# not a broken branch.
 
 on:
   workflow_dispatch:

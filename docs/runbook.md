@@ -21,14 +21,40 @@ current image from its portable R2 checkpoint, clearing the retired image's
 snapshot handle. It refuses active, queued or held work. The onboarding
 `/api/onboarding/reset` clears state and is not needed for an image upgrade.
 
-| Change | Command | Notes |
-|---|---|---|
-| Worker code | `bunx wrangler deploy --containers-rollout=none --durable-objects-code-update-mode immediate` | Update existing DO code; container image untouched |
-| Container image | `bun run deploy` | Builds, publishes and rolls out; needs Docker Desktop running |
+Everything deploys through Cloudflare, driven by `cf`. There is no laptop deploy step and no
+`wrangler` invocation to remember.
 
-`bun run deploy` cross-builds `linux/amd64` under QEMU on Apple Silicon. The OpenCode version
-sanity check is non-fatal there (CI verifies it natively); if the registry push drops, re-run the
-deploy — wrangler skips an image that is already remote.
+| Change | Path | Notes |
+|---|---|---|
+| Worker code | push to `main` | Workers Builds clones, runs `bun install --frozen-lockfile`, deploys |
+| Container image | Image workflow ([`.github/workflows/image.yml`](../.github/workflows/image.yml)) | Builds, pushes both registry paths, opens a digest-bump PR |
+| Manual Worker build | `cf builds deploy-hooks trigger <hook-uuid>` | Same trigger, no commit needed |
+
+```sh
+export CLOUDFLARE_ACCOUNT_ID=ad5ec479b9a421faa2ed06c3d1c2b23a
+cf builds workers get <script-tag>          # repo, branch, commands, env vars
+cf builds deploy-hooks trigger <hook-uuid>  # start a build now
+cf builds list --external-script-id <script-tag>
+cf builds logs get <build-uuid>
+```
+
+The build configuration carries one environment variable that is not in the repository:
+`NODE_AUTH_TOKEN`, a classic GitHub token with `read:packages`, because
+`@chester-hill-solutions/*` comes from GitHub Packages. Without it the install step fails
+`401 Unauthorized` and the build stops before the deploy.
+
+The Conversation class declares **two** image references, `base` and `evented`, in different
+repositories of the managed registry. Both need the same digest; building one and repinning both
+fails the deploy with `The image is invalid or does not exist in this account`. The Image workflow
+enforces this, and a manual repin has to push both paths:
+
+```sh
+cf containers build . -t "$REGISTRY/cf-opencode-conversation-base:$TAG" -p
+cf containers build . -t "$REGISTRY/cf-opencode-conversation-evented:$TAG" -p   # cache hit
+```
+
+Existing Durable Objects keep the image they started with, so recycle conversations after an image
+rollout (above).
 
 Message creation is limited to 60 requests/minute per client by the `API_RATE_LIMIT` binding. A
 blocked request returns the CHS `RATE_LIMITED` body with `RateLimit-*` and `Retry-After` headers.
@@ -37,14 +63,14 @@ The binding is approximate per Cloudflare location; treat it as burst protection
 Secrets:
 
 ```sh
-bunx wrangler secret put API_TOKEN
-bunx wrangler secret put VAULT_MASTER_KEY        # 64 hex characters
-bunx wrangler secret put GITHUB_CLIENT_ID
-bunx wrangler secret put GITHUB_CLIENT_SECRET
-bunx wrangler secret put SLACK_SIGNING_SECRET   # optional
-bunx wrangler secret put SLACK_BOT_TOKEN        # optional
-bunx wrangler secret put SLACK_BOT_USER_ID      # optional
+cf workers secrets update cf-opencode --name API_TOKEN --text "$VALUE" --type secret_text
+cf workers secrets update cf-opencode --name VAULT_MASTER_KEY --text "$VALUE" --type secret_text  # 64 hex
+cf workers secrets update cf-opencode --name GITHUB_CLIENT_ID --text "$VALUE" --type secret_text
+cf workers secrets update cf-opencode --name GITHUB_CLIENT_SECRET --text "$VALUE" --type secret_text
+# optional: SLACK_SIGNING_SECRET, SLACK_BOT_TOKEN, SLACK_BOT_USER_ID
 ```
+
+Secrets survive a Workers Builds deploy, so setting them once is enough.
 
 The local API token is kept in the gitignored `.dev.vars` at the repo root (0600). Treat it as a shared
 admin credential until onboarding grows real users.
