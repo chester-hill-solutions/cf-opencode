@@ -30,6 +30,9 @@ import { renderMemoryContext, type MemoryContext, type MemoryServices } from "./
 /** The two halves of the general-workspace brief, kept beside its rendering. */
 const GENERAL_WORKSPACE = "/workspace is this conversation's general workspace. No repository is configured; existing files or checkouts may still be present. Durable projects, scripts, analysis, documents, prototypes and new projects may start blank and remain repository-free permanently. Keeping work requires no git initialization, commit or remote. A project name alone does not identify a checkout. Inspect relevant /workspace contents, consult available project context, or ask for the repository/location when needed. Do not blindly search other filesystem roots for a named project."
 const WORKSPACE_PATH = "/workspace is this conversation's working directory; files, checkouts and scripts live there. Keep a new checkout in its own subdirectory, copy only the work the user asked for, and report conflicts before overwriting."
+/** Facts about the machine, so capability is not discovered by probing. */
+const ENVIRONMENT = "This container ships a fixed toolset. Only the tools that are installed are available: there is no package manager configured for adding others, so do not install packages to work around a missing tool; name the missing tool and stop. No credentials are configured unless the workspace profile or the user names them: do not hunt for tokens in environment variables, home directories or /data. Outbound network access may be restricted per workspace; when a host is unreachable, say which one and stop instead of retrying. If the data, repository or service a task needs is not in /workspace and no credential is configured for it, say so in your first reply rather than searching filesystem roots."
+
 const CARRY_WORK = "If the user explicitly asks to clone, use or create a repository within /workspace and carry existing work, keep a new checkout in a separate subdirectory unless the user chose an existing checkout. Copy only requested work, excluding workspace/runtime metadata; preserve originals and report conflicts before overwriting. Creating a checkout with tools does not register a conversation repository binding or establish credential access. Push or publish only when the user instructs it."
 
 type OpenCodeClient = ReturnType<typeof makeClient>
@@ -509,6 +512,7 @@ export class ConversationSlackAdapter {
       ...(general ? [GENERAL_WORKSPACE] : [WORKSPACE_PATH]),
       ...(retention ? [retention] : []),
       ...(general ? [CARRY_WORK] : []),
+      ENVIRONMENT,
       "</workspace_context>",
     ].join("\n")
   }

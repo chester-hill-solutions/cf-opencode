@@ -142,6 +142,10 @@ describe("ConversationSlackAdapter delivery controls", () => {
     await f.adapter.onEvent(event("hello"))
     const prompt = String((f.calls.find(([name]) => name === "prompt")?.[1] as { text?: string } | undefined)?.text ?? "")
     expect(prompt).toContain("<workspace_context>")
+    // Capability is stated, not discovered: no installs, no credential hunt, no root crawl.
+    expect(prompt).toContain("do not install packages to work around a missing tool")
+    expect(prompt).toContain("do not hunt for tokens")
+    expect(prompt).toContain("say so in your first reply")
     expect(prompt).toContain("/workspace is this conversation's working directory")
     expect(prompt.indexOf("<soul>")).toBeLessThan(prompt.indexOf("<workspace_context>"))
     expect(prompt.indexOf("<workspace_context>")).toBeLessThan(prompt.indexOf("hello"))
