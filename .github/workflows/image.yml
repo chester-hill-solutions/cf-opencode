@@ -2,6 +2,11 @@ name: Image
 
 # Builds the conversation image and opens a digest-bump PR.
 #
+# The Conversation class declares two image references (`base` and `evented` in
+# wrangler.jsonc). Both are digests in *different* repositories, so the image has
+# to be pushed to each one: a deploy fails with "The image is invalid or does not
+# exist in this account" when only one registry path received it.
+#
 # Requires, on the repository:
 #   secret CLOUDFLARE_API_TOKEN  — Workers Scripts:Edit, Workers Containers:Edit,
 #                                  Account Settings:Read (registry push + build)
@@ -38,7 +43,7 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      IMAGE: registry.cloudflare.com/${{ vars.CLOUDFLARE_ACCOUNT_ID }}/cf-opencode-conversation-base
+      REGISTRY: registry.cloudflare.com/${{ vars.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
 
@@ -50,18 +55,31 @@ jobs:
         run: npm install --global cf@1.0.0-beta.10
 
       - name: Build and push
+        id: build
         run: |
           set -euo pipefail
           : "${CLOUDFLARE_ACCOUNT_ID:?account id variable is required}"
           TAG="${{ github.event.inputs.tag || 'ci' }}"
-          cf containers build . -t "$IMAGE:$TAG" -p | tee /tmp/build.log
-          grep -o 'sha256:[0-9a-f]\{64\}' /tmp/build.log | tail -1
+          # One build per destination: `cf containers build` pushes to a single
+          # repository, and the Conversation class needs both `base` and
+          # `evented` to carry the same digest. The second build is a cache hit.
+          for name in conversation-base conversation-evented; do
+            cf containers build . -t "${REGISTRY}/cf-opencode-${name}:${TAG}" -p \
+              | tee "/tmp/build-${name}.log"
+          done
+          BASE=$(grep -o 'sha256:[0-9a-f]\{64\}' /tmp/build-conversation-base.log | tail -1)
+          EVENTED=$(grep -o 'sha256:[0-9a-f]\{64\}' /tmp/build-conversation-evented.log | tail -1)
+          if [ -z "$BASE" ] || [ "$BASE" != "$EVENTED" ]; then
+            echo "image digests differ or are missing: base=$BASE evented=$EVENTED" >&2
+            exit 1
+          fi
+          echo "digest=$BASE" >> "$GITHUB_OUTPUT"
 
       - name: Repin the digest
         id: repin
         run: |
           set -euo pipefail
-          DIGEST=$(grep -o 'sha256:[0-9a-f]\{64\}' /tmp/build.log | tail -1)
+          DIGEST="${{ steps.build.outputs.digest }}"
           python3 - "$DIGEST" <<'PY'
           import re, sys
           from pathlib import Path
