@@ -38,6 +38,16 @@ cf builds list --external-script-id <script-tag>
 cf builds logs get <build-uuid>
 ```
 
+### Why the deploy command is still wrangler
+
+`cf migrate` cannot move this project yet. It reports `containers: Containers require manual
+review and were not migrated` (and the same for both Durable Object exports), so the generated
+`cloudflare.config.ts` would drop the Conversation class's image list and `cf deploy` would ship a
+Worker without containers. Until `cf` can migrate containers, the Workers Builds deploy command
+stays Cloudflare's default, `npx wrangler deploy` — the builder's own command, not a laptop habit,
+and the only wrangler call left in this repo's pipeline. When it can, run `cf migrate` and switch
+the command to `npx cf deploy`; `parliament-facts` already deploys that way.
+
 The build configuration carries one environment variable that is not in the repository:
 `NODE_AUTH_TOKEN`, a classic GitHub token with `read:packages`, because
 `@chester-hill-solutions/*` comes from GitHub Packages. Without it the install step fails
