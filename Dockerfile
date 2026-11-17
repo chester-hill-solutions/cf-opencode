@@ -40,6 +40,7 @@ FROM oven/bun:1.3-slim@sha256:d56a2534ffd262e92c12fd3249d3924d296d97086da773f821
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git jq openssl ripgrep sqlite3 tar util-linux \
+      python3 python3-openpyxl csvkit unzip zip xz-utils less file tree \
     && groupadd --gid 1001 agent \
     && useradd --uid 1001 --gid agent --create-home --shell /bin/bash agent \
     && rm -rf /var/lib/apt/lists/*

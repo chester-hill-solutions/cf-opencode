@@ -18,10 +18,11 @@ discovering that, and one that has the wrong tools will spend turns installing.
 | `make`, `gcc`, `g++`, `pkg-config` | native node modules fail to build without them |
 | `sqlite3` | inspect local databases and tool state |
 | `coreutils`, `findutils`, `procps`, `diffutils` | baseline gaps in slim images |
+| `python3-openpyxl`, `csvkit` | routine exports: XLSX and CSV are a primary output, not an edge case |
+| `unzip`, `zip`, `xz-utils`, `less`, `file`, `tree` | archives and inspection |
 
 ## Tier 2 — domain-relevant, cheap
 
-- `python3-openpyxl`, `csvkit` — SMS/report exports land as XLSX and CSV.
 - `shellcheck` — catch broken generated scripts before the user runs them.
 - `psql` client only where database work is expected.
 
