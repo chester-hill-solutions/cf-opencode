@@ -152,3 +152,15 @@ export async function postRoute(
     body: await request.text(),
   })
 }
+
+/** Decode `a/b/c` path segments, refusing anything that could escape the route. */
+export function decodePathSegments(parts: string[]): string | undefined {
+  const decoded: string[] = []
+  for (const value of parts) {
+    const part = safeDecode(value)
+    if (part === undefined) return undefined
+    if (part === "." || part === ".." || part.includes("/") || part.includes("\\")) return undefined
+    decoded.push(part)
+  }
+  return "/" + decoded.join("/")
+}

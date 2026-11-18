@@ -264,6 +264,19 @@ GitHub OAuth App settings:
 | Authorization callback URL | `https://<worker>/api/onboarding/github/callback` |
 | Scopes requested | `repo read:user` |
 
+An operator with an authenticated `gh` CLI can skip the browser round trip and hand the
+deployment that token instead:
+
+```sh
+curl -s -X POST https://<worker>/api/onboarding/github/token \
+  -H "authorization: Bearer $API_TOKEN" -H "content-type: application/json" \
+  --data "$(jq -n --arg token "$(gh auth token)" '{token:$token}')"
+```
+
+The route verifies the token against GitHub (`GET /user`), stores it and the login through
+the vault — which also replaces a pre-v2 record that can no longer be decrypted — and never
+returns the token. It is an operator route: it needs the deployment bearer token.
+
 The wizard calls the running container's OpenCode API (`/api/integration`) for provider
 sign-in, so provider OAuth must complete while the onboarding container is warm. Completing
 the wizard snapshots the OpenCode config and credential database from

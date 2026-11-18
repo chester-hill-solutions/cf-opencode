@@ -20,9 +20,10 @@ import { validateOpencodeKey } from "./opencode-key-validation"
 import { handleCheckCollector } from "./workspace-check-collector"
 import { handleSlackCanaryRoute } from "./slack-canary"
 import {
-  alertsRoute, postRoute, conversationStub, KEY_PATTERN, questionsRoute, safeDecode, settingsDo, turnStatusRoute,
+  alertsRoute, postRoute, conversationStub, decodePathSegments, KEY_PATTERN, questionsRoute, safeDecode, settingsDo, turnStatusRoute,
 } from "./worker-routes"
 import { mcpRoute } from "./mcp"
+import { onboardingRoute } from "./onboarding-github-token"
 
 export { Conversation } from "./conversation"
 export { Settings } from "./settings-do"
@@ -32,17 +33,6 @@ export { ProviderEgress } from "./provider-egress-entrypoint"
 // where legacy is a Slack `channel:thread` pair (thread_ts has a dot).
 // Keep the cap generous but finite. `:` separates segments, `.` appears in thread timestamps.
 /** Decode and validate path segments before forwarding them to the container. */
-function decodePathSegments(parts: string[]): string | undefined {
-  const decoded: string[] = []
-  for (const value of parts) {
-    const part = safeDecode(value)
-    if (part === undefined) return undefined
-    if (part === "." || part === ".." || part.includes("/") || part.includes("\\")) return undefined
-    decoded.push(part)
-  }
-  return "/" + decoded.join("/")
-}
-
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url)
@@ -260,7 +250,7 @@ async function handleApi(
     return Response.json({ error: "not found" }, { status: 404 })
   }
 
-  if (parts[1] === "onboarding") return handleOnboarding(request, env, url, parts)
+  if (parts[1] === "onboarding") return onboardingRoute({ request, env, url, parts, fallback: handleOnboarding })
 
   if (parts[1] === "conversations" && parts.length === 2 && request.method === "GET") {
     return settingsDo(env, "/conversations")
