@@ -5,10 +5,12 @@ work first, then ask OpenCode to clone/create a repository in a workspace
 subfolder and carry selected work into it while retaining originals and history.
 See [workspace-first usage](workspace-first.md).
 
-This opt-in shortcut binds a fresh workspace root to one public GitHub repository,
-base branch and working branch for managed checkout/check evidence. OpenCode
-remains the coding harness. Existing workspaces are not replaced or retargeted
-by this API; normal tool-managed repository work can continue in them.
+This opt-in shortcut binds a fresh workspace root to one GitHub repository,
+base branch and working branch for managed checkout/check evidence. A private
+repository is cloned with the GitHub credential from onboarding, used only for
+that clone as a one-shot HTTP header; the checkout carries no credential.
+OpenCode remains the coding harness. Existing workspaces are not replaced or
+retargeted by this API; normal tool-managed repository work can continue in them.
 
 Load the existing API token through your usual secret-loading mechanism into
 `ABOITEAU_API_TOKEN`. The CLI accepts no token argument. Use an HTTPS service
@@ -48,9 +50,10 @@ use the existing binding. The working branch is required.
 Repository URLs must be credential-free HTTPS GitHub URLs. Canonical responses
 use lowercase owner/repository names without a `.git` suffix. Branch validation
 rejects options, ref expressions and unsupported names; the working branch must
-differ from the base branch. Private repository authentication is outside this
-new bound-checkout slice. Saving intent does not prove repository existence,
-public visibility, clone success or access rights.
+differ from the base branch. Private repositories are cloned with the account's
+stored GitHub token, which is not written into the checkout and not exposed to
+the agent's own Git commands. Saving intent does not prove repository existence,
+visibility, clone success or access rights.
 
 Successful responses contain only the binding envelope:
 

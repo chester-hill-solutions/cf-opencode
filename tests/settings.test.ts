@@ -52,6 +52,12 @@ describe("defaultSettings", () => {
     expect(base.permissions.deny).toContain("dd *")
     expect(base.version).toBe(1)
   })
+
+  test("starts repo-free when the deployment does not name one", () => {
+    const settings = defaultSettings({ OPENCODE_MODEL: "opencode/deepseek-v4.1-flash", POLL_SECONDS: "2" })
+    expect(settings.workspaceRepo).toBe("")
+    expect(settings.workspaceBranch).toBe("main")
+  })
 })
 
 describe("validateSettings", () => {
@@ -93,6 +99,12 @@ describe("validateSettings", () => {
     ]) {
       expect(validateSettings(body, base).ok).toBe(false)
     }
+  })
+
+  test("accepts a repo-free workspace as an explicit choice", () => {
+    const result = validateSettings({ workspaceRepo: "" }, base)
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.value.workspaceRepo).toBe("")
   })
 
   test("rejects arrays as settings bodies", () => {

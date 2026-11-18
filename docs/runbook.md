@@ -276,23 +276,29 @@ Provider credentials and the GitHub token are stored in the Settings Durable Obj
 
 ### Workspace default and GitHub access
 
-A new conversation clones the configured workspace repository before OpenCode starts.
-`WORKSPACE_REPO` and `WORKSPACE_BRANCH` are the deployment defaults; the Settings
-Durable Object stores the live pair and overrides them:
+A new conversation starts in a general workspace. `WORKSPACE_REPO` and
+`WORKSPACE_BRANCH` are optional deployment defaults, and the Settings Durable
+Object stores the live pair, which overrides them. Leaving the repository empty
+is the normal shape for an agent that works across repositories: a checkout is
+selected per conversation, not pinned for the installation.
 
 ```sh
+# repo-free default (the usual choice for a team-wide agent)
+curl -X PUT https://<worker>/api/settings -H "authorization: Bearer $API_TOKEN" \
+  -H "content-type: application/json" -d '{"workspaceRepo":""}'
+
+# or pin a default repository for every new conversation
 curl -X PUT https://<worker>/api/settings -H "authorization: Bearer $API_TOKEN" \
   -H "content-type: application/json" \
   -d '{"workspaceRepo":"https://github.com/OWNER/REPO","workspaceBranch":"main"}'
 ```
 
-The default clone uses the GitHub token stored at onboarding for any `github.com`
-repository, so a **private** repository works here. The token is passed to that clone
-as an HTTP header; it is not written into the checkout or `.git/config`,
-and repository code therefore never holds it. Two limits are deliberate: `!repo`
-bindings remain public-repository-only (scoped private authorization is separate
-work), and there is no push path — the agent can clone and work, but publishing a
-branch is not implemented.
+A repository bound per conversation (`!repo`, `POST /api/conversations/:key/workspace/repository`)
+may be **private**: the GitHub token stored at onboarding is attached to that one
+clone as an HTTP header. It is never written into the checkout or `.git/config`,
+and the agent's own Git commands stay unauthenticated, so repository-controlled
+code cannot read it. There is no push path yet — the agent can clone and work,
+but publishing a branch is not implemented.
 
 ## Usage and budget
 

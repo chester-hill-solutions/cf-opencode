@@ -130,10 +130,10 @@ export function MarketingPage() {
             <li data-accent="ultramarine">
               <span className="section-number">01</span>
               <div>
-                <h3>Bring a repository</h3>
+                <h3>Bring a repository or start fresh</h3>
                 <p>
-                  Choose the repository and branch your agent starts from. Connect GitHub when the
-                  repository needs account access.
+                  Start general work, or bind a repository and branch per conversation. Connect
+                  GitHub when the repository is private.
                 </p>
               </div>
             </li>

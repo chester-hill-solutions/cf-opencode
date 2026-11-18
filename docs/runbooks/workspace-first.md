@@ -76,10 +76,11 @@ If you decide to use a repository, give the agent its location and the work to c
 
 You can also ask it to create a new local Git repository. These operations use
 OpenCode's existing tools and permission controls. They keep the conversation
-and the surrounding workspace. A checkout does not grant credentials; accessible
-public repositories are the current qualified case. Private access remains a
-separate credential boundary. Copy requested work rather than workspace/runtime
-metadata. Committing, pushing or publishing requires the user's instruction.
+and the surrounding workspace. A checkout does not grant credentials: the
+agent's own Git commands are unauthenticated, so a private repository is reached
+by binding it (below), which clones through the privileged path. Copy requested
+work rather than workspace/runtime metadata. Committing, pushing or publishing
+requires the user's instruction.
 
 The normal full workspace checkpoint includes user files and nested Git
 checkouts; the session/state checkpoint preserves conversation history. Ordinary
@@ -88,7 +89,7 @@ agent's tools. It is not automatically a registered root repository binding or
 trusted `!check` input.
 
 `!repo` remains an optional shortcut for binding a fresh workspace's root to a
-public GitHub repository. Its immutable binding protects the selected base and
+GitHub repository, public or private. Its immutable binding protects the selected base and
 trusted committed-source checks. It cannot replace an existing workspace or
 retarget an already bound root. A thread with work can continue using ordinary
 repository instructions above. If you specifically need a different managed

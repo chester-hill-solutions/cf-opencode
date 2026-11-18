@@ -14,7 +14,7 @@ export interface Env {
   SLACK_BOT_USER_ID?: string
   CONVERSATION: DurableObjectNamespace<import("./conversation").Conversation>
   SETTINGS: DurableObjectNamespace<import("./settings-do").Settings>
-  WORKSPACE_REPO: string
+  WORKSPACE_REPO?: string
   WORKSPACE_BRANCH?: string
   OPENCODE_MODEL: string
   POLL_SECONDS: string

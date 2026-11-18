@@ -16,7 +16,7 @@ const environment = {
   GIT_CONFIG_COUNT: "0", GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "https",
   GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null",
 }
-type Action = { action: "empty" | "clone" | "copy" | "verify" | "cleanup"; workspace: string; staging: string; binding: WorkspaceRepositoryBinding }
+type Action = { action: "empty" | "clone" | "copy" | "verify" | "cleanup"; workspace: string; staging: string; binding: WorkspaceRepositoryBinding; authorization?: string }
 type ActionResult = { baseCommit?: string }
 export type RepositoryGitRunner = (args: string[], cwd: string) => Promise<string>
 
@@ -62,7 +62,32 @@ const git: RepositoryGitRunner = (args, cwd) => boundedCommand([
   "git", "--no-pager", "--no-optional-locks", "-c", "core.hooksPath=/dev/null",
   "-c", "core.fsmonitor=false", "-c", "http.followRedirects=false", "-c", "credential.helper=",
   "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", ...args,
-], cwd, 90_000, { ...environment, GIT_ALLOW_PROTOCOL: args[0] === "clone" ? "https" : "" })
+], cwd, 90_000, { ...environment, GIT_ALLOW_PROTOCOL: (args[0] === "-c" ? args[2] : args[0]) === "clone" ? "https" : "" })
+
+/**
+ * The GitHub token for a clone, or undefined.
+ *
+ * Only a clone gets it, and only as an HTTP header for github.com: nothing is
+ * written to `.git/config`, so the checkout carries no credential and the
+ * agent's own Git calls stay unauthenticated. Private repository work is an
+ * explicit binding the operator selects, not ambient access.
+ */
+function cloneAuthorization(input: Action, binding: WorkspaceRepositoryBinding): string | undefined {
+  if (input.authorization === undefined) return undefined
+  if (typeof input.authorization !== "string" || !/^[A-Za-z0-9_]{20,255}$/.test(input.authorization)) throw conflict()
+  return /^https:\/\/github\.com\//.test(binding.repository) ? input.authorization : undefined
+}
+
+/** Clone arguments. A credential, when present, is a one-shot HTTP header. */
+function cloneArguments(binding: WorkspaceRepositoryBinding, authorization: string | undefined, staging: string): string[] {
+  const header = authorization === undefined
+    ? []
+    : ["-c", `http.https://github.com/.extraheader=AUTHORIZATION: basic ${Buffer.from(`x-access-token:${authorization}`).toString("base64")}`]
+  return [
+    ...header,
+    "clone", "--no-checkout", "--no-recurse-submodules", "--no-local", "--no-hardlinks", "--single-branch", "--no-tags", "--template=", "--branch", binding.baseBranch, "--", binding.repository, staging,
+  ]
+}
 
 function contained(root: string, path: string): boolean {
   const child = relative(root, path)
@@ -112,8 +137,8 @@ export async function executeRepositoryAction(input: Action, run: RepositoryGitR
   }
   if (input.action === "clone") {
     await rm(staging, { recursive: true, force: true })
-    await run(["clone", "--no-checkout", "--no-recurse-submodules", "--no-local", "--no-hardlinks", "--single-branch", "--no-tags", "--template=", "--branch", binding.baseBranch, "--", binding.repository, staging], dirname(staging))
-    // Keep the canonical public URL even when a private test transport is used.
+    await run(cloneArguments(binding, cloneAuthorization(input, binding), staging), dirname(staging))
+    // Keep the canonical credential-free URL even when a test transport is used.
     await run(["-C", staging, "remote", "set-url", "origin", binding.repository], staging)
     const baseCommit = await run(["-C", staging, "rev-parse", "--verify", `refs/remotes/origin/${binding.baseBranch}`], staging)
     const receipt = parseWorkspaceRepositoryReceipt({ ...binding, status: "bound", baseCommit })
@@ -162,7 +187,7 @@ export async function invokeRepositoryAction(input: Action, agentCommand: (args:
 }
 
 type Intent = { phase: "intent" | "copying" | "bound"; binding: WorkspaceRepositoryBinding; staging: string }
-interface HostOptions { workspace: string; stateRoot: string; runDir: string; perform: (input: Action) => Promise<ActionResult> }
+interface HostOptions { workspace: string; stateRoot: string; runDir: string; perform: (input: Action) => Promise<ActionResult>; authorization?: () => string }
 
 /** Root-owned receipt survives controller restarts; archived mirror is untrusted. */
 export class WorkspaceRepositoryHost {
@@ -241,7 +266,10 @@ export class WorkspaceRepositoryHost {
       const mirror = this.read(this.mirror())
       if (mirror !== undefined) this.matching(intent.binding, parseWorkspaceRepositoryReceipt(mirror))
     }
-    const action = (kind: Action["action"], selected = intent?.binding ?? binding) => this.options.perform({ action: kind, workspace: this.options.workspace, staging: intent?.staging ?? `/tmp/aboiteau-bound-${randomUUID()}`, binding: selected })
+    const action = (kind: Action["action"], selected = intent?.binding ?? binding) => {
+      const authorization = kind === "clone" ? this.options.authorization?.() : undefined
+      return this.options.perform({ action: kind, workspace: this.options.workspace, staging: intent?.staging ?? `/tmp/aboiteau-bound-${randomUUID()}`, binding: selected, ...(authorization ? { authorization } : {}) })
+    }
     if (!intent) {
       const mirror = this.read(this.mirror())
       if (mirror !== undefined) {
