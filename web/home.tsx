@@ -1,6 +1,22 @@
+import type { ReactNode } from "react"
 import { ArrowDown, ArrowRight, Check, GitBranch, MessageSquare, ShieldCheck } from "lucide-react"
 import { LinkButton, Logo, Status } from "@aboiteau/ui"
 import { SiteFooter, SiteHeader } from "./shared/site-header"
+
+/** One agent turn in the illustrative thread; the avatar and name never vary. */
+function StoryAgent({ children }: { children: ReactNode }) {
+  return (
+    <div className="story-person">
+      <span className="story-avatar agent">
+        <Logo variant="mono" />
+      </span>
+      <div>
+        <strong>Aboiteau</strong>
+        {children}
+      </div>
+    </div>
+  )
+}
 
 export function MarketingPage() {
   return (
@@ -47,15 +63,9 @@ export function MarketingPage() {
                   <p>Find out why the build is failing on this branch.</p>
                 </div>
               </div>
-              <div className="story-person">
-                <span className="story-avatar agent">
-                  <Logo />
-                </span>
-                <div>
-                  <strong>Aboiteau</strong>
-                  <p>I’ll inspect the repository and check the failing build.</p>
-                </div>
-              </div>
+              <StoryAgent>
+                <p>I’ll inspect the repository and check the failing build.</p>
+              </StoryAgent>
               <div className="story-tools">
                 <span>
                   <GitBranch size={15} aria-hidden="true" /> Workspace restored
@@ -67,19 +77,13 @@ export function MarketingPage() {
                   <Check size={15} aria-hidden="true" /> Build output reviewed
                 </span>
               </div>
-              <div className="story-person">
-                <span className="story-avatar agent">
-                  <Logo />
-                </span>
-                <div>
-                  <strong>Aboiteau</strong>
-                  <p>
-                    The build expects a variable that isn’t set in this environment. Here’s where
-                    it’s read, and what to update.
-                  </p>
-                  <Status tone="success">Turn complete</Status>
-                </div>
-              </div>
+              <StoryAgent>
+                <p>
+                  The build expects a variable that isn’t set in this environment. Here’s where
+                  it’s read, and what to update.
+                </p>
+                <Status tone="success">Turn complete</Status>
+              </StoryAgent>
             </div>
             <div className="story-continuation">
               <MessageSquare size={19} aria-hidden="true" />

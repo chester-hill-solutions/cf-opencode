@@ -11,6 +11,7 @@
 ## Implemented proposals
 
 - The approved mark is traced as shared SVG paths in `packages/ui/src/brand.ts`, used by the React logo and generated favicon.
+- B3 squeegee is implemented as colour fields clipped to those paths: ultramarine base, yellow upper swath, vermilion lower piece and a pink overprint. The `<Logo>` component defaults to colour and takes `variant="mono"` for small or already-coloured surfaces. The approved reference's screenprint grain is not reproduced in the UI or favicon; those use flat inks so the mark stays crisp from 1.3rem up.
 - The working type family is self-hosted DM Sans. UI type, spacing, colour roles and responsive layouts are proposed implementation choices, not separately approved identity decisions.
 - The source-vendored CHS controls supply behaviour. Aboiteau owns the theme and product compositions.
 - No single-sided borders. A boundary is a complete border, a surface difference, spacing or a shadow. Tone moves into content (metric values, numbered accents) rather than a one-edge strip.

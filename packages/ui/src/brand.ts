@@ -15,3 +15,40 @@ export const brandColors = {
   ink: "#212722",
   pink: "#ED5798",
 } as const
+
+export const logoBox = { x: 160, y: 220, width: 940, height: 790 }
+
+/**
+ * B3 "Squeegee print" colour blocking, approved 2026-11-06.
+ *
+ * The fields are drawn over an ultramarine base and clipped to `logoPaths`, so
+ * every edge follows the mark. The approved reference carries a restrained
+ * screenprint grain; the UI and favicon use flat inks because the mark is drawn
+ * from 1.3rem up and must stay crisp.
+ */
+export const logoColourFields = [
+  {
+    ink: "yellow",
+    d: "M200 820L568 263L720 330L640 432L505 650L310 715Z",
+  },
+  {
+    ink: "vermilion",
+    d: "M150 1005L150 850L860 600L880 700L800 790L515 789L491 805L430 1005Z",
+  },
+  { ink: "pink", d: "M760 640L1040 600L1040 700L800 760Z" },
+] as const satisfies readonly { ink: keyof typeof brandColors; d: string }[]
+
+/** Standalone favicon SVG from the same paths and fields as the React mark. */
+export function logoSvgMarkup(id = "abo-logo-clip"): string {
+  const clip = logoPaths.map((path) => `<path d="${path}"/>`).join("")
+  const fields = logoColourFields
+    .map((field) => `<path d="${field.d}" fill="${brandColors[field.ink]}"/>`)
+    .join("")
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${logoViewBox}">` +
+    `<title>Aboiteau</title><defs><clipPath id="${id}" clipPathUnits="userSpaceOnUse">${clip}</clipPath></defs>` +
+    `<g clip-path="url(#${id})">` +
+    `<rect x="${logoBox.x}" y="${logoBox.y}" width="${logoBox.width}" height="${logoBox.height}" fill="${brandColors.ultramarine}"/>` +
+    `${fields}</g></svg>\n`
+  )
+}
