@@ -104,7 +104,10 @@ invalid arguments, authentication, transport or invalid response metadata.
 
 Authentication remains the existing shared operator bearer token. This is not
 per-user or per-repository authorization and does not close G1 strict tenancy or
-the outstanding credential/egress gates. Legacy private clone behavior retains
-its separate limitations. This slice does not implement setup execution, trusted
-check execution, push or draft-PR publication. Local CLI/tests do not constitute
-deployment or live checkout qualification.
+the outstanding credential/egress gates. Setup execution and trusted check
+execution remain separate slices. Branch publication is implemented as its own
+operation (`POST /api/conversations/:key/workspace/publish`, `!publish`): it
+verifies the bound checkout, refuses a branch with no commits beyond the base,
+pushes without force and opens a draft pull request, recording a receipt so a
+retry with the same request ID returns the first one. Local CLI/tests do not
+constitute deployment or live checkout qualification.

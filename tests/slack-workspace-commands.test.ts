@@ -240,3 +240,31 @@ test("a previously refused discard keeps its prepared tuple and cannot refreeze 
   expect(f.calls.at(-1)?.body).toEqual({ requestID: f.requestID, expectedProfileID: original.profileID, expectedRevision: original.revision })
   expect(f.profile()).toEqual(successor)
 })
+
+test("publish names the draft pull request and reports a refusal without claiming success", async () => {
+  const f = fixture()
+  const published = {
+    ...f.service,
+    publish: async (input: { requestID: string; title?: string }) => {
+      expect(input.requestID).toMatch(/^[0-9a-f-]{36}$/)
+      expect(input.title).toBe("Ship the parser")
+      return Response.json({
+        publication: { branch: "aboiteau/task", commit: "a".repeat(40), pullRequest: { number: 12, url: "https://github.com/o/r/pull/12", draft: true } },
+      })
+    },
+  }
+  const text = await handleSlackWorkspaceCommand("publish", "Ship the parser", published)
+  expect(text).toContain("Draft pull request #12 opened: https://github.com/o/r/pull/12")
+  expect(text).toContain("does not establish that checks passed")
+
+  const refused = {
+    ...f.service,
+    publish: async () => Response.json({ error: "The agent is still working.", code: "WORKSPACE_BUSY" }, { status: 409 }),
+  }
+  const busy = await handleSlackWorkspaceCommand("publish", "", refused)
+  expect(busy).toContain("The agent is still working.")
+  expect(busy).toContain("No push or pull request is confirmed")
+
+  const unavailable = await handleSlackWorkspaceCommand("publish", "", { ...f.service, publish: undefined })
+  expect(unavailable).toContain("No push or pull request was attempted")
+})

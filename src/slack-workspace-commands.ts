@@ -8,10 +8,12 @@ export interface SlackWorkspaceCommandServices {
   workspace?(request: Request): Promise<Response>
   discardRequestID?(): Promise<string>
   repository(request: Request): Promise<Response>
+  publish?(input: { requestID: string; title?: string; body?: string }): Promise<Response>
   check(argv: string[]): Promise<string>
   checks(): Promise<string>
 }
 
+const PUBLISH_USAGE = "Use `!publish` to push the bound working branch and open a draft pull request, or `!publish <title>` to set its title. A bound repository and an idle, warm workspace are required."
 const REPO_USAGE = "To register an optional root repository before work starts, use `!repo https://github.com/owner/repo main aboiteau/task-123`. Use `!repo` to inspect this workspace."
 const CARRY_WORK = "You can explicitly ask me to check out a repository in a new subfolder, copy only chosen files, preserve originals, exclude workspace/runtime metadata, and ask before overwriting conflicts. A private repository needs its root binding (`!repo`), because my own Git commands carry no credential. That checkout does not change the registered root repository or make the subfolder eligible for `!check`."
 
@@ -21,21 +23,11 @@ export function decodeSlackCommandEntities(text: string): string {
 }
 
 export async function handleSlackWorkspaceCommand(name: string, rawArgs: string, services: SlackWorkspaceCommandServices | undefined): Promise<string | undefined> {
-  if (!["workspace", "repo", "check", "checks"].includes(name)) return undefined
+  if (!["workspace", "repo", "check", "checks", "publish"].includes(name)) return undefined
   if (!services) return "Workspace controls are unavailable here. No repository, check or prompt was started."
   if (name === "workspace") return workspaceControl(rawArgs, services)
-  if (name === "checks") {
-    if (rawArgs.trim()) return "Use `!checks` to inspect this thread's checks."
-    return services.checks()
-  }
-  if (name === "check") {
-    let argv: string[]
-    try {
-      argv = rawArgs.trim() ? parseWorkspaceCheckArgv(JSON.parse(decodeSlackCommandEntities(rawArgs))) :
-        ["bun", "--no-env-file", "--no-install", "test"]
-    } catch { return 'Use `!check` for Bun tests, or an explicit JSON argv array such as `!check ["bun","test","test/example.test.ts"]`. No check was requested.' }
-    return services.check(argv)
-  }
+  if (name === "publish") return publishControl(rawArgs, services)
+  if (name === "check" || name === "checks") return checkControl(name, rawArgs, services)
   const args = decodeSlackCommandEntities(rawArgs).trim()
   let selection: ReturnType<typeof parseWorkspaceRepositorySelection> | undefined
   if (args && args !== "status") {
@@ -68,6 +60,52 @@ export async function handleSlackWorkspaceCommand(name: string, rawArgs: string,
   ].join("\n")
 }
 
+
+/** `!check` requests one argv; `!checks` reads the thread's records. */
+async function checkControl(name: string, rawArgs: string, services: SlackWorkspaceCommandServices): Promise<string> {
+  if (name === "checks") {
+    if (rawArgs.trim()) return "Use `!checks` to inspect this thread's checks."
+    return services.checks()
+  }
+  let argv: string[]
+  try {
+    argv = rawArgs.trim() ? parseWorkspaceCheckArgv(JSON.parse(decodeSlackCommandEntities(rawArgs))) :
+      ["bun", "--no-env-file", "--no-install", "test"]
+  } catch { return 'Use `!check` for Bun tests, or an explicit JSON argv array such as `!check ["bun","test","test/example.test.ts"]`. No check was requested.' }
+  return services.check(argv)
+}
+
+/** Push the bound branch and open a draft pull request. */
+async function publishControl(rawArgs: string, services: SlackWorkspaceCommandServices): Promise<string> {
+  if (!services.publish) return "Publishing is unavailable here. No push or pull request was attempted."
+  const title = decodeSlackCommandEntities(rawArgs).trim()
+  if (title.length > 200) return "A pull-request title must be 200 characters or fewer. No push or pull request was attempted."
+  let response: Response
+  try {
+    response = await services.publish({ requestID: crypto.randomUUID(), ...(title ? { title } : {}) })
+  } catch {
+    return "Publishing could not be completed. No push or pull request is confirmed; inspect `!repo` before retrying."
+  }
+  return describePublication(response)
+}
+
+function publicationError(error: unknown): string {
+  const reason = typeof error === "string" ? error : "Publishing was refused."
+  return `${reason} No push or pull request is confirmed. ${PUBLISH_USAGE}`
+}
+
+/** The Slack reply for a publish response. */
+async function describePublication(response: Response): Promise<string> {
+  const body = await response.json().catch(() => ({})) as { error?: unknown; publication?: { branch?: unknown; commit?: unknown; pullRequest?: { number?: unknown; url?: unknown } } }
+  if (!response.ok) return publicationError(body.error)
+  const pull = body.publication?.pullRequest
+  if (!pull || typeof pull.url !== "string" || typeof pull.number !== "number") {
+    return "The push completed but the pull request could not be verified. Inspect `!repo` before retrying."
+  }
+  const branch = typeof body.publication?.branch === "string" ? mrkdwnEscape(body.publication.branch) : ""
+  const commit = typeof body.publication?.commit === "string" ? body.publication.commit : ""
+  return `Draft pull request #${pull.number} opened: ${pull.url}\nBranch \`${branch}\`, commit \`${commit}\`. This does not establish that checks passed.`
+}
 
 const WORKSPACE_USAGE = "Use `!workspace` for status, `!workspace persistent [name]` to keep work, `!workspace disposable [name]` for an explicitly disposable workspace, or `!workspace discard` to discard a disposable workspace."
 function envelope(value: unknown): Record<string, unknown> {

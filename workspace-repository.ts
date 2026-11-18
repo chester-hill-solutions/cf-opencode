@@ -16,8 +16,8 @@ const environment = {
   GIT_CONFIG_COUNT: "0", GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1", GIT_ALLOW_PROTOCOL: "https",
   GIT_NO_REPLACE_OBJECTS: "1", GIT_GRAFT_FILE: "/dev/null",
 }
-type Action = { action: "empty" | "clone" | "copy" | "verify" | "cleanup"; workspace: string; staging: string; binding: WorkspaceRepositoryBinding; authorization?: string }
-type ActionResult = { baseCommit?: string }
+type Action = { action: "empty" | "clone" | "copy" | "verify" | "cleanup" | "publish"; workspace: string; staging: string; binding: WorkspaceRepositoryBinding; authorization?: string }
+type ActionResult = { baseCommit?: string; commit?: string; pushed?: boolean }
 export type RepositoryGitRunner = (args: string[], cwd: string) => Promise<string>
 
 async function observedExit(exited: Promise<unknown>): Promise<boolean> {
@@ -62,15 +62,25 @@ const git: RepositoryGitRunner = (args, cwd) => boundedCommand([
   "git", "--no-pager", "--no-optional-locks", "-c", "core.hooksPath=/dev/null",
   "-c", "core.fsmonitor=false", "-c", "http.followRedirects=false", "-c", "credential.helper=",
   "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", ...args,
-], cwd, 90_000, { ...environment, GIT_ALLOW_PROTOCOL: (args[0] === "-c" ? args[2] : args[0]) === "clone" ? "https" : "" })
+], cwd, 90_000, { ...environment, GIT_ALLOW_PROTOCOL: ["clone", "push"].includes(gitSubcommand(args) ?? "") ? "https" : "" })
+
+/** The first non-option argument, skipping the value of `-c` and `-C`. */
+function gitSubcommand(args: string[]): string | undefined {
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index]
+    if (arg === "-c" || arg === "-C") { index++; continue }
+    if (arg !== undefined && !arg.startsWith("-")) return arg
+  }
+  return undefined
+}
 
 /**
- * The GitHub token for a clone, or undefined.
+ * The GitHub token for one network command, or undefined.
  *
- * Only a clone gets it, and only as an HTTP header for github.com: nothing is
- * written to `.git/config`, so the checkout carries no credential and the
- * agent's own Git calls stay unauthenticated. Private repository work is an
- * explicit binding the operator selects, not ambient access.
+ * Only clone and push get it, and only as an HTTP header for github.com:
+ * nothing is written to `.git/config`, so the checkout carries no credential
+ * and the agent's own Git calls stay unauthenticated. Private repository work
+ * is an explicit binding the operator selects, not ambient access.
  */
 function cloneAuthorization(input: Action, binding: WorkspaceRepositoryBinding): string | undefined {
   if (input.authorization === undefined) return undefined
@@ -78,15 +88,41 @@ function cloneAuthorization(input: Action, binding: WorkspaceRepositoryBinding):
   return /^https:\/\/github\.com\//.test(binding.repository) ? input.authorization : undefined
 }
 
+/** A one-shot credential header for github.com; never persisted by Git. */
+function authorizationHeader(authorization: string): string[] {
+  return ["-c", `http.https://github.com/.extraheader=AUTHORIZATION: basic ${Buffer.from(`x-access-token:${authorization}`).toString("base64")}`]
+}
+
 /** Clone arguments. A credential, when present, is a one-shot HTTP header. */
 function cloneArguments(binding: WorkspaceRepositoryBinding, authorization: string | undefined, staging: string): string[] {
-  const header = authorization === undefined
-    ? []
-    : ["-c", `http.https://github.com/.extraheader=AUTHORIZATION: basic ${Buffer.from(`x-access-token:${authorization}`).toString("base64")}`]
+  const header = authorization === undefined ? [] : authorizationHeader(authorization)
   return [
     ...header,
     "clone", "--no-checkout", "--no-recurse-submodules", "--no-local", "--no-hardlinks", "--single-branch", "--no-tags", "--template=", "--branch", binding.baseBranch, "--", binding.repository, staging,
   ]
+}
+
+/** Push the working branch and report what moved. */
+async function publishBound(
+  input: Action,
+  binding: WorkspaceRepositoryBinding,
+  root: string,
+  run: RepositoryGitRunner,
+): Promise<ActionResult> {
+  const receipt = parseWorkspaceRepositoryReceipt(binding)
+  await verifyCheckout(root, receipt, run)
+  const commit = await run(["-C", root, "rev-parse", "HEAD"], root)
+  const ahead = Number(await run(["-C", root, "rev-list", "--count", `${receipt.baseCommit}..HEAD`], root))
+  if (!Number.isSafeInteger(ahead) || ahead < 0) throw conflict()
+  // Nothing to publish is a refusal, not an empty pull request.
+  if (ahead === 0) return { commit, pushed: false }
+  const authorization = cloneAuthorization(input, binding)
+  await run([
+    "-C", root,
+    ...(authorization === undefined ? [] : authorizationHeader(authorization)),
+    "push", "--set-upstream", "origin", `HEAD:refs/heads/${binding.workingBranch}`,
+  ], root)
+  return { commit, pushed: true }
 }
 
 function contained(root: string, path: string): boolean {
@@ -95,6 +131,8 @@ function contained(root: string, path: string): boolean {
 }
 
 async function safeCheckout(root: string): Promise<void> {
+  // Native workspace metadata is never part of a repository checkout.
+  if (existsSync(join(root, ".stow"))) throw conflict()
   const walk = async (directory: string) => {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name)
@@ -143,11 +181,11 @@ export async function executeRepositoryAction(input: Action, run: RepositoryGitR
     const baseCommit = await run(["-C", staging, "rev-parse", "--verify", `refs/remotes/origin/${binding.baseBranch}`], staging)
     const receipt = parseWorkspaceRepositoryReceipt({ ...binding, status: "bound", baseCommit })
     await run(["-C", staging, "checkout", "--no-recurse-submodules", "--no-track", "-b", binding.workingBranch, receipt.baseCommit], staging)
-    if (existsSync(join(staging, ".stow"))) throw conflict()
     await safeCheckout(staging)
     await verifyCheckout(staging, receipt, run)
     return { baseCommit }
   }
+  if (input.action === "publish") return publishBound(input, binding, root, run)
   if (input.action === "copy") {
     await executeRepositoryAction({ ...input, action: "empty" }, run)
     await boundedCommand(["cp", "-a", `${staging}/.`, root], dirname(root), 30_000)
@@ -175,9 +213,9 @@ export async function invokeRepositoryAction(input: Action, agentCommand: (args:
     ])
     if (code !== 0) throw conflict()
     const result: unknown = JSON.parse(text)
-    if (!result || typeof result !== "object" || Array.isArray(result) || Object.keys(result).some(key => key !== "baseCommit")) throw conflict()
+    if (!result || typeof result !== "object" || Array.isArray(result)) throw conflict()
     if ("baseCommit" in result && (typeof result.baseCommit !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(result.baseCommit))) throw conflict()
-    return result
+    return result as ActionResult
   } finally {
     if (timer) clearTimeout(timer)
     try { process.kill(-child.pid, "SIGKILL") } catch { if (child.exitCode === null) child.kill("SIGKILL") }
@@ -254,6 +292,23 @@ export class WorkspaceRepositoryHost {
     if (!intent) throw conflict()
     await this.options.perform({ action: "verify", workspace: this.options.workspace, staging: intent.staging, binding: receipt })
     return receipt
+  }
+  /**
+   * Push the working branch. The checkout is verified first, so a changed
+   * remote, branch or base refuses instead of publishing something else.
+   */
+  async publishBranch(): Promise<{ commit: string; pushed: boolean }> {
+    const intent = this.intent()
+    if (!intent || intent.phase !== "bound") throw conflict()
+    const receipt = parseWorkspaceRepositoryReceipt(intent.binding)
+    const authorization = this.options.authorization?.()
+    const result = await this.options.perform({
+      action: "publish", workspace: this.options.workspace, staging: intent.staging, binding: receipt,
+      ...(authorization ? { authorization } : {}),
+    })
+    if (typeof result.commit !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(result.commit) ||
+      typeof result.pushed !== "boolean") throw conflict()
+    return { commit: result.commit, pushed: result.pushed }
   }
   selection(): WorkspaceRepositoryBinding | undefined { const intent = this.intent(); return intent?.phase === "bound" ? intent.binding : this.requested ?? intent?.binding }
   async prepare(): Promise<WorkspaceRepositoryReceipt> {

@@ -300,6 +300,26 @@ and the agent's own Git commands stay unauthenticated, so repository-controlled
 code cannot read it. There is no push path yet — the agent can clone and work,
 but publishing a branch is not implemented.
 
+### Publishing a bound branch
+
+`POST /api/conversations/:key/workspace/publish` (or `!publish [title]` in Slack)
+pushes the bound working branch and opens a **draft** pull request:
+
+```sh
+curl -X POST https://<worker>/api/conversations/<key>/workspace/publish \
+  -H "authorization: Bearer $API_TOKEN" -H "content-type: application/json" \
+  -d '{"requestID":"<uuid>","title":"Optional title"}'
+```
+
+The container verifies the bound checkout first, refuses a branch with no commits
+beyond the base, and pushes without force, so a diverged remote refuses rather
+than overwriting. The GitHub token is attached to that one push as an HTTP header
+and is never written into the checkout. The Durable Object then opens the draft
+through the GitHub API and stores a receipt keyed by `requestID`: a retry returns
+the first pull request instead of opening a second one, and an open pull request
+for the same head is reused. Publishing requires a bound repository and an idle,
+warm workspace.
+
 ## Usage and budget
 
 `GET /api/usage` returns measured actual spend (`costUSD`), active reservations
