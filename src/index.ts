@@ -291,7 +291,7 @@ async function handleApi(
       ...(request.method === "POST" ? { headers: { "content-type": "application/json" }, body: request.body } : {}) })
   }
 
-  if (suffix[0] === "workspace" && suffix[1] === "checks") {
+  if (suffix[0] === "workspace" && ["checks", "publish"].includes(String(suffix[1]))) {
     // The DO owns strict routing and bounded parsing; preserve the body stream.
     return conversation.fetch(`https://conversation/${suffix.join("/")}`, {
       method: request.method,

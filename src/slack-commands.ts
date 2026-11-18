@@ -100,6 +100,7 @@ const HELP = [
   "• `!repo [GitHub URL base working]` — inspect this workspace, or register an optional root repository before work starts",
   "• `!check` / `!check [\"bun\",\"test\",...]` — request isolated checks on a registered root's committed snapshot; nested agent checkouts are not eligible",
   "• `!checks` — inspect this thread's check requests and results",
+  "• `!publish [title]` — push the bound working branch and open a draft pull request; requires an idle, warm workspace",
   "• `!setup` / `!connect` — open account setup",
   "• Images — one PNG or JPEG up to 5 MiB; the selected model must support images. If the bot is busy, resend when it is ready.",
 ].join("\n")

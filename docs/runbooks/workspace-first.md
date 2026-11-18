@@ -80,7 +80,9 @@ and the surrounding workspace. A checkout does not grant credentials: the
 agent's own Git commands are unauthenticated, so a private repository is reached
 by binding it (below), which clones through the privileged path. Copy requested
 work rather than workspace/runtime metadata. Committing, pushing or publishing
-requires the user's instruction.
+requires the user's instruction. For a bound root, `!publish [title]` pushes the
+working branch and opens a draft pull request from an idle, warm workspace; it
+refuses a branch with no commits beyond the base and never forces a push.
 
 The normal full workspace checkpoint includes user files and nested Git
 checkouts; the session/state checkpoint preserves conversation history. Ordinary

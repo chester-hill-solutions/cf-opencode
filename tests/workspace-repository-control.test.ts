@@ -124,6 +124,39 @@ describe("trusted workspace repository materialization", () => {
     } finally { f.close() }
   })
 
+  test("publishes only new commits and carries the credential as a one-shot header", async () => {
+    const f = fixture()
+    try {
+      const token = `gho_${"a".repeat(36)}`
+      const pushes: string[][] = []
+      const host = new WorkspaceRepositoryHost({
+        workspace: f.workspace, stateRoot: f.stateRoot, runDir: f.runDir,
+        perform: input => executeRepositoryAction(input, async (args, cwd) => {
+          if (args.includes("push")) { pushes.push(args); return "" }
+          return f.run(args, cwd)
+        }),
+        authorization: () => token,
+      })
+      host.configure(f.pending)
+      await host.prepare()
+      expect(await host.publishBranch()).toEqual({ commit: f.baseCommit, pushed: false })
+      expect(pushes).toHaveLength(0)
+      f.command(["config", "user.name", "Fixture"], f.workspace)
+      f.command(["config", "user.email", "fixture@example.invalid"], f.workspace)
+      writeFileSync(join(f.workspace, "work.txt"), "work\n")
+      f.command(["add", "work.txt"], f.workspace)
+      f.command(["commit", "-m", "work"], f.workspace)
+      const head = f.command(["rev-parse", "HEAD"], f.workspace)
+      expect(await host.publishBranch()).toEqual({ commit: head, pushed: true })
+      const push = pushes[0] ?? []
+      const header = `http.https://github.com/.extraheader=AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`
+      expect(push).toContain(header)
+      expect(push).toContain("push")
+      expect(push).toContain("HEAD:refs/heads/aboiteau/task")
+      expect(readFileSync(join(f.runDir, "workspace-repository.json"), "utf8")).not.toContain(token)
+    } finally { f.close() }
+  })
+
   test("refuses an authorization value that is not a GitHub token before any Git runs", async () => {
     const f = fixture()
     try {

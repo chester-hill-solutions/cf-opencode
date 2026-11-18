@@ -111,6 +111,54 @@ const repositoryHost = new WorkspaceRepositoryHost({
   authorization: () => githubToken,
 })
 
+/** Passive repository prerequisites; never starts a runtime. */
+function workspacePreflightRoute(request: Request): Promise<Response> {
+  if (request.method !== "GET") return Promise.resolve(new Response("method not allowed", { status: 405, headers: { allow: "GET" } }))
+  return enqueueLifecycle(async () => {
+    try {
+      return Response.json(await workspacePreflight(), { headers: { "cache-control": "no-store" } })
+    } catch {
+      return Response.json({ error: "workspace preflight unavailable" }, { status: 503, headers: { "cache-control": "no-store" } })
+    }
+  })
+}
+
+/** Push the bound branch and report what moved. */
+function workspacePublishRoute(request: Request, host: WorkspaceRepositoryHost): Promise<Response> {
+  if (request.method !== "POST") return Promise.resolve(new Response("method not allowed", { status: 405, headers: { allow: "POST" } }))
+  return enqueueLifecycle(async () => {
+    try {
+      return Response.json(await host.publishBranch(), { headers: { "cache-control": "no-store" } })
+    } catch {
+      return Response.json({ error: "Workspace publication is unavailable or no longer matches the bound repository.", code: "WORKSPACE_PUBLISH_UNAVAILABLE" }, { status: 409, headers: { "cache-control": "no-store" } })
+    }
+  })
+}
+
+/** Committed snapshot or head for a bound checkout. */
+function workspaceCheckSnapshotRoute(request: Request, mode: "snapshot" | "head", host: WorkspaceRepositoryHost): Promise<Response> {
+  if (request.method !== "POST") return Promise.resolve(new Response("method not allowed", { status: 405, headers: { allow: "POST" } }))
+  return enqueueLifecycle(async () => {
+    try {
+      const body = await workspaceCheckRequest(request)
+      const keys = Object.keys(body).sort().join(",")
+      if (keys !== (mode === "snapshot" ? "commit,workspaceRepository" : "workspaceRepository") || (mode === "snapshot" && (typeof body.commit !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(body.commit)))) throw new Error("invalid check request")
+      const receipt = host.boundReceipt(body.workspaceRepository)
+      const result = await invokeWorkspaceCheckSnapshot({ mode, workspace: WORKSPACE, workspaceRepository: receipt, ...(typeof body.commit === "string" ? { commit: body.commit } : {}) }, asAgentCommand)
+      host.boundReceipt(receipt)
+      if (mode === "snapshot") {
+        if (!("canonicalJSON" in result)) throw new Error("invalid snapshot result")
+        const after = await invokeWorkspaceCheckSnapshot({ mode: "head", workspace: WORKSPACE, workspaceRepository: receipt }, asAgentCommand)
+        if (after.commit !== result.commit || after.tree !== result.tree) throw new Error("workspace moved during capture")
+        return new Response(result.canonicalJSON, { headers: { "content-type": "application/json", "cache-control": "no-store" } })
+      }
+      return Response.json(result, { headers: { "cache-control": "no-store" } })
+    } catch {
+      return Response.json({ error: "Committed workspace inspection is unavailable or no longer matches the bound repository.", code: "WORKSPACE_CHECK_SNAPSHOT_UNAVAILABLE" }, { status: 409, headers: { "cache-control": "no-store" } })
+    }
+  })
+}
+
 /** Fixed, trusted inspector only; repository scripts are never executed here. */
 async function workspacePreflight(): Promise<WorkspacePreflight> {
   const child = spawn(asAgentCommand([process.execPath, `${import.meta.dir}/workspace-preflight.ts`, WORKSPACE]), {
@@ -1210,39 +1258,11 @@ if (import.meta.main) Bun.serve({
 
     if (url.pathname === "/health") return Response.json({ ok: true })
 
-    if (url.pathname === "/workspace/preflight") {
-      if (request.method !== "GET") return new Response("method not allowed", { status: 405, headers: { allow: "GET" } })
-      return enqueueLifecycle(async () => {
-        try {
-          return Response.json(await workspacePreflight(), { headers: { "cache-control": "no-store" } })
-        } catch {
-          return Response.json({ error: "workspace preflight unavailable" }, { status: 503, headers: { "cache-control": "no-store" } })
-        }
-      })
-    }
+    if (url.pathname === "/workspace/preflight") return workspacePreflightRoute(request)
 
+    if (url.pathname === "/workspace/publish") return workspacePublishRoute(request, repositoryHost)
     if (url.pathname === "/workspace/checks/snapshot" || url.pathname === "/workspace/checks/head") {
-      if (request.method !== "POST") return new Response("method not allowed", { status: 405, headers: { allow: "POST" } })
-      return enqueueLifecycle(async () => {
-        try {
-          const mode = url.pathname.endsWith("/snapshot") ? "snapshot" : "head"
-          const body = await workspaceCheckRequest(request)
-          const keys = Object.keys(body).sort().join(",")
-          if (keys !== (mode === "snapshot" ? "commit,workspaceRepository" : "workspaceRepository") || (mode === "snapshot" && (typeof body.commit !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(body.commit)))) throw new Error("invalid check request")
-          const receipt = repositoryHost.boundReceipt(body.workspaceRepository)
-          const result = await invokeWorkspaceCheckSnapshot({ mode, workspace: WORKSPACE, workspaceRepository: receipt, ...(typeof body.commit === "string" ? { commit: body.commit } : {}) }, asAgentCommand)
-          repositoryHost.boundReceipt(receipt)
-          if (mode === "snapshot") {
-            if (!("canonicalJSON" in result)) throw new Error("invalid snapshot result")
-            const after = await invokeWorkspaceCheckSnapshot({ mode: "head", workspace: WORKSPACE, workspaceRepository: receipt }, asAgentCommand)
-            if (after.commit !== result.commit || after.tree !== result.tree) throw new Error("workspace moved during capture")
-            return new Response(result.canonicalJSON, { headers: { "content-type": "application/json", "cache-control": "no-store" } })
-          }
-          return Response.json(result, { headers: { "cache-control": "no-store" } })
-        } catch {
-          return Response.json({ error: "Committed workspace inspection is unavailable or no longer matches the bound repository.", code: "WORKSPACE_CHECK_SNAPSHOT_UNAVAILABLE" }, { status: 409, headers: { "cache-control": "no-store" } })
-        }
-      })
+      return workspaceCheckSnapshotRoute(request, url.pathname.endsWith("/snapshot") ? "snapshot" : "head", repositoryHost)
     }
 
     // ---- OpenCode proxy ------------------------------------------------------

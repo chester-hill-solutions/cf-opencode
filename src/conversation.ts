@@ -63,8 +63,9 @@ import { ConversationProviderRepair, ProviderRepairError } from "./conversation/
 import { ConversationWorkspaceLifecycle, WorkspaceMaintenanceError } from "./conversation/workspace-lifecycle"
 import { isWorkspaceLifecycleMetadata } from "./workspace-profile"
 import { ConversationFinalReplies } from "./conversation/final-replies"
-import { readWorkspaceCheckBytes } from "./conversation/workspace-checks"
+import { readWorkspaceCheckBytes, workspaceCheckStatusRoute } from "./conversation/workspace-checks"
 import { readCredential } from "./credential-read"
+import { workspacePublishRoute } from "./conversation/workspace-publish"
 import type { MessageRequest, SlackEventRequest } from "./conversation/requests"
 export type { MessageRequest, SlackEventRequest } from "./conversation/requests"
 
@@ -330,7 +331,7 @@ export class Conversation extends DurableObject<Env> {
       env: () => this.env,
       configuration: {
         settings: () => this.settings(),
-        githubToken: () => this.secret(GITHUB_TOKEN_KEY),
+        githubToken: () => readCredential(this.env, GITHUB_TOKEN_KEY),
       },
       activity: {
         pumping: () => this.turnExecution.isPumping,
@@ -461,6 +462,7 @@ export class Conversation extends DurableObject<Env> {
       workspaceCommands: {
         enabled: target => Boolean(env.CHECK_SLACK_CHANNEL_ID && target.channel === env.CHECK_SLACK_CHANNEL_ID),
         repository: request => this.workspaceRepository(request),
+        publish: (input) => this.workspacePublish(new Request("https://conversation/workspace/publish", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) })),
         workspace: request => this.workspaceLifecycle.fetch(request),
         check: async (argv, target, eventID) => {
           try { return await this.checkDispatcher.queue(argv, target, eventID) }
@@ -625,9 +627,10 @@ export class Conversation extends DurableObject<Env> {
     if (new URL(request.url).pathname === "/workspace/preflight") return this.workspacePreflight(request)
     if (["/workspace/profile", "/workspace/discard"].includes(new URL(request.url).pathname)) return this.workspaceLifecycle.fetch(request)
     if (new URL(request.url).pathname === "/workspace/repository") return this.workspaceRepository(request)
+    if (new URL(request.url).pathname === "/workspace/publish") return this.workspacePublish(request)
     if (new URL(request.url).pathname === "/providers/repair") return this.providerRepair.fetch(request)
     if (/^\/workspace\/check-collector(?:\/|$)/.test(new URL(request.url).pathname)) return this.checkDispatcher.fetch(request)
-    if (/^\/workspace\/checks(?:\/|$)/.test(new URL(request.url).pathname)) return this.workspaceCheckRequest(request)
+    if (/^\/workspace\/checks(?:\/|$)/.test(new URL(request.url).pathname)) return workspaceCheckStatusRoute(request, this.workspaceChecks, this.checkDispatcher)
     // Status and questions are passive reads: neither starts lifecycle recovery or jobs.
     const passive = await passiveReadRoute(request, this.store, { questions: () => this.controlPlane.onQuestions(), answer: (id, body) => this.controlPlane.answerQuestion(id, body), cancel: (id) => cancelTurn(this.store, this.deliveryControls, id) })
     if (passive) return passive
@@ -658,8 +661,8 @@ export class Conversation extends DurableObject<Env> {
     if (url.pathname === "/workspace/repository") return this.workspaceRepository(request)
     if (url.pathname === "/providers/repair") return this.providerRepair.fetch(request)
     if (/^\/workspace\/check-collector(?:\/|$)/.test(url.pathname)) return this.checkDispatcher.fetch(request)
-    if (/^\/workspace\/checks(?:\/|$)/.test(url.pathname)) return this.workspaceCheckRequest(request)
-    if (url.pathname === "/message") return this.onMessage((await request.json()) as MessageRequest)
+    if (/^\/workspace\/checks(?:\/|$)/.test(url.pathname)) return workspaceCheckStatusRoute(request, this.workspaceChecks, this.checkDispatcher)
+    if (url.pathname === "/message") return this.messagePipeline.handle((await request.json()) as MessageRequest)
     if (url.pathname === "/slack") {
       const input = await request.json() as SlackEventRequest
       if (await this.workspaceLifecycle.hasPending() && !/^\s*(?:<@[^>]+>\s*)?!workspace(?:\s|$)/i.test(input.event.text ?? "")) {
@@ -800,15 +803,6 @@ export class Conversation extends DurableObject<Env> {
   }
 
   /** Export intent and collector execution retain their separate provenance. */
-  private async workspaceCheckRequest(request: Request): Promise<Response> {
-    const response = await this.workspaceChecks.fetch(request)
-    const match = /^\/workspace\/checks\/([a-f0-9-]+)$/.exec(new URL(request.url).pathname)
-    if (request.method !== "GET" || !match || !response.ok) return response
-    try {
-      const body = await response.json() as { workspaceCheck: unknown }
-      return Response.json({ ...body, execution: await this.checkDispatcher.get(match[1]!) ?? null }, { headers: { "cache-control": "no-store" } })
-    } catch { return Response.json({ error: "Workspace check status is unavailable." }, { status: 503, headers: { "cache-control": "no-store" } }) }
-  }
 
   /** Select a fresh task without preparing Linux, sessions or accounting. */
   private async workspaceRepository(request: Request): Promise<Response> {
@@ -874,6 +868,19 @@ export class Conversation extends DurableObject<Env> {
   }
 
   /** Read only an already verified runtime, without preparation or idle renewal. */
+  /** Push the bound branch and open a draft pull request; never during a turn. */
+  private async workspacePublish(request: Request): Promise<Response> {
+    return workspacePublishRoute(request, {
+      state: () => this.store.get(), storage: this.ctx.storage,
+      withLock: (task) => this.admissions.withLock(task),
+      idle: async () => (await this.store.get()).phase === "idle" && !this.admissions.active && !this.turnExecution.isPumping,
+      warm: () => Boolean(this.runtime.ready && this.runtime.generation && this.controlPlane.cachedToken),
+      useWarm: (task) => this.runtimeAccess.useWarm(task),
+      control: () => this.runtime.warmControlPort(this.controlPlane.cachedToken ?? ""),
+      token: () => readCredential(this.env, GITHUB_TOKEN_KEY), now: () => Date.now(),
+    })
+  }
+
   private async workspacePreflight(request: Request): Promise<Response> {
     if (request.method !== "GET") {
       return Response.json({ error: "method not allowed" }, { status: 405, headers: { allow: "GET" } })
@@ -923,19 +930,14 @@ export class Conversation extends DurableObject<Env> {
         })
       })
     } catch {
-      if (!this.runtime.ready || !this.runtime.generation ||
-        (!this.transport && !this.env.CONTAINER_URL && this.ctx.container?.running !== true)) return notRunning()
+      if (!this.runtime.ready || !this.runtime.generation || !(this.transport || this.env.CONTAINER_URL || this.ctx.container?.running === true)) return notRunning()
       return Response.json({ error: "WORKSPACE_PREFLIGHT_UNAVAILABLE", code: "WORKSPACE_PREFLIGHT_UNAVAILABLE", message: "Workspace inspection is unavailable; retry later." }, {
         status: 503, headers: { "cache-control": "no-store" },
       })
     }
-  }
+    }
 
   // --------------------------------------------------------------- HTTP adapter
-
-  private async onMessage(input: MessageRequest): Promise<Response> {
-    return this.messagePipeline.handle(input)
-  }
 
   /** Built on first use: the constructor only wires collaborators. */
   private get messagePipeline(): ConversationMessagePipeline {
@@ -979,11 +981,6 @@ export class Conversation extends DurableObject<Env> {
   private async settings(): Promise<HarnessSettings> {
     const res = await this.env.SETTINGS.getByName("global").fetch("https://settings/get")
     return (await res.json()) as HarnessSettings
-  }
-
-  /** Decrypt one stored credential through the Settings DO. */
-  private async secret(key: string): Promise<string | undefined> {
-    return readCredential(this.env, key)
   }
 
   /** Hard reset: drop the container and this conversation's stored state. */

@@ -53,6 +53,7 @@ export interface ConversationSlackAdapterOptions {
     enabled?(target: SlackTarget): boolean
     workspace?: SlackWorkspaceCommandServices["workspace"]
     repository: SlackWorkspaceCommandServices["repository"]
+    publish?: SlackWorkspaceCommandServices["publish"]
     check(argv: string[], target: SlackTarget, eventID: string | undefined): Promise<string>
     checks(target: SlackTarget): Promise<string>
   }

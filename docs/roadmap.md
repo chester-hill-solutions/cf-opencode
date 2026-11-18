@@ -776,6 +776,19 @@ prerequisite. [Live receipts, source identities and limits](evidence/workspace-r
 [workspace usage](runbooks/workspace-first.md). Broad product/security/runtime
 gates remain open.
 
+**Branch publication — IMPLEMENTED, NOT YET LIVE-QUALIFIED (2026-11-18).**
+A bound workspace pushes its working branch and opens a draft pull request as one
+operation: `POST /api/conversations/:key/workspace/publish` and `!publish
+[title]`. The container verifies the bound checkout, refuses a branch with no
+commits beyond the base, and pushes without force using the stored GitHub token
+as a one-shot HTTP header (never in `.git/config`); the Durable Object opens the
+draft through the GitHub API and stores a receipt keyed by the caller's request
+ID, so a retry returns the first pull request and an existing open head is
+reused. Slack and HTTP share the operation. Not live-qualified: the deployment's
+GitHub credential is still pre-v2 ciphertext and must be reconnected before a
+real push/PR run, and no pilot has exercised the path. Merging, review acceptance
+and caller-requested revision checks remain open.
+
 **Workspace first — IMPLEMENTED FOR THE INTERNAL CANARY (2026-11-15).**
 The thread owns a general workspace independently of repository membership. A
 repository is optional: start general work immediately, retain its files and
