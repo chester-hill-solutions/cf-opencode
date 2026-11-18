@@ -63,7 +63,8 @@ import { ConversationProviderRepair, ProviderRepairError } from "./conversation/
 import { ConversationWorkspaceLifecycle, WorkspaceMaintenanceError } from "./conversation/workspace-lifecycle"
 import { isWorkspaceLifecycleMetadata } from "./workspace-profile"
 import { ConversationFinalReplies } from "./conversation/final-replies"
-import { readWorkspaceCheckBytes, workspaceCheckStatusRoute } from "./conversation/workspace-checks"
+import { readWorkspaceCheckBytes } from "./conversation/workspace-checks"
+import { recycleRoute } from "./conversation/recycle-route"
 import { readCredential } from "./credential-read"
 import { workspacePublishRoute } from "./conversation/workspace-publish"
 import type { MessageRequest, SlackEventRequest } from "./conversation/requests"
@@ -630,7 +631,7 @@ export class Conversation extends DurableObject<Env> {
     if (new URL(request.url).pathname === "/workspace/publish") return this.workspacePublish(request)
     if (new URL(request.url).pathname === "/providers/repair") return this.providerRepair.fetch(request)
     if (/^\/workspace\/check-collector(?:\/|$)/.test(new URL(request.url).pathname)) return this.checkDispatcher.fetch(request)
-    if (/^\/workspace\/checks(?:\/|$)/.test(new URL(request.url).pathname)) return workspaceCheckStatusRoute(request, this.workspaceChecks, this.checkDispatcher)
+    if (/^\/workspace\/checks(?:\/|$)/.test(new URL(request.url).pathname)) return this.workspaceCheckRequest(request)
     // Status and questions are passive reads: neither starts lifecycle recovery or jobs.
     const passive = await passiveReadRoute(request, this.store, { questions: () => this.controlPlane.onQuestions(), answer: (id, body) => this.controlPlane.answerQuestion(id, body), cancel: (id) => cancelTurn(this.store, this.deliveryControls, id) })
     if (passive) return passive
@@ -661,7 +662,7 @@ export class Conversation extends DurableObject<Env> {
     if (url.pathname === "/workspace/repository") return this.workspaceRepository(request)
     if (url.pathname === "/providers/repair") return this.providerRepair.fetch(request)
     if (/^\/workspace\/check-collector(?:\/|$)/.test(url.pathname)) return this.checkDispatcher.fetch(request)
-    if (/^\/workspace\/checks(?:\/|$)/.test(url.pathname)) return workspaceCheckStatusRoute(request, this.workspaceChecks, this.checkDispatcher)
+    if (/^\/workspace\/checks(?:\/|$)/.test(url.pathname)) return this.workspaceCheckRequest(request)
     if (url.pathname === "/message") return this.messagePipeline.handle((await request.json()) as MessageRequest)
     if (url.pathname === "/slack") {
       const input = await request.json() as SlackEventRequest
@@ -803,6 +804,16 @@ export class Conversation extends DurableObject<Env> {
   }
 
   /** Export intent and collector execution retain their separate provenance. */
+
+  private async workspaceCheckRequest(request: Request): Promise<Response> {
+    const response = await this.workspaceChecks.fetch(request)
+    const match = /^\/workspace\/checks\/([a-f0-9-]+)$/.exec(new URL(request.url).pathname)
+    if (request.method !== "GET" || !match || !response.ok) return response
+    try {
+      const body = await response.json() as { workspaceCheck: unknown }
+      return Response.json({ ...body, execution: await this.checkDispatcher.get(match[1]!) ?? null }, { headers: { "cache-control": "no-store" } })
+    } catch { return Response.json({ error: "Workspace check status is unavailable." }, { status: 503, headers: { "cache-control": "no-store" } }) }
+  }
 
   /** Select a fresh task without preparing Linux, sessions or accounting. */
   private async workspaceRepository(request: Request): Promise<Response> {
@@ -991,27 +1002,16 @@ export class Conversation extends DurableObject<Env> {
    * kept: this is what a long-lived conversation needs after an image deploy.
    */
   private async onRecycle(): Promise<Response> {
-    return this.admissions.withLock(async () => {
-      if (await this.runtimeUpgrades.hasPending()) return Response.json({ error: "runtime upgrade is pending; resume it before recycling" }, { status: 409 })
-      const blocked = await this.blockLifecycleDuringActiveTurn()
-      if (blocked) return blocked
-      if (!await this.turnExecution.stopStream()) {
-        return Response.json({ ok: false, error: "runtime stream did not drain; not recycling" }, { status: 503 })
-      }
-      return this.withUsageLifecycle(async () => {
-        // R2 checkpoints are portable across image versions. Capture the
-        // current runtime under exclusive ownership before stopping it.
-        const saved = await this.checkpoints.captureOwned()
-        if (!saved) return Response.json({ ok: false, error: "checkpoint failed; not recycling" }, { status: 503 })
-        if (!(await this.runtime.stop())) {
-          return Response.json({ ok: false, error: "container stop was not confirmed; not recycling" }, { status: 503 })
-        }
-        if (!(await this.leases.releaseAfterStop())) {
-          return Response.json({ ok: false, error: "container lease release is pending; not recycling" }, { status: 503 })
-        }
-        await this.images.clearSnapshot()
-        return Response.json({ ok: true })
-      })
+    return recycleRoute({
+      withLock: (task) => this.admissions.withLock(task),
+      upgradesPending: () => this.runtimeUpgrades.hasPending(),
+      blocked: () => this.blockLifecycleDuringActiveTurn(),
+      stopStream: () => this.turnExecution.stopStream(),
+      withUsageLifecycle: (task) => this.withUsageLifecycle(task),
+      capture: () => this.checkpoints.captureOwned(),
+      stop: () => this.runtime.stop(),
+      releaseLease: () => this.leases.releaseAfterStop(),
+      clearSnapshot: () => this.images.clearSnapshot(),
     })
   }
 

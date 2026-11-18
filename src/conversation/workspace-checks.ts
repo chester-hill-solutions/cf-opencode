@@ -294,21 +294,3 @@ export class ConversationWorkspaceChecks {
     for (const key of (await this.options.storage.list({ prefix: ROW_PREFIX })).keys()) await this.options.storage.delete(key)
   }
 }
-
-/** `GET /workspace/checks/:id` adds the dispatcher's execution record. */
-export async function workspaceCheckStatusRoute(
-  request: Request,
-  checks: ConversationWorkspaceChecks,
-  dispatcher: { get(id: string): Promise<unknown> },
-): Promise<Response> {
-  const response = await checks.fetch(request)
-  const match = /^\/workspace\/checks\/([a-f0-9-]+)$/.exec(new URL(request.url).pathname)
-  const id = match?.[1]
-  if (request.method !== "GET" || id === undefined || !response.ok) return response
-  try {
-    const body = await response.json() as { workspaceCheck: unknown }
-    return Response.json({ ...body, execution: await dispatcher.get(id) ?? null }, { headers: { "cache-control": "no-store" } })
-  } catch {
-    return Response.json({ error: "Workspace check status is unavailable." }, { status: 503, headers: { "cache-control": "no-store" } })
-  }
-}

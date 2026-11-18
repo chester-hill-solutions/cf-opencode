@@ -214,8 +214,7 @@ export async function invokeRepositoryAction(input: Action, agentCommand: (args:
     if (code !== 0) throw conflict()
     const result: unknown = JSON.parse(text)
     if (!result || typeof result !== "object" || Array.isArray(result)) throw conflict()
-    // Each consumer parses the fields it uses, so a malformed value is refused
-    // there instead of being re-validated in the transport.
+    if ("baseCommit" in result && (typeof result.baseCommit !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(result.baseCommit))) throw conflict()
     return result as ActionResult
   } finally {
     if (timer) clearTimeout(timer)
