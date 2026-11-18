@@ -1,3 +1,5 @@
+import { logEvent } from "./log"
+
 /** Immutable, credential-free identity for the opt-in workspace binding workflow. */
 export interface WorkspaceRepositorySelection {
   repository: string
@@ -41,8 +43,12 @@ export function repositoryConflictDetail(error: unknown): string | undefined {
 
 /** Read a binding-conflict response into the typed error, keeping its reason. */
 export async function repositoryConflictFrom(response: Response): Promise<WorkspaceRepositoryConflictError> {
-  const body = await response.json().catch(() => undefined) as { detail?: unknown } | undefined
-  return new WorkspaceRepositoryConflictError(typeof body?.detail === "string" ? body.detail.slice(0, 600) : undefined)
+  const body = await response.json().catch(() => undefined) as { detail?: unknown; error?: unknown; timings?: unknown } | undefined
+  const detail = typeof body?.detail === "string" ? body.detail.slice(0, 600) : undefined
+  // The container's timings say how far the start got; a bare conflict names
+  // no reason, so record what it did report.
+  logEvent("repository.start.failed", { status: response.status, error: body?.error ?? null, detail: detail ?? null, timings: body?.timings ?? null })
+  return new WorkspaceRepositoryConflictError(detail)
 }
 
 const selectionFields = ["repository", "baseBranch", "workingBranch"]

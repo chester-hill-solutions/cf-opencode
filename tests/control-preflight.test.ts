@@ -15,7 +15,7 @@ async function controlFixture(inspector?: string) {
   mkdirSync(join(app, "src"), { recursive: true })
   mkdirSync(workspace)
   mkdirSync(state)
-  for (const file of ["control-server.ts", "control-lifecycle.ts", "stow-workspace.ts", "workspace-repository.ts", "workspace-check-snapshot.ts", "src/workspace-repository.ts", "src/workspace-check-snapshot.ts", "src/permissions.ts", "src/accounting-policy.ts", "src/control-auth.ts", "src/tar.ts", "src/workspace-preflight.ts"]) {
+  for (const file of ["control-server.ts", "control-lifecycle.ts", "stow-workspace.ts", "workspace-repository.ts", "workspace-check-snapshot.ts", "src/workspace-repository.ts", "src/workspace-check-snapshot.ts", "src/permissions.ts", "src/accounting-policy.ts", "src/control-auth.ts", "src/log.ts", "src/tar.ts", "src/workspace-preflight.ts"]) {
     copyFileSync(join(sourceRoot, file), join(app, file))
   }
   if (inspector === undefined) copyFileSync(join(sourceRoot, "workspace-preflight.ts"), join(app, "workspace-preflight.ts"))
