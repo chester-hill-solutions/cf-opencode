@@ -5,6 +5,7 @@ import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/account
 import { driveConversationJobs } from "./helpers/conversation-jobs"
 import { ConversationMemoryShadow } from "../src/conversation/memory-shadow"
 import { rulesDecision } from "../src/decision"
+import { TURN_TIMEOUT_MS } from "../src/lifecycle"
 
 /**
  * Turn settlement: a new user message must not be considered finished just
@@ -487,7 +488,7 @@ describe("turn settlement", () => {
       const paused = await state(instance)
       const pausedSettledTelemetry = telemetry.filter((event) => event.event === "turn.settled").length
       const savedState = await runtime.storage.get<Record<string, unknown>>("state")
-      await runtime.storage.put("state", { ...savedState, runStartedAt: Date.now() - 20 * 60_000 })
+      await runtime.storage.put("state", { ...savedState, runStartedAt: Date.now() - TURN_TIMEOUT_MS - 60_000 })
       await driveConversationJobs(instance, runtime.storage, ["turn:observe"])
       const completed = await state(instance)
       return { paused, completed, releaseCalls, pausedSettledTelemetry, telemetry }
