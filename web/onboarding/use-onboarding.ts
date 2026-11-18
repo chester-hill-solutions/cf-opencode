@@ -324,7 +324,7 @@ export function useOnboarding() {
 
   async function finish() {
     if (!workspaceSaved) {
-      setError("Save your repository, branch and model before finishing setup.")
+      setError("Save your workspace settings before finishing setup.")
       return
     }
     await run("finish", async () => {
@@ -341,9 +341,11 @@ export function useOnboarding() {
   }
 
   const providerConnected = hasConnectedProvider(integrations)
+  // A repository is optional: general work is a first-class outcome, and a
+  // checkout is selected per conversation. The draft must still match what the
+  // deployment stored, so saving is what unlocks Finish.
   const workspaceSaved =
-    !!status?.workspace.repo &&
-    !!status.model &&
+    !!status?.model &&
     draft.repo.trim() === status.workspace.repo &&
     draft.branch.trim() === status.workspace.branch &&
     draft.model.trim() === status.model

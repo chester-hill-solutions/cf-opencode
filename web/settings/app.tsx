@@ -202,7 +202,7 @@ export function SettingsApp() {
                 accent="vermilion"
                 number="02"
                 title="Workspace"
-                description="The repository and branch your agent starts from."
+                description="An optional repository and branch for new conversations; leave blank for general work."
               >
                 <div className="fields-grid">
                   <Field className="field-wide">
@@ -215,7 +215,6 @@ export function SettingsApp() {
                       spellCheck={false}
                       value={draft.workspaceRepo}
                       onChange={(event) => update("workspaceRepo", event.target.value)}
-                      required
                       aria-invalid={!!fieldError("workspaceRepo")}
                       aria-describedby={fieldError("workspaceRepo") ? "repo-error" : undefined}
                     />

@@ -30,7 +30,8 @@ function fixture() {
   const pending: WorkspaceRepositoryBinding = { schemaVersion: 1, bindingID: randomUUID(), repository: "https://github.com/example/synthetic", baseBranch: "main", workingBranch: "aboiteau/task", status: "pending", baseCommit: null }
   let cloneCount = 0
   const run: RepositoryGitRunner = async (args, cwd) => {
-    if (args[0] === "clone") {
+    const offset = args[0] === "-c" ? 2 : 0
+    if (args[offset] === "clone") {
       cloneCount++
       expect(JSON.parse(readFileSync(join(runDir, "workspace-repository.json"), "utf8")).phase).toBe("intent")
       // This private fixture transport never appears in the production API.
@@ -94,6 +95,44 @@ describe("trusted workspace repository materialization", () => {
       expect((await f.host().prepare()).baseCommit).toBe(f.baseCommit) // process restart, no configure
       expect(f.command(["rev-parse", "HEAD"], f.workspace)).not.toBe(f.baseCommit)
       expect(f.clones()).toBe(1)
+    } finally { f.close() }
+  })
+
+  test("clones a private repository with a one-shot header and leaves no credential behind", async () => {
+    const f = fixture()
+    try {
+      const token = `gho_${"a".repeat(36)}`
+      const seen: string[][] = []
+      const host = new WorkspaceRepositoryHost({
+        workspace: f.workspace, stateRoot: f.stateRoot, runDir: f.runDir,
+        perform: input => executeRepositoryAction(input, async (args, cwd) => {
+          if (input.action === "clone") seen.push(args)
+          return f.run(args, cwd)
+        }),
+        authorization: () => token,
+      })
+      host.configure(f.pending)
+      await host.prepare()
+      const header = `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`
+      const clone = seen[0] ?? []
+      expect(clone.slice(0, 2)).toEqual(["-c", `http.https://github.com/.extraheader=${header}`])
+      expect(clone).toContain("clone")
+      const config = readFileSync(join(f.workspace, ".git", "config"), "utf8")
+      expect(config).not.toContain("extraheader")
+      expect(config).not.toContain("AUTHORIZATION")
+      expect(readFileSync(join(f.runDir, "workspace-repository.json"), "utf8")).not.toContain(token)
+    } finally { f.close() }
+  })
+
+  test("refuses an authorization value that is not a GitHub token before any Git runs", async () => {
+    const f = fixture()
+    try {
+      let ran = false
+      await expect(executeRepositoryAction(
+        { action: "clone", workspace: f.workspace, staging: `/tmp/aboiteau-bound-${randomUUID()}`, binding: f.pending, authorization: "not-a-token\n" },
+        async () => { ran = true; return "" },
+      )).rejects.toThrow()
+      expect(ran).toBe(false)
     } finally { f.close() }
   })
 

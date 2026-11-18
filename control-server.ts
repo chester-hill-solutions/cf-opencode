@@ -107,6 +107,8 @@ const enqueueLifecycle = runLifecycle
 const repositoryHost = new WorkspaceRepositoryHost({
   workspace: WORKSPACE, stateRoot: STATE_ROOT, runDir: RUN_DIR,
   perform: input => invokeRepositoryAction(input, asAgentCommand),
+  // Read at clone time: /configure may set the token after this host is built.
+  authorization: () => githubToken,
 })
 
 /** Fixed, trusted inspector only; repository scripts are never executed here. */
@@ -1295,8 +1297,10 @@ if (import.meta.main) Bun.serve({
         if (!binding) {
           if (settings.workspaceRepo) workspaceRepo = settings.workspaceRepo
           if (settings.workspaceBranch) workspaceBranch = settings.workspaceBranch
-          if (typeof settings.githubToken === "string") githubToken = settings.githubToken
         }
+        // Both paths need it: a binding clones through the bounded Git runner, and
+        // a general workspace clones the default repository. Neither persists it.
+        if (typeof settings.githubToken === "string") githubToken = settings.githubToken
         // Reattaching trusted binding metadata while observing busy work must
         // not rewrite its effective model or permissions.
         if (settings.workspaceRepository === undefined || Object.hasOwn(settings, "model") || Object.hasOwn(settings, "permissions")) writeOpencodeConfig(settings.model, settings.permissions)

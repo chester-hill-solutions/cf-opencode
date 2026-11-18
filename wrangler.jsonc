@@ -13,8 +13,6 @@
   },
   "triggers": { "crons": ["*/15 * * * *"] },
   "vars": {
-    "WORKSPACE_REPO": "https://github.com/chester-hill-solutions/callcaster",
-    "WORKSPACE_BRANCH": "master",
     "OPENCODE_MODEL": "opencode/deepseek-v4.1-flash",
     "POLL_SECONDS": "2",
     "DECISION_URL": "https://opencode.ai/inference/systemone/v1/systemone",

@@ -148,8 +148,11 @@ export function validateSettings(
   const body = input as Record<string, unknown>
 
   const workspaceRepo = body.workspaceRepo ?? base.workspaceRepo
-  if (typeof workspaceRepo !== "string" || !/^https?:\/\/\S+$/.test(workspaceRepo)) {
-    return { ok: false, error: "workspaceRepo must be an http(s) URL" }
+  // Empty is the repo-free default: general work is a first-class outcome, and
+  // a repository is selected per conversation rather than pinned for the whole
+  // installation.
+  if (typeof workspaceRepo !== "string" || !/^(?:https?:\/\/\S+)?$/.test(workspaceRepo)) {
+    return { ok: false, error: "workspaceRepo must be an empty string or an http(s) URL" }
   }
 
   const workspaceBranch = body.workspaceBranch ?? base.workspaceBranch

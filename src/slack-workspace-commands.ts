@@ -13,7 +13,7 @@ export interface SlackWorkspaceCommandServices {
 }
 
 const REPO_USAGE = "To register an optional root repository before work starts, use `!repo https://github.com/owner/repo main aboiteau/task-123`. Use `!repo` to inspect this workspace."
-const CARRY_WORK = "You can explicitly ask me to check out a public repository in a new subfolder, copy only chosen files, preserve originals, exclude workspace/runtime metadata, and ask before overwriting conflicts. That checkout uses ordinary agent tools; it does not change the registered root repository or make the subfolder eligible for `!check`."
+const CARRY_WORK = "You can explicitly ask me to check out a repository in a new subfolder, copy only chosen files, preserve originals, exclude workspace/runtime metadata, and ask before overwriting conflicts. A private repository needs its root binding (`!repo`), because my own Git commands carry no credential. That checkout does not change the registered root repository or make the subfolder eligible for `!check`."
 
 /** Slack escapes these three entities. Decode once, never reinterpret recursively. */
 export function decodeSlackCommandEntities(text: string): string {
@@ -44,7 +44,7 @@ export async function handleSlackWorkspaceCommand(name: string, rawArgs: string,
     if (!match) return REPO_USAGE
     const repository = match[1].startsWith("<") ? match[1].slice(1, -1).split("|", 1)[0] : match[1]
     try { selection = parseWorkspaceRepositorySelection({ repository, baseBranch: match[2], workingBranch: match[3] }) }
-    catch { return "Repository or branch is unsupported. Use a public GitHub HTTPS URL without credentials and distinct plain branch names. " + REPO_USAGE }
+    catch { return "Repository or branch is unsupported. Use a GitHub HTTPS URL without credentials and distinct plain branch names. " + REPO_USAGE }
   }
   const response = await services.repository(new Request("https://conversation/workspace/repository", {
     method: selection ? "PUT" : "GET", ...(selection ? { headers: { "content-type": "application/json" }, body: JSON.stringify(selection) } : {}),

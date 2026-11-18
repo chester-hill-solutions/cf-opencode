@@ -324,7 +324,7 @@ export function OnboardingApp() {
                 number="03"
                 accent="yellow"
                 title="Choose the workspace"
-                description="Save the repository, branch and model your agent starts with."
+                description="Optionally pin a repository for every new conversation; otherwise bind one per conversation."
                 status={
                   s.workspaceSaved
                     ? { label: "Saved", tone: "success" }
@@ -340,12 +340,11 @@ export function OnboardingApp() {
                 >
                   <div className="fields-grid">
                     <Field className="field-wide">
-                      <FieldLabel htmlFor="setup-repo">Repository URL (required)</FieldLabel>
+                      <FieldLabel htmlFor="setup-repo">Repository URL (optional)</FieldLabel>
                       <Input
                         id="setup-repo"
                         name="repository"
                         type="url"
-                        required
                         autoComplete="off"
                         spellCheck={false}
                         placeholder="https://github.com/your-team/your-repo"

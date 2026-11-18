@@ -238,9 +238,11 @@ export class ConversationReadiness {
     // Configure after restore: /restore replaces /workspace, including the config.
     // A warm container on the same spec already has its config.
     if ((!upgradePending && (!status.initialized || (versionChanged && !deferSettingsRestart))) || repository) {
-      // The opt-in public-repository path never inherits the legacy hostname-wide
-      // clone credential. Scoped private Git authorization remains separate work.
-      const githubToken = repository ? undefined : await this.options.configuration.githubToken()
+      // The token is used by the bounded clone only: a binding clones through the
+      // control server's Git runner, and the general default clone does the same.
+      // It is never written into the checkout or handed to the agent's shell, so
+      // repository-controlled code cannot read it.
+      const githubToken = await this.options.configuration.githubToken()
       const { workspaceRepo: _defaultRepo, workspaceBranch: _defaultBranch, ...boundSettings } = settings
       // Restore/re-observation can need the trusted binding even while accepted
       // work is unresolved. Do not change its live model/permission configuration.
