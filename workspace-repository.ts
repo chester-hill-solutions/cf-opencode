@@ -64,6 +64,12 @@ const git: RepositoryGitRunner = (args, cwd) => boundedCommand([
   "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", ...args,
 ], cwd, 90_000, { ...environment, GIT_ALLOW_PROTOCOL: ["clone", "push"].includes(gitSubcommand(args) ?? "") ? "https" : "" })
 
+/** A bounded, single-line reason from a failed action. */
+function boundedDetail(text: string): string | undefined {
+  const detail = text.trim().replace(/\s+/g, " ").slice(-600)
+  return detail.length === 0 ? undefined : detail
+}
+
 /** The first non-option argument, skipping the value of `-c` and `-C`. */
 function gitSubcommand(args: string[]): string | undefined {
   for (let index = 0; index < args.length; index++) {
@@ -197,8 +203,10 @@ export async function executeRepositoryAction(input: Action, run: RepositoryGitR
 
 export async function invokeRepositoryAction(input: Action, agentCommand: (args: string[]) => string[]): Promise<ActionResult> {
   const child = spawn(agentCommand([process.execPath, import.meta.path, "--agent-action"]), {
-    cwd: import.meta.dir, env: environment, stdin: new Blob([JSON.stringify(input)]), stdout: "pipe", stderr: "ignore", detached: true,
+    cwd: import.meta.dir, env: environment, stdin: new Blob([JSON.stringify(input)]), stdout: "pipe", stderr: "pipe", detached: true,
   })
+  // Drain stderr while the action runs; a full pipe would block a chatty Git.
+  const errors = new Response(child.stderr as ReadableStream).text().catch(() => "")
   let timer: ReturnType<typeof setTimeout> | undefined
   const reader = child.stdout.getReader()
   try {
@@ -211,7 +219,7 @@ export async function invokeRepositoryAction(input: Action, agentCommand: (args:
       Promise.all([child.exited, output()]),
       new Promise<never>((_, reject) => { timer = setTimeout(() => reject(conflict()), 120_000) }),
     ])
-    if (code !== 0) throw conflict()
+    if (code !== 0) throw new WorkspaceRepositoryConflictError(boundedDetail(await errors))
     const result: unknown = JSON.parse(text)
     if (!result || typeof result !== "object" || Array.isArray(result)) throw conflict()
     if ("baseCommit" in result && (typeof result.baseCommit !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(result.baseCommit))) throw conflict()

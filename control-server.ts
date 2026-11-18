@@ -60,7 +60,7 @@ import {
 import { bearerAuthorized } from "./src/control-auth"
 import { parseWorkspacePreflight, type WorkspacePreflight } from "./src/workspace-preflight"
 import { WorkspaceRepositoryHost, invokeRepositoryAction } from "./workspace-repository"
-import { parseWorkspaceRepositoryBinding, WorkspaceRepositoryConflictError, WorkspaceRepositoryValidationError, type WorkspaceRepositoryReceipt } from "./src/workspace-repository"
+import { parseWorkspaceRepositoryBinding, repositoryConflictDetail, WorkspaceRepositoryConflictError, WorkspaceRepositoryValidationError, type WorkspaceRepositoryReceipt } from "./src/workspace-repository"
 import { invokeWorkspaceCheckSnapshot } from "./workspace-check-snapshot"
 import { createLifecycleGate, stopChild } from "./control-lifecycle"
 import { assertSafeArchiveMembers, linkStaysInside, safeRelativeLink } from "./src/tar"
@@ -110,6 +110,12 @@ const repositoryHost = new WorkspaceRepositoryHost({
   // Read at clone time: /configure may set the token after this host is built.
   authorization: () => githubToken,
 })
+
+/** The binding-conflict response, with the container's bounded reason. */
+function repositoryConflictBody(error: unknown): Record<string, unknown> {
+  const detail = repositoryConflictDetail(error)
+  return { error: "Workspace repository binding conflicts with existing workspace state.", code: "WORKSPACE_REPOSITORY_CONFLICT", ...(detail ? { detail } : {}) }
+}
 
 /** Passive repository prerequisites; never starts a runtime. */
 function workspacePreflightRoute(request: Request): Promise<Response> {
@@ -1019,8 +1025,8 @@ async function startRuntime(): Promise<Response> {
       if (repositoryHost.selection()?.status === "pending" && opencode?.exitCode === null) throw new WorkspaceRepositoryConflictError()
       repositoryReceipt = await repositoryHost.prepare()
       fixWorkspacePermissions()
-    } catch {
-      return Response.json({ error: "Workspace repository binding conflicts with existing workspace state.", code: "WORKSPACE_REPOSITORY_CONFLICT", timings: timer.snapshot() }, { status: 409 })
+    } catch (error) {
+      return Response.json({ ...repositoryConflictBody(error), timings: timer.snapshot() }, { status: 409 })
     }
     timer.mark("workspaceRepository")
   } else if (!initialized() && workspaceRepo) {
