@@ -8,7 +8,7 @@ import type { HarnessSettings } from "../settings"
 import { ConversationStore, type BudgetReservation } from "../state"
 import { newTurn, publicTurn, turnDigest, type TurnRecord } from "../turns"
 import { logEvent } from "../log"
-import { WorkspaceRepositoryConflictError } from "../workspace-repository"
+import { repositoryConflictDetail, WorkspaceRepositoryConflictError } from "../workspace-repository"
 import {
   queueAcceptedReceipt,
   queueRefusalReceipt,
@@ -216,8 +216,9 @@ export class ConversationMessagePipeline {
       // The turn never started: release it so the queued retry owns its own turn.
       await this.abandon(message, turn)
       if (error instanceof WorkspaceRepositoryConflictError) {
+        const detail = repositoryConflictDetail(error)
         return Response.json(
-          { ok: false, error: "workspace repository verification failed; no message was queued", code: "WORKSPACE_REPOSITORY_CONFLICT" },
+          { ok: false, error: "workspace repository verification failed; no message was queued", code: "WORKSPACE_REPOSITORY_CONFLICT", ...(detail ? { detail } : {}) },
           { status: 409 },
         )
       }

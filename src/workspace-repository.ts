@@ -27,10 +27,22 @@ export class WorkspaceRepositoryValidationError extends Error {
 
 export class WorkspaceRepositoryConflictError extends Error {
   readonly code = "WORKSPACE_REPOSITORY_CONFLICT"
-  constructor() {
+  /** Bounded operator-facing reason from the Git action, when one exists. */
+  constructor(readonly detail?: string) {
     super("Workspace repository binding conflicts with existing workspace state.")
     this.name = "WorkspaceRepositoryConflictError"
   }
+}
+
+/** The reason a binding action failed, if the error carries one. */
+export function repositoryConflictDetail(error: unknown): string | undefined {
+  return error instanceof WorkspaceRepositoryConflictError ? error.detail : undefined
+}
+
+/** Read a binding-conflict response into the typed error, keeping its reason. */
+export async function repositoryConflictFrom(response: Response): Promise<WorkspaceRepositoryConflictError> {
+  const body = await response.json().catch(() => undefined) as { detail?: unknown } | undefined
+  return new WorkspaceRepositoryConflictError(typeof body?.detail === "string" ? body.detail.slice(0, 600) : undefined)
 }
 
 const selectionFields = ["repository", "baseBranch", "workingBranch"]

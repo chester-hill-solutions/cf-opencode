@@ -11,7 +11,7 @@ import { AccountingPolicyError, ACCOUNTING_POLICY_ID, assertAccountingPolicy } f
 import { accountStateKey, parseConversationKey } from "../tenancy"
 import { parseRuntimeUpgradePending, verifyRestoredRuntimeUpgrade, type RuntimeUpgradePending } from "../runtime-upgrade"
 import { logEvent } from "../log"
-import { parseWorkspaceRepositoryBinding, parseWorkspaceRepositoryReceipt, WorkspaceRepositoryConflictError } from "../workspace-repository"
+import { parseWorkspaceRepositoryBinding, repositoryConflictFrom, parseWorkspaceRepositoryReceipt, WorkspaceRepositoryConflictError } from "../workspace-repository"
 
 const OPENCODE_PORT = 4000
 const CONTROL_PORT = 4001
@@ -263,10 +263,7 @@ export class ConversationReadiness {
     const startedAt = Date.now()
     const started = await control.fetch("http://container/start", { method: "POST", signal: AbortSignal.timeout(120_000) })
     if (!started.ok) {
-      if (repository) {
-        await started.body?.cancel().catch(() => {})
-        throw repositoryConflict()
-      }
+      if (repository) throw await repositoryConflictFrom(started)
       throw new Error("container start failed: " + await started.text())
     }
     const proof = await started.json().catch(() => undefined) as {
