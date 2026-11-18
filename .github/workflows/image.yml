@@ -31,10 +31,18 @@ on:
   push:
     branches: [main]
     paths:
+      # The image carries the whole checkout, so a change to anything the
+      # control server imports needs a rebuild. A root workspace file is listed
+      # explicitly because the container runs it directly.
       - Dockerfile
       - entrypoint.sh
-      - control-server.ts
+      - control-*.ts
+      - workspace-*.ts
+      - stow-workspace.ts
+      - src/**
       - runtime/opencode/**
+      - package.json
+      - bun.lock
 
 permissions:
   contents: write
