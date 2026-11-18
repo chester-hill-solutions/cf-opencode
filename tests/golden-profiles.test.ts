@@ -1,11 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
-import {
-  CHS_PROFILES,
-  GOLDEN_PROFILES,
-  GOLDEN_RULES,
-  type GoldenProfileId,
-} from "@chester-hill-solutions/ratchet-strap"
+import { GOLDEN_RULES, type GoldenProfileId } from "@chester-hill-solutions/ratchet-strap"
+import { enabledProfiles, goldenProfiles } from "../house-rules/golden.mjs"
 
 const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
   scripts: Record<string, string>
@@ -84,18 +80,24 @@ const runsInCi = (gate: string) =>
   ci.includes(`bun run ${gate}`) || quality.includes(`bun run ${gate}`)
 
 describe("RatchetStrap golden profiles", () => {
-  test("the package still exposes twelve defaults and nine profiles", () => {
+  test("the package still exposes twelve defaults and the house rules nine profiles", () => {
     expect(GOLDEN_RULES.map((rule) => rule.id)).toEqual([
       "U1", "U2", "U3", "U4", "U5", "U6", "U7", "U8", "U9", "U10", "U11", "U12",
     ])
-    expect(Object.keys(GOLDEN_PROFILES).sort()).toEqual([
+    expect(Object.keys(goldenProfiles).sort()).toEqual([
       "quality", "react", "react-router", "release", "telemetry", "typescript", "ui", "vault", "web",
     ])
-    expect([...CHS_PROFILES].sort() as string[]).toEqual(Object.keys(GOLDEN_PROFILES).sort())
+  })
+
+  test("every enabled profile fits this repository and is not excluded", () => {
+    for (const id of enabledProfiles) {
+      expect(goldenProfiles, `${id} is enabled but not catalogued`).toHaveProperty(id)
+      expect(PROFILE_COVERAGE[id]?.status, `${id} is enabled but marked not-applicable`).not.toBe("not-applicable")
+    }
   })
 
   test("every profile is mapped to this repository's evidence or an exception", () => {
-    expect(Object.keys(PROFILE_COVERAGE).sort()).toEqual(Object.keys(GOLDEN_PROFILES).sort())
+    expect(Object.keys(PROFILE_COVERAGE).sort()).toEqual(Object.keys(goldenProfiles).sort())
     for (const [id, coverage] of Object.entries(PROFILE_COVERAGE)) {
       expect(["on", "partial", "not-applicable"]).toContain(coverage.status)
       if (coverage.status !== "on") expect(coverage.reason, `${id} needs a reason`).toBeTruthy()
@@ -120,7 +122,7 @@ describe("RatchetStrap golden profiles", () => {
 
   test("the profile rule ids match the catalog so a new rule cannot arrive unowned", () => {
     const ids = Object.fromEntries(
-      Object.entries(GOLDEN_PROFILES).map(([id, rules]) => [id, rules.map((rule) => rule.id)])
+      Object.entries(goldenProfiles).map(([id, rules]) => [id, rules.map((rule) => rule.id)])
     )
     expect(ids).toEqual({
       typescript: ["ts.strict", "ts.no-escape"],
@@ -128,7 +130,7 @@ describe("RatchetStrap golden profiles", () => {
       "react-router": ["router.loaders", "router.authorization", "router.request-integrity"],
       web: ["web.client-bundle"],
       ui: ["ui.design-system"],
-      quality: ["quality.duplication", "quality.file-size", "quality.async-sequencing"],
+      quality: ["quality.duplication", "quality.file-size", "quality.async-sequencing", "quality.test-signal"],
       telemetry: ["telemetry.boundaries"],
       release: ["release.versioned", "release.adr"],
       vault: [
