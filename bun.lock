@@ -16,7 +16,7 @@
         "zod": "^4.6.7",
       },
       "devDependencies": {
-        "@chester-hill-solutions/ratchet-strap": "0.6.2",
+        "@chester-hill-solutions/ratchet-strap": "^0.7.2",
         "@cloudflare/vitest-plugin": "^1.6.0",
         "@cloudflare/workers-types": "^5.20261107.1",
         "@eslint/js": "9",
@@ -129,11 +129,9 @@
 
     "@cfworker/json-schema": ["@cfworker/json-schema@4.1.6", "", {}, "sha512-YzVGTHXf4bzlyAL5KAvHYCdNbbt6zM5cYkAgxqxQPDQM6aZ4ShIIN5yJ+6q7YeonnevxT8k/LmD2tJi/jOiKkg=="],
 
-    "@chester-hill-solutions/dev-guards": ["@chester-hill-solutions/dev-guards@0.1.0", "https://npm.pkg.github.com/download/@chester-hill-solutions/dev-guards/0.1.0/d4a1657ef5e5e14a6f76452f2a89778570e55372", {}, "sha512-OIALOsUDs1XtkgrasFIEY/+XkER355C11zL1eByunzJs9B4i9+mVH78CSzYfpeoxT2uQG/gClVlIW1qsoza/aA=="],
+    "@chester-hill-solutions/ratchet-strap": ["@chester-hill-solutions/ratchet-strap@0.7.2", "https://npm.pkg.github.com/download/@chester-hill-solutions/ratchet-strap/0.7.2/48be8c0382c7a6039c5060297f16bd1490ef9077", { "bin": { "ratchet-strap": "dist/cli.js" } }, "sha512-YpGneiiDwesogSQdmJ2lK1jjICQpsbxJlyV8mjs750cG+TlnIA0On57TS0ddefymR30uTfTTWOp3UGvTh8NUdA=="],
 
-    "@chester-hill-solutions/ratchet-strap": ["@chester-hill-solutions/ratchet-strap@0.6.2", "https://npm.pkg.github.com/download/@chester-hill-solutions/ratchet-strap/0.6.2/52dc55ca59c440b386400008ae62a2f8cf915355", { "dependencies": { "@chester-hill-solutions/dev-guards": "0.1.0", "@opentelemetry/api": "1.9.0" }, "bin": { "ratchet-strap": "dist/cli.js" } }, "sha512-zn5+HEloRMvPm5uY7zY+mPAC7MqRA+AKoj6bEi5uuyQnjSYOssryNhjE2mGwad89htPUZSk1T4jxUU6NTrfVUw=="],
-
-    "@chester-hill-solutions/vault": ["@chester-hill-solutions/vault@./tools/vendor/chester-hill-solutions-vault-0.5.1.tgz", { "dependencies": { "@opentelemetry/api": "1.9.0" }, "peerDependencies": { "drizzle-orm": "^0.45.0" }, "optionalPeers": ["drizzle-orm"] }],
+    "@chester-hill-solutions/vault": ["@chester-hill-solutions/vault@./tools/vendor/chester-hill-solutions-vault-0.5.1.tgz", { "dependencies": { "@opentelemetry/api": "1.9.0" }, "peerDependencies": { "drizzle-orm": "^0.45.0" }, "optionalPeers": ["drizzle-orm"] }, "sha512-LV+zQNmYgam19vIuz1NXN2JXOJmJxTrGflJbdB6/Hpce6BbQEh0uVOn94IeMwE0jz11AdzT9JP4ofJdOt7Y90g=="],
 
     "@cloudflare/kv-asset-handler": ["@cloudflare/kv-asset-handler@0.5.0", "", {}, "sha512-jxQYkj8dSIzc0cD6cMMNdOc1UVjqSqu8BZdor5s8cGjW2I8BjODt/kWPVdY+u9zj3ms75Q5qaZgnxUad83+eAg=="],
 
