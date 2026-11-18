@@ -86,6 +86,7 @@ export const DEFAULT_POLL_SECONDS = 2
 
 export interface SettingsDefaults {
   WORKSPACE_REPO?: string
+  WORKSPACE_BRANCH?: string
   OPENCODE_MODEL?: string
   POLL_SECONDS?: string
 }
@@ -93,7 +94,7 @@ export interface SettingsDefaults {
 export function defaultSettings(env: SettingsDefaults): HarnessSettings {
   return {
     workspaceRepo: env.WORKSPACE_REPO ?? "",
-    workspaceBranch: "main",
+    workspaceBranch: env.WORKSPACE_BRANCH ?? "main",
     model: env.OPENCODE_MODEL ?? "opencode/deepseek-v4.1-flash",
     pollSeconds: Number(env.POLL_SECONDS ?? DEFAULT_POLL_SECONDS) || DEFAULT_POLL_SECONDS,
     streaming: true,
