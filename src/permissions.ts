@@ -22,7 +22,15 @@ export interface PermissionLists {
   deny?: string[]
 }
 
-/** Read-only / build commands that do not need a Slack round trip. */
+/**
+ * Read-only / build commands that do not need a Slack round trip.
+ *
+ * Only simple commands belong here. A compound command (`cd x && git log`,
+ * `cat a | grep b`) does not match any entry, and deliberately so: a pattern
+ * with a trailing wildcard would let anything after `;` ride along, and the
+ * deny list is anchored at the start of the command. The prompt asks the agent
+ * for one plain command per call instead.
+ */
 export const SAFE_COMMANDS = [
   "ls",
   "cat",
@@ -34,11 +42,32 @@ export const SAFE_COMMANDS = [
   "jq",
   "wc",
   "file",
+  "stat",
+  "du",
+  "diff",
+  "tree",
+  "which",
+  "command -v",
   "git status",
   "git diff",
   "git log",
   "git show",
   "git branch",
+  "git fetch",
+  "git rev-list",
+  "git rev-parse",
+  "git reflog",
+  "git remote -v",
+  "git remote show",
+  "git remote get-url",
+  "git stash list",
+  "git ls-files",
+  "git ls-tree",
+  "git cat-file",
+  "git describe",
+  "git shortlog",
+  "git blame",
+  "git grep",
   "bun test",
   "bun run typecheck",
   "node --version",
