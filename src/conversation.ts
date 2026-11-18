@@ -64,6 +64,7 @@ import { ConversationWorkspaceLifecycle, WorkspaceMaintenanceError } from "./con
 import { isWorkspaceLifecycleMetadata } from "./workspace-profile"
 import { ConversationFinalReplies } from "./conversation/final-replies"
 import { readWorkspaceCheckBytes } from "./conversation/workspace-checks"
+import { readCredential } from "./credential-read"
 import type { MessageRequest, SlackEventRequest } from "./conversation/requests"
 export type { MessageRequest, SlackEventRequest } from "./conversation/requests"
 
@@ -982,17 +983,7 @@ export class Conversation extends DurableObject<Env> {
 
   /** Decrypt one stored credential through the Settings DO. */
   private async secret(key: string): Promise<string | undefined> {
-    try {
-      const res = await this.env.SETTINGS.getByName("global").fetch("https://settings/secrets/get", {
-        method: "POST",
-        body: JSON.stringify({ key }),
-      })
-      if (!res.ok) return undefined
-      const body = (await res.json()) as { value?: string | null }
-      return body.value ?? undefined
-    } catch {
-      return undefined
-    }
+    return readCredential(this.env, key)
   }
 
   /** Hard reset: drop the container and this conversation's stored state. */

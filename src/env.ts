@@ -15,6 +15,7 @@ export interface Env {
   CONVERSATION: DurableObjectNamespace<import("./conversation").Conversation>
   SETTINGS: DurableObjectNamespace<import("./settings-do").Settings>
   WORKSPACE_REPO: string
+  WORKSPACE_BRANCH?: string
   OPENCODE_MODEL: string
   POLL_SECONDS: string
   /** Exact DO key allowed to select the isolated event-retention canary image. */

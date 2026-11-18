@@ -7,7 +7,7 @@ import {
   type OnboardingState,
 } from "./settings"
 import { workspaceID } from "./vault"
-import { vaultOrErrorResponse } from "./vault-access"
+import { vaultKeysResponse, vaultOrErrorResponse, vaultSecretResponse } from "./vault-access"
 import { prepareVaultRecords } from "./vault-records"
 import { decideSecretRead } from "./secret-read-policy"
 import { memoryRoute } from "./memory"
@@ -685,7 +685,7 @@ export class Settings extends DurableObject<Env> {
     if (url.pathname === "/secrets" && request.method === "GET") {
       const vault = this.vaultOrError()
       if (vault instanceof Response) return vault
-      return Response.json({ keys: await vault.listSecrets(workspaceID(this.env)) })
+      return vaultKeysResponse(vault, workspaceID(this.env))
     }
 
     if (url.pathname === "/secrets/put" && request.method === "POST") {
@@ -709,8 +709,7 @@ export class Settings extends DurableObject<Env> {
       }
       const vault = this.vaultOrError()
       if (vault instanceof Response) return vault
-      const value = await vault.getSecret(workspaceID(this.env), decision.key)
-      return Response.json({ value })
+      return vaultSecretResponse(vault, workspaceID(this.env), decision.key)
     }
 
     if (url.pathname === "/secrets/delete" && request.method === "POST") {

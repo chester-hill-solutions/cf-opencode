@@ -34,3 +34,38 @@ export function vaultOrErrorResponse(
     return Response.json({ error: message }, { status: 500 })
   }
 }
+
+/**
+ * A vault that exists but cannot read its own records.
+ *
+ * The 0.5 package refuses ciphertext from the pre-v2 format instead of
+ * returning garbage, and that throw used to escape the Durable Object: the
+ * status route answered 1101 and a credential read silently returned nothing.
+ * Name the reason so the operator can replace the record.
+ */
+export function vaultUnreadableResponse(error: unknown): Response {
+  const message = error instanceof Error ? error.message : "vault unavailable"
+  return Response.json({ error: message, code: "VAULT_UNREADABLE" }, { status: 500 })
+}
+
+/** A workspace's credential names, or why the records cannot be read. */
+export async function vaultKeysResponse(vault: Vault, workspace: string): Promise<Response> {
+  try {
+    return Response.json({ keys: await vault.listSecrets(workspace) })
+  } catch (error) {
+    return vaultUnreadableResponse(error)
+  }
+}
+
+/** One decrypted credential by name, or why it cannot be read. */
+export async function vaultSecretResponse(
+  vault: Vault,
+  workspace: string,
+  key: string,
+): Promise<Response> {
+  try {
+    return Response.json({ value: await vault.getSecret(workspace, key) })
+  } catch (error) {
+    return vaultUnreadableResponse(error)
+  }
+}

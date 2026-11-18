@@ -274,6 +274,26 @@ Provider credentials and the GitHub token are stored in the Settings Durable Obj
 `@chester-hill-solutions/vault`, encrypted with `VAULT_MASTER_KEY`. They never appear in
 `GET /api/settings`.
 
+### Workspace default and GitHub access
+
+A new conversation clones the configured workspace repository before OpenCode starts.
+`WORKSPACE_REPO` and `WORKSPACE_BRANCH` are the deployment defaults; the Settings
+Durable Object stores the live pair and overrides them:
+
+```sh
+curl -X PUT https://<worker>/api/settings -H "authorization: Bearer $API_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"workspaceRepo":"https://github.com/OWNER/REPO","workspaceBranch":"main"}'
+```
+
+The default clone uses the GitHub token stored at onboarding for any `github.com`
+repository, so a **private** repository works here. The token is passed to that clone
+as an HTTP header; it is not written into the checkout or `.git/config`,
+and repository code therefore never holds it. Two limits are deliberate: `!repo`
+bindings remain public-repository-only (scoped private authorization is separate
+work), and there is no push path — the agent can clone and work, but publishing a
+branch is not implemented.
+
 ## Usage and budget
 
 `GET /api/usage` returns measured actual spend (`costUSD`), active reservations
@@ -613,6 +633,7 @@ cannot be exported over OTLP.
 | SSE `error` with `Insufficient account funds` (402) | Provider account out of credit | Top up the provider account; turns keep failing until then |
 | A turn ends with no reply and no error | Should not happen: failed steps now carry their error | Check `lastTurnError` and `GET /api/conversations/:key/debug/messages` |
 | `VAULT_MASTER_KEY is not configured` | Missing secret | `wrangler secret put VAULT_MASTER_KEY` (64 hex chars) |
+| `Stored secret uses the pre-v2 ciphertext format` | The record predates the current vault format | Reconnect the account in `/onboarding/`; the old record cannot be decrypted and the clone runs unauthenticated until it is replaced |
 | `GitHub OAuth is not configured` | OAuth App secrets missing | Set `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` |
 | `workspace clone failed … Could not resolve host` | Container egress disabled | Ensure `container.start({ enableInternet: true })` |
 | Slack replies duplicated | At-least-once delivery after a failed post | Expected on failure; check for 429s |
@@ -625,6 +646,7 @@ cannot be exported over OTLP.
 |---|---|
 | `turn.settled` | `durationMs`, `queued` |
 | `turn.failed` / `turn.timedout` | `durationMs`, `error` |
+| `credential.read.failed` | `key`, `status`, `reason` — a stored credential could not be decrypted |
 | `container.ready` | `durationMs` |
 | `queue.enqueued` / `queue.drained` / `queue.failed` | `transport`, `attempts` |
 | `checkpoint.saved` / `checkpoint.skipped` / `checkpoint.failed` | `bytes` |

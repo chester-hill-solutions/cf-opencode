@@ -7,7 +7,8 @@
   "compatibility_date": "2026-08-22",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
-    "WORKSPACE_REPO": "https://github.com/chester-hill-solutions/opencode-slack",
+    "WORKSPACE_REPO": "https://github.com/chester-hill-solutions/callcaster",
+    "WORKSPACE_BRANCH": "master",
     "OPENCODE_MODEL": "opencode/deepseek-v4.1-flash",
     "POLL_SECONDS": "2",
     "DECISION_URL": "https://decision.test/v1/systemone",
