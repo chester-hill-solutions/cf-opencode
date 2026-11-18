@@ -4,6 +4,7 @@ import type { ConversationState } from "../src/state"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
 import { driveConversationJobs, makeConversationJobsDue } from "./helpers/conversation-jobs"
 import { usageLogResponse } from "./helpers/usage-log"
+import { TURN_TIMEOUT_MS } from "../src/lifecycle"
 
 const stateRequest = () => new Request("https://conversation/state")
 
@@ -45,7 +46,7 @@ describe("Conversation Lifecycle job cutover", () => {
         const prompts = { count: 0 }
         instance.transport = observationTransport(prompts)
         await runtime.storage.put("state", {
-          phase: "running", runStartedAt: Date.now() - 16 * 60_000,
+          phase: "running", runStartedAt: Date.now() - TURN_TIMEOUT_MS - 60_000,
           sessionID: "ses_existing", seen: [], pending: {},
           ...(reserved ? { budgetReservation: { reservationID: "timeout-hold", date: "2026-11-14", dispatched: true } } : {}),
         } satisfies ConversationState)
@@ -406,7 +407,7 @@ describe("Conversation Lifecycle job cutover", () => {
       instance.transport = observationTransport({ count: 0 })
       await runtime.storage.put("state", {
         phase: "running",
-        runStartedAt: Date.now() - 26 * 60_000,
+        runStartedAt: Date.now() - TURN_TIMEOUT_MS - 60_000,
         sessionID: "ses_existing",
         budgetReservation: { reservationID: "backoff-hold", date: "2026-11-14", dispatched: true },
         seen: [],

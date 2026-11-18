@@ -5,8 +5,17 @@
 
 import type { ConversationState } from "./state"
 
-/** A turn that produced no terminal message and no error is abandoned. */
-export const TURN_TIMEOUT_MS = 15 * 60_000
+/**
+ * A turn that produced no terminal message and no error is abandoned.
+ *
+ * Thirty minutes, not fifteen. Hitting this limit does not fail a turn: with a
+ * dispatched reservation it pauses settlement and leaves the conversation stuck
+ * until an operator calls recovery, so the cost of arriving too early is real.
+ * A research run reached it twice in one afternoon while doing genuine work —
+ * 26 steps of 1–5s of model time behind tool calls that each waited for a
+ * two-minute approval cron.
+ */
+export const TURN_TIMEOUT_MS = 30 * 60_000
 /** A settle left behind by a crash or deploy is reset rather than stranding the DO. */
 export const STALE_SETTLE_MS = 10 * 60_000
 

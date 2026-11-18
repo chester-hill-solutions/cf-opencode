@@ -3,6 +3,7 @@ import { env, runInDurableObject } from "cloudflare:test"
 import { usageLogResponse } from "./helpers/usage-log"
 import { accountingPolicyConfig, accountingPolicyStart } from "./helpers/accounting-policy"
 import { driveConversationJobs } from "./helpers/conversation-jobs"
+import { TURN_TIMEOUT_MS } from "../src/lifecycle"
 
 function fakeContainer(promptFailure = false, contextMessages: unknown[] = []) {
   const counters = { prompts: 0 }
@@ -342,7 +343,7 @@ describe("HTTP budget admission", () => {
       await state.storage.setAlarm(Date.now() + 60_000)
       await state.storage.put("state", {
         phase: "running",
-        runStartedAt: Date.now() - 16 * 60_000,
+        runStartedAt: Date.now() - TURN_TIMEOUT_MS - 60_000,
         turnBaseline: "old-assistant",
         sessionID: "ses_1",
         seen: [],

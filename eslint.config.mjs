@@ -5,7 +5,6 @@ import globals from 'globals';
 import react from 'eslint-plugin-react';
 import hooks from 'eslint-plugin-react-hooks';
 import a11y from 'eslint-plugin-jsx-a11y';
-import { eslintQualityRulesV1 } from '@chester-hill-solutions/ratchet-strap';
 import { goldPlugin } from './scripts/lib/gold-rules.mjs';
 
 const warnings = (rules) => Object.fromEntries(Object.entries(rules).map(([id, value]) => {
@@ -13,8 +12,15 @@ const warnings = (rules) => Object.fromEntries(Object.entries(rules).map(([id, v
   return [id, level === 0 || level === 'off' ? 'off' : ['warn', ...options]];
 }));
 
+// House rules: RatchetStrap 0.7 ships no thresholds.
+const baseQualityRules = {
+  'no-console': 'warn',
+  'no-return-await': 'warn',
+  '@typescript-eslint/no-non-null-assertion': 'warn',
+};
+
 export const RATCHET_RULES = {
-  ...eslintQualityRulesV1,
+  ...baseQualityRules,
   complexity: ['warn', { max: 10 }],
   'max-depth': ['warn', { max: 3 }],
   'max-params': ['warn', { max: 4 }],
