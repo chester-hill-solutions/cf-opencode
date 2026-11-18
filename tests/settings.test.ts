@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { defaultSettings, normalizeSettings, validateSettings } from "../src/settings"
+import { DEFAULT_ALLOW, defaultSettings, normalizeSettings, validateSettings } from "../src/settings"
 
 const base = defaultSettings({
   WORKSPACE_REPO: "https://github.com/chester-hill-solutions/cf-opencode",
@@ -172,5 +172,17 @@ describe("validateSettings", () => {
     for (const value of [0, 11, 2.5, "2"]) {
       expect(validateSettings({ maxContainers: value }, base).ok).toBe(false)
     }
+  })
+})
+
+describe("default shell approvals", () => {
+  test("pre-approves read-only git inspection but never a compound command", () => {
+    for (const rule of ["git fetch *", "git rev-list *", "git rev-parse *", "git remote -v *", "git stash list *", "which *", "stat *"]) {
+      expect(DEFAULT_ALLOW).toContain(rule)
+    }
+    // A compound command must not match an allow entry: a trailing wildcard
+    // would let anything after `;` ride along with an approved read.
+    expect(DEFAULT_ALLOW.some((rule) => rule.startsWith("cd"))).toBe(false)
+    expect(DEFAULT_ALLOW.some((rule) => rule.includes("&&") || rule.includes(";"))).toBe(false)
   })
 })
