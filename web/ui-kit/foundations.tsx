@@ -10,35 +10,43 @@ const colourRoles: Record<keyof typeof brandColors, { role: string; usage: strin
   pink: { role: "Expressive accent", usage: "Overprint, section coding and chart series." },
 }
 
+function IdentitySection() {
+  return (
+    <GallerySection
+      id="identity"
+      number="01"
+      accent="ultramarine"
+      title="Identity"
+      description="One mark, printed in B3 squeegee colour. Keep the open diagonal cut clear at every size, and switch to one ink when the surface is already coloured or the mark is very small. Colour is a system, not a finish: each accent below has a job and travels with the component that uses it."
+    >
+      <Demo name="Brand lockup" wide surface={false}>
+        <div className="specimen-grid">
+          <div className="logo-specimen">
+            <BrandLockup />
+          </div>
+          <div className="logo-specimen reversed">
+            <BrandLockup variant="mono" />
+          </div>
+        </div>
+      </Demo>
+      <Demo name="Logo" wide>
+        <Logo style={{ width: "4.5rem", height: "4rem" }} />
+        <Logo style={{ width: "2rem", height: "1.75rem" }} />
+        <Logo style={{ width: "1.5rem", height: "1.3125rem" }} />
+        <Logo variant="mono" style={{ width: "2rem", height: "1.75rem" }} />
+        <span className="catalog-note" style={{ margin: 0 }}>
+          Colour by default; <code>variant=&quot;mono&quot;</code> keeps{" "}
+          <code>currentColor</code>. The same paths and fields generate the favicon.
+        </span>
+      </Demo>
+    </GallerySection>
+  )
+}
+
 export function Foundations() {
   return (
     <>
-      <GallerySection
-        id="identity"
-        number="01"
-        accent="ultramarine"
-        title="Identity"
-        description="One mark, one ink. Keep the open diagonal cut clear at every size. Colour is a system, not a finish: each accent below has a job and travels with the component that uses it."
-      >
-        <Demo name="Brand lockup" wide surface={false}>
-          <div className="specimen-grid">
-            <div className="logo-specimen">
-              <BrandLockup />
-            </div>
-            <div className="logo-specimen reversed">
-              <BrandLockup />
-            </div>
-          </div>
-        </Demo>
-        <Demo name="Logo" wide>
-          <Logo style={{ width: "4.5rem", height: "4rem" }} />
-          <Logo style={{ width: "2rem", height: "1.75rem" }} />
-          <Logo style={{ width: "1.5rem", height: "1.3125rem" }} />
-          <span className="catalog-note" style={{ margin: 0 }}>
-            Uses <code>currentColor</code>; the same path source generates the favicon.
-          </span>
-        </Demo>
-      </GallerySection>
+      <IdentitySection />
 
       <GallerySection
         id="colour"

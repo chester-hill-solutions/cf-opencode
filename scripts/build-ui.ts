@@ -1,6 +1,6 @@
 import { copyFile, mkdir, readdir, rm } from "node:fs/promises"
 import { resolve } from "node:path"
-import { logoPaths, logoViewBox } from "../packages/ui/src/brand"
+import { logoSvgMarkup } from "../packages/ui/src/brand"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { MarketingPage } from "../web/home"
@@ -83,14 +83,7 @@ for (const file of await readdir(resolve(root, "packages/ui/assets"))) {
   if (file === "logo-approved-reference.png") continue
   await copyFile(resolve(root, "packages/ui/assets", file), resolve(output, "brand", file))
 }
-await Bun.write(
-  resolve(output, "brand/logo.svg"),
-  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="' +
-    logoViewBox +
-    '" fill="#1746D1"><title>Aboiteau</title>' +
-    logoPaths.map((path) => '<path d="' + path + '"/>').join("") +
-    "</svg>\n"
-)
+await Bun.write(resolve(output, "brand/logo.svg"), logoSvgMarkup())
 console.log(
   "Built Aboiteau marketing, workspace, settings, onboarding, UI kit and brand assets in public/."
 )
