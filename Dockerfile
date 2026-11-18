@@ -68,13 +68,9 @@ RUN cd /app/runtime/opencode \
     && find . -type d \( -name '*-musl' -o -name '*-musl-*' \) -prune -exec rm -rf {} + \
     && rm -rf /root/.bun/install/cache /root/.bun/install/global
 COPY runtime/opencode/server.ts runtime/opencode/options.ts ./runtime/opencode/
-COPY src/permissions.ts ./src/permissions.ts
-COPY src/control-auth.ts ./src/control-auth.ts
-COPY src/workspace-preflight.ts ./src/workspace-preflight.ts
-COPY src/workspace-repository.ts ./src/workspace-repository.ts
-COPY src/workspace-check-snapshot.ts ./src/workspace-check-snapshot.ts
-COPY src/tar.ts ./src/tar.ts
-COPY src/accounting-policy.ts ./src/accounting-policy.ts
+# The whole tree: the control server's imports are transitive, and a fixed file
+# list ships an image that cannot resolve a newly imported module.
+COPY src ./src
 COPY stow-workspace.ts ./stow-workspace.ts
 COPY control-lifecycle.ts ./control-lifecycle.ts
 RUN chmod +x entrypoint.sh
