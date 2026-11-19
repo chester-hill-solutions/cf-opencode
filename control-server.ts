@@ -472,6 +472,17 @@ export function buildStowEnv(source: Record<string, string | undefined>): Record
   return env
 }
 
+/** The last few lines the native server printed, bounded and single-line. */
+function boundedStowDetail(text: string): string {
+  return text.trim().split("\n").slice(-3).join(" | ").slice(-600)
+}
+
+/** The readiness failure with the native server's own reason appended. */
+function withStowDetail(error: unknown, detail: string): Error {
+  const message = error instanceof Error ? error.message : "native workspace failed"
+  return new Error(detail ? `${message}: ${detail}` : message)
+}
+
 function waitForWorkspaceReadiness(
   processHandle: ReturnType<typeof spawn>,
   identity: WorkspaceIdentity,
@@ -538,17 +549,20 @@ async function ensureStow(): Promise<void> {
     cwd: WORKSPACE,
     env: buildStowEnv(process.env),
     stdout: "ignore",
-    stderr: "ignore",
+    // Its own words are the only way to know why it refused a workspace.
+    stderr: "pipe",
   })
+  const stowErrors = new Response(stow.stderr as ReadableStream).text().catch(() => "")
   try {
     stowReadiness = await waitForWorkspaceReadiness(stow, identity)
     if (!nativeWorkspaceAvailable()) throw new Error("native workspace server exited after readiness")
   } catch (error) {
+    const detail = boundedStowDetail(await stowErrors)
     await stopChild(stow, "native workspace")
     stow = undefined
     stowReadiness = undefined
     rmSync(STOW_READY, { force: true })
-    throw error
+    throw withStowDetail(error, detail)
   }
 }
 
