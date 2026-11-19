@@ -25,6 +25,7 @@ import { ConversationRecoveryActions } from "./conversation/recovery-actions"
 import { ConversationControlPlane, type PermissionRequest, type SlackFormRequest } from "./conversation/control-plane"
 import { ConversationImages } from "./conversation/images"
 import { ConversationLease } from "./conversation/lease"
+import { renewConversationLease } from "./conversation/lease-renewal"
 import { ConversationBudgetReservations, type BudgetReservationResult } from "./conversation/budget-reservations"
 import { ConversationTurnExecution } from "./conversation/turn-execution"
 import { ConversationReadiness } from "./conversation/readiness"
@@ -1339,16 +1340,13 @@ export class Conversation extends DurableObject<Env> {
     return undefined
   }
 
-  private async processLeaseRenew(payload: ConversationJobPayload): Promise<undefined> {
-    const record = await this.leases.status()
-    if (!record) {
-      if (payload.reason === "adopt-running-lease" && this.nativeLeaseEnabled() && this.ctx.container?.running) {
-        await this.leases.ensureHeld()
-      }
-      return undefined
-    }
-    await (this.ctx.container?.running === false ? this.leases.releaseUnused() : this.leases.maintain())
-    return undefined
+  private processLeaseRenew(payload: ConversationJobPayload): Promise<undefined> {
+    return renewConversationLease({
+      status: () => this.leases.status(), ensureHeld: () => this.leases.ensureHeld(),
+      releaseUnused: () => this.leases.releaseUnused(), maintain: () => this.leases.maintain(),
+      nativeEnabled: () => this.nativeLeaseEnabled(), containerRunning: this.ctx.container?.running,
+      beforeRenew: () => this.idleClose.ensureScheduled().then(() => undefined).catch(() => undefined),
+    }, payload.reason)
   }
 
   // ---------------------------------------------------------------- container

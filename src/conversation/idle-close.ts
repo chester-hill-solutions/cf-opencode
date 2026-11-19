@@ -76,10 +76,25 @@ export interface ConversationIdleCloseOptions {
 export class ConversationIdleClose {
   constructor(private readonly options: ConversationIdleCloseOptions) {}
 
+  /**
+   * Give a lease holder this instance is not using a close intent, once. The
+   * lease renewer calls this so an adopted or restarted conversation cannot
+   * renew against the cap forever without ever becoming idle-closable. A close
+   * that finds the conversation busy defers itself, so no busy check is needed
+   * here.
+   */
+  async ensureScheduled(): Promise<boolean> {
+    if (await this.readIntent() !== undefined) return false
+    return this.touch()
+  }
+
   /** Called after a completed runtime use; never replaces an in-progress close. */
   async touch(): Promise<boolean> {
     if (!this.options.eligibleNative() || !this.options.runtime.nativeRunning()) return false
-    const generation = this.options.runtime.generation
+    // A restart keeps the container but loses the in-memory generation. Without
+    // one no close intent is ever recorded, so recover it from the native proof
+    // rather than leaving the write unreachable.
+    const generation = this.options.runtime.generation ?? await this.recoverGeneration()
     if (!generation) return false
     const now = Date.now()
     const record: ContainerIdleRecord = {
@@ -284,6 +299,13 @@ export class ConversationIdleClose {
     const cached = this.options.runtime.generation
     if (cached) return cached === record.generation ? cached : undefined
     if (!closing || !this.options.runtime.nativeRunning()) return undefined
+    const recovered = await this.recoverGeneration()
+    return recovered === record.generation ? recovered : undefined
+  }
+
+  /** The native server's own generation, asked directly when the cache is gone. */
+  private async recoverGeneration(): Promise<string | undefined> {
+    if (!this.options.runtime.nativeRunning()) return undefined
     const control = await this.options.runtime.port(CONTROL_PORT)
     const response = await control.fetch("http://container/start", {
       method: "POST",
@@ -293,8 +315,9 @@ export class ConversationIdleClose {
     const proof: unknown = await response.json()
     if (!proof || typeof proof !== "object" || Array.isArray(proof)) return undefined
     const value = proof as Record<string, unknown>
-    return value.ok === true && typeof value.opencodeGeneration === "string" &&
-      value.opencodeGeneration === record.generation ? value.opencodeGeneration : undefined
+    return value.ok === true && typeof value.opencodeGeneration === "string"
+      ? value.opencodeGeneration
+      : undefined
   }
 
   private async readIntent(): Promise<ContainerIdleRecord | undefined> {
