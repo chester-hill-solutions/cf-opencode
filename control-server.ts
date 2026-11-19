@@ -424,6 +424,11 @@ async function prepareWorkspaceIdentity(): Promise<WorkspaceIdentity> {
     working_directory: ".",
     registry_dir: STOW_REGISTRY,
     bucket: STOW_BUCKET,
+    // Stow records these at prepare and refuses to widen them on resume, so a
+    // fresh workspace must be created with room for a repository checkout.
+    // Its defaults (64 MiB / 10k objects) are smaller than a normal clone.
+    max_bytes: stowLimit("STOW_MAX_BYTES", 1 << 30),
+    max_objects: stowLimit("STOW_MAX_OBJECTS", 200_000),
     inputs: [{ source: inputDir, destination: "." }],
   }
   writeFileSync(manifestPath, JSON.stringify(manifest), { mode: 0o600, flag: "wx" })
@@ -470,6 +475,12 @@ export function buildStowEnv(source: Record<string, string | undefined>): Record
   if (source.LANG) env.LANG = source.LANG
   if (source.TERM) env.TERM = source.TERM
   return env
+}
+
+/** A positive integer from the environment, or the default. */
+function stowLimit(name: string, fallback: number): number {
+  const value = Number(process.env[name])
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback
 }
 
 /** The last few lines the native server printed, bounded and single-line. */

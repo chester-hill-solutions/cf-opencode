@@ -77,10 +77,14 @@ RUN chmod +x entrypoint.sh
 
 # State paths are fixed here and exported by entrypoint.sh. They are deliberately
 # not under /workspace, so a repo checkout cannot overwrite harness config.
+# Stow's own defaults (64 MiB / 10k objects) are smaller than a normal
+# repository checkout, so the served-workspace accounting limits are raised.
 ENV ABOITEAU_STATE_DIR=/var/lib/aboiteau/state \
     ABOITEAU_RUN_DIR=/var/lib/aboiteau/run \
     AGENT_UID=1001 \
-    AGENT_GID=1001
+    AGENT_GID=1001 \
+    STOW_MAX_BYTES=1073741824 \
+    STOW_MAX_OBJECTS=200000
 
 RUN mkdir -p /workspace "${ABOITEAU_STATE_DIR}" "${ABOITEAU_RUN_DIR}" \
     && chown -R agent:agent /workspace \
