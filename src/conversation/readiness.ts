@@ -254,8 +254,8 @@ export class ConversationReadiness {
         signal: AbortSignal.timeout(10_000),
       })
       if (!configured.ok) {
+        if (repository) throw await repositoryConflictFrom(configured)
         await configured.body?.cancel().catch(() => {})
-        if (repository) throw repositoryConflict()
         throw new Error("container configuration was refused")
       }
     }
