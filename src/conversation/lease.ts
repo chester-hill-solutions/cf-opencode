@@ -1,4 +1,5 @@
 import { traceId } from "../telemetry"
+import { logEvent } from "../log"
 import { emitConversationTelemetry, type ConversationTelemetryEventName, type ConversationTelemetryResult } from "./telemetry"
 import { isConversationLeaseRecord, type ConversationLeaseRecord } from "./lease-state"
 export type { ConversationLeaseRecord } from "./lease-state"
@@ -74,6 +75,7 @@ export class ConversationLease {
       const current = await this.status()
       if (current?.desired === "held" && current.status === "acknowledged" &&
         current.acknowledgedUntil !== undefined && current.acknowledgedUntil > Date.now()) return
+      await this.acquireTrace("ensureHeld")
       await this.acquire()
     })
   }
@@ -91,6 +93,7 @@ export class ConversationLease {
         await this.releasePending(record)
         return
       }
+      await this.acquireTrace("renew")
       await this.acquire()
     })
   }
@@ -144,7 +147,10 @@ export class ConversationLease {
         }
         return
       }
-      if (record.desired === "held") await this.acquire()
+      if (record.desired === "held") {
+        await this.acquireTrace("maintain")
+        await this.acquire()
+      }
     })
   }
 
@@ -184,14 +190,36 @@ export class ConversationLease {
       this.emitTelemetry("lease.failed", "failed", "authority_unavailable")
       throw new Error("container lease authority unavailable")
     }
-    await this.persistIntent({
-      version: 1,
-      desired: "held",
-      status: "acknowledged",
-      requestStartedAt,
-      acknowledgedUntil: requestStartedAt + LEASE_TTL_MS,
-    }, "lease-renew", requestStartedAt + LEASE_RENEW_MS)
+    try {
+      await this.persistIntent({
+        version: 1,
+        desired: "held",
+        status: "acknowledged",
+        requestStartedAt,
+        acknowledgedUntil: requestStartedAt + LEASE_TTL_MS,
+      }, "lease-renew", requestStartedAt + LEASE_RENEW_MS)
+    } catch (error) {
+      // A refused acknowledgement write leaves the record pending, so every
+      // holder re-acquires instead of renewing quietly.
+      logEvent("lease.persist.failed", {
+        conversationID: this.options.identity.id,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      throw error
+    }
     this.emitTelemetry("lease.renewed", "renewed", "acquire_or_refresh")
+  }
+
+  /** The record a caller sees, for the acquire trace. */
+  private async acquireTrace(source: string): Promise<void> {
+    const record = await this.status().catch(() => undefined)
+    logEvent("lease.acquire.requested", {
+      conversationID: this.options.identity.id,
+      source,
+      status: record?.status ?? null,
+      desired: record?.desired ?? null,
+      acknowledgedMsLeft: record?.acknowledgedUntil === undefined ? null : record.acknowledgedUntil - Date.now(),
+    })
   }
 
   private async releasePending(record: ConversationLeaseRecord): Promise<boolean> {
