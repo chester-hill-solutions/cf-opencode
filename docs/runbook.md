@@ -495,6 +495,34 @@ and releases no hold itself. Poll inspection afterward: fresh provider evidence,
 acknowledged usage and execution completion are still required by normal settlement.
 A queued follow-up can advance only after the held turn safely settles.
 
+### When `retry` cannot help: the recovery ladder
+
+A wedged runtime refuses the later rungs too, one at a time. Work down the ladder
+and stop at the first action the inspection offers; each rung releases one lock:
+
+| # | Action | Use when | What it does | What it costs |
+|---|---|---|---|---|
+| 1 | `retry` | dispatched, runtime healthy | re-schedules settlement | nothing |
+| 2 | `cancel_before_dispatch` | never dispatched | retires the proposal and its hold | nothing |
+| 3 | `force_stop` | dispatched and *past its deadline* | destroys the container, releases the lease | the slot only |
+| 4 | `abandon` | still wedged after 3, or `kind: orphaned` | 3, plus retires the reservation, fails the turn, clears its prompts, returns to idle | that turn; reservations are released, not asserted as measured |
+| 5 | `DELETE /api/conversations/<key>` | idle after 4 | drops state and archives | the conversation |
+
+`force_stop` and `abandon` are offered only for a dispatched turn past
+`TURN_TIMEOUT_MS` (30 min), so a healthy turn never shows them.
+
+If `DELETE` reports `usage replay failed: Session not found`, that is cleanup
+confirming there is nothing to replay; it now proceeds and records
+`usage.replay.missing_session`. If it reports `conversation has unresolved work`,
+inspect again: a leftover permission prompt whose turn is gone classifies as
+`orphaned` and `abandon` clears it.
+
+2026-11-19 reference: two conversations sat dispatched for 406 minutes. `retry`
+re-failed, `cancel` returned "interrupt outcome is unknown", reconciliation could
+not prove quiescence, and `delete` refused. Reaching `delivered` needed rungs 3, 4
+and 5 plus a fix at each step — which is the tell that these guards assume a
+runtime that can always answer.
+
 Changed snapshots or unavailable actions return `409`; inspect again instead of
 reusing stale evidence. Malformed/unsupported action bodies return `400`. There is
 no force flag, arbitrary hold-ID selector or amount override. Live admission or
