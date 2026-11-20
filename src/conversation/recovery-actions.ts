@@ -30,6 +30,8 @@ export interface RecoveryActionsOptions {
   conversationID: string
   withAdmissionLock<T>(task: () => Promise<T>): Promise<T>
   live(): { admitting: boolean; pumping: boolean; activeJobs: number }
+  /** Destroy the container and release its lease; used only by force_stop. */
+  forceStop(): Promise<{ stopped: boolean; released: boolean }>
   jobs: RecoveryJobsPort
 }
 
@@ -138,11 +140,13 @@ export class ConversationRecoveryActions {
     }
   }
 
-  async act(action: "retry" | "cancel_before_dispatch", expectedSnapshotID: string): Promise<Response> {
+  async act(action: "retry" | "cancel_before_dispatch" | "force_stop", expectedSnapshotID: string): Promise<Response> {
     const startedAt = Date.now()
     this.emitActionTelemetry("recovery.started", action, "started")
     try {
-      const response = await this.options.withAdmissionLock(() => this.actOwned(action, expectedSnapshotID))
+      const response = await this.options.withAdmissionLock(() => action === "force_stop"
+        ? this.forceStopOwned(expectedSnapshotID)
+        : this.actOwned(action, expectedSnapshotID))
       const durationMs = Date.now() - startedAt
       if (response.status === 409) {
         this.emitActionTelemetry("recovery.blocked", action, "blocked", durationMs)
@@ -163,9 +167,31 @@ export class ConversationRecoveryActions {
     }
   }
 
+  /** Stop a wedged runtime and release its lease; accounting is left untouched. */
+  private async forceStopOwned(expectedSnapshotID: string): Promise<Response> {
+    const live = this.options.live()
+    if (live.pumping || this.recoveryAction) {
+      return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
+    }
+    const status = await this.status()
+    if (status.snapshotID !== expectedSnapshotID || !Array.isArray(status.actions) || !status.actions.includes("force_stop")) {
+      return Response.json({ error: "recovery snapshot changed", recovery: status }, { status: 409 })
+    }
+    this.recoveryAction = true
+    try {
+      const stopped = await this.options.forceStop()
+      if (!stopped.stopped || !stopped.released) {
+        return Response.json({ error: "container stop or lease release was not confirmed", retryable: true }, { status: 503 })
+      }
+      return Response.json({ ok: true, stopped: true, released: true }, { status: 200 })
+    } finally {
+      this.recoveryAction = false
+    }
+  }
+
   private emitActionTelemetry(
     event: "recovery.started" | "recovery.scheduled" | "recovery.settled" | "recovery.blocked",
-    action: "retry" | "cancel_before_dispatch",
+    action: "retry" | "cancel_before_dispatch" | "force_stop",
     result: "started" | "scheduled" | "succeeded" | "failed" | "blocked",
     durationMs?: number,
   ): void {

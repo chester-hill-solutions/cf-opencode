@@ -311,4 +311,31 @@ describe("Conversation recovery fault regressions", () => {
     expect(result.ledger.holds).toEqual([])
     expect(result.ledger.retirement).toMatchObject({ reason: "released", released: true, reservationID: "reservation-released-retirement" })
   })
+
+  it("offers force_stop for a wedged dispatched turn and refuses when the stop is unconfirmed", async () => {
+    const conversation = stub("recovery-force-stop")
+    const outcome = await runInDurableObject(conversation, async (instance, runtime) => {
+      const id = (instance as unknown as { ctx: { id: { toString(): string } } }).ctx.id.toString()
+      const { date } = await reserve(id, "force-stop-reservation")
+      await runtime.storage.put("state", {
+        sessionID: "ses_wedged",
+        phase: "running",
+        runStartedAt: Date.now() - 60 * 60_000,
+        settlementError: "turn exceeded its time limit; dispatched reservation retained while context is checked",
+        budgetReservation: { reservationID: "force-stop-reservation", date, dispatched: true },
+        seen: [],
+        pending: {},
+      } satisfies ConversationState)
+      // A container that cannot be destroyed must not be reported as stopped.
+      Object.defineProperty((instance as unknown as { ctx: object }).ctx, "container", {
+        configurable: true,
+        value: { running: true, async destroy() { throw new Error("destroy refused") }, async setInactivityTimeout() {} },
+      })
+      const inspect = await (await recovery(instance)).json() as { snapshotID: string; actions: string[] }
+      const response = await recovery(instance, "force_stop", inspect.snapshotID)
+      return { actions: inspect.actions, status: response.status }
+    })
+    expect(outcome.actions).toContain("force_stop")
+    expect(outcome.status).toBe(503)
+  })
 })
