@@ -68,4 +68,30 @@ describe("evaluateAlerts", () => {
     ])
     expect(evaluateAlerts({ ...base, metrics, marks: metrics })).toEqual([])
   })
+
+  test("routes human-needed signals to the escalation channel only", () => {
+    const alerts = evaluateAlerts({
+      ...base,
+      metrics: {
+        "turn.timedout": 1,
+        "settlement.paused": 1,
+        "checkpoint.failed": 1,
+        "capacity.rejected": 1,
+        "turn.failed": 1,
+      },
+    })
+    const byName = Object.fromEntries(alerts.map((alert) => [alert.name, alert.severity]))
+    expect(byName).toEqual({
+      "turn.timedout": "escalation",
+      "settlement.paused": "escalation",
+      "checkpoint.failed": "escalation",
+      "capacity.rejected": "notice",
+      "turn.failed": "notice",
+    })
+  })
+
+  test("treats budget pressure as an escalation", () => {
+    const alerts = evaluateAlerts({ ...base, spendUSD: 9, budgetUSD: 10 })
+    expect(alerts.find((alert) => alert.name === "budget")?.severity).toBe("escalation")
+  })
 })

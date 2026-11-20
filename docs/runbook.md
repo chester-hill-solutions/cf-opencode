@@ -615,6 +615,16 @@ curl -X POST -H "authorization: Bearer $TOKEN" https://<worker>/api/alerts/check
 When `SLACK_BOT_TOKEN` and `ALERT_CHANNEL` are set, new alerts are also posted
 to Slack. Without them they are stored only.
 
+Routing is by severity, not by convenience. Alerts that need a person —
+timed-out turns, paused settlements, failed checkpoints, failed snapshots,
+undelivered questions, budget pressure — go to `ESCALATION_CHANNEL` and nowhere
+else, with a `:rotating_light:` prefix. Routine notices (capacity rejections,
+failed turns) stay on `ALERT_CHANNEL` with `:warning:`. If `ESCALATION_CHANNEL`
+is unset, escalations fall back to `ALERT_CHANNEL` rather than being dropped: a
+human-needed signal must never route to nowhere. Keep the escalation channel one
+that is actually watched; the 2026-11-19 incident alerted for six hours in a
+busy channel before anyone acted.
+
 ## Conversations
 
 Durable Objects cannot be listed, so the Worker records every key it touches in

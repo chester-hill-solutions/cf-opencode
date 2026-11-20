@@ -16,24 +16,29 @@ export interface Alert {
   name: string
   message: string
   value: number
+  /**
+   * Human-needed signals go to the escalation channel only; everything else is
+   * a notice for the routine channel.
+   */
+  severity: "escalation" | "notice"
 }
 
-const COUNTERS: Array<[string, string]> = [
-  ["capacity.rejected", "Container capacity rejections"],
-  ["turn.failed", "Failed turns"],
-  ["turn.timedout", "Timed-out turns"],
-  ["settlement.paused", "Paused settlements (inspect conversation settlementError; holds remain reserved)"],
-  ["slack.form.failed", "Failed Slack question deliveries (check bot scopes and channel access)"],
-  ["checkpoint.failed", "Failed checkpoints"],
-  ["snapshot.failed", "Failed snapshots"],
+const COUNTERS: Array<[string, string, Alert["severity"]]> = [
+  ["capacity.rejected", "Container capacity rejections", "notice"],
+  ["turn.failed", "Failed turns", "notice"],
+  ["turn.timedout", "Timed-out turns", "escalation"],
+  ["settlement.paused", "Paused settlements (inspect conversation settlementError; holds remain reserved)", "escalation"],
+  ["slack.form.failed", "Failed Slack question deliveries (check bot scopes and channel access)", "escalation"],
+  ["checkpoint.failed", "Failed checkpoints", "escalation"],
+  ["snapshot.failed", "Failed snapshots", "escalation"],
 ]
 
 export function evaluateAlerts(input: AlertInput): Alert[] {
   const alerts: Alert[] = []
-  for (const [name, label] of COUNTERS) {
+  for (const [name, label, severity] of COUNTERS) {
     const value = input.metrics[name] ?? 0
     if (value > (input.marks[name] ?? 0)) {
-      alerts.push({ name, message: `${label}: ${value} today`, value })
+      alerts.push({ name, message: `${label}: ${value} today`, value, severity })
     }
   }
 
@@ -45,6 +50,7 @@ export function evaluateAlerts(input: AlertInput): Alert[] {
         name: "budget",
         message: `Daily spend $${input.spendUSD.toFixed(4)} of $${input.budgetUSD}`,
         value: input.spendUSD,
+        severity: "escalation",
       })
     }
   }
