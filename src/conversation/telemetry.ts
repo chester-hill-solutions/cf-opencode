@@ -36,6 +36,9 @@ export type ConversationTelemetryEventName =
   | "container.start.failed"
   | "container.stopped"
   | "container.stop.failed"
+  | "idle.scheduled"
+  | "idle.deferred"
+  | "idle.skipped"
 
 export type ConversationTelemetryResult =
   | "started"
@@ -125,6 +128,9 @@ const COMPONENT_BY_EVENT: Record<ConversationTelemetryEventName, ConversationTel
   "container.start.failed": "runtime",
   "container.stopped": "runtime",
   "container.stop.failed": "runtime",
+  "idle.scheduled": "runtime",
+  "idle.deferred": "runtime",
+  "idle.skipped": "runtime",
 }
 
 const RESULTS = new Set<ConversationTelemetryResult>([

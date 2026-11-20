@@ -1,4 +1,4 @@
-import { traceId } from "../telemetry"
+import { traceId, withSpan } from "../telemetry"
 import { emitConversationTelemetry, type ConversationTelemetryEventName, type ConversationTelemetryResult } from "./telemetry"
 import { isConversationLeaseRecord, type ConversationLeaseRecord } from "./lease-state"
 export type { ConversationLeaseRecord } from "./lease-state"
@@ -74,7 +74,7 @@ export class ConversationLease {
       const current = await this.status()
       if (current?.desired === "held" && current.status === "acknowledged" &&
         current.acknowledgedUntil !== undefined && current.acknowledgedUntil > Date.now()) return
-      await this.acquire()
+      await this.acquire("ensureHeld")
     })
   }
 
@@ -91,7 +91,7 @@ export class ConversationLease {
         await this.releasePending(record)
         return
       }
-      await this.acquire()
+      await this.acquire("renew")
     })
   }
 
@@ -144,11 +144,15 @@ export class ConversationLease {
         }
         return
       }
-      if (record.desired === "held") await this.acquire()
+      if (record.desired === "held") await this.acquire("maintain")
     })
   }
 
-  private async acquire(): Promise<void> {
+  private acquire(source: "ensureHeld" | "renew" | "maintain"): Promise<void> {
+    return withSpan("conversation.lease.acquire", () => this.acquireOwned(), { conversationID: this.options.identity.id, source })
+  }
+
+  private async acquireOwned(): Promise<void> {
     const requestStartedAt = Date.now()
     const pending: ConversationLeaseRecord = {
       version: 1,

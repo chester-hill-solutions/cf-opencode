@@ -1,5 +1,5 @@
 import { makeClient, portFetch } from "../opencode"
-import { logEvent } from "../log"
+import { emitConversationTelemetry } from "./telemetry"
 import type { ConversationState } from "../state"
 import { ConversationStore } from "../state"
 import type { RuntimeQuiescenceResult } from "../runtime-quiescence"
@@ -74,6 +74,16 @@ export interface ConversationIdleCloseOptions {
  * verified. The persisted closing phase fences new preparation until stop and
  * lease release are both confirmed.
  */
+/** The single state dimension a deferred close is waiting on, as an allowlisted code. */
+function ineligibleReason(state: ConversationState): string {
+  if ((state.phase ?? "idle") !== "idle") return "not_idle_phase"
+  if ((state.queue?.length ?? 0) > 0) return "queued"
+  if (state.budgetReservation) return "reserved"
+  if (state.checkpointPending) return "checkpoint_pending"
+  if (Object.keys(state.pending ?? {}).length > 0) return "pending_work"
+  return "ineligible"
+}
+
 /**
  * The next close deadline: postponed by each use, but never past the ceiling, so
  * a background job that keeps touching the runtime cannot pin the slot forever.
@@ -110,16 +120,10 @@ export class ConversationIdleClose {
       this.skip("unreadable")
       return false
     }
-    if (existing !== undefined) {
-      // An intent that is long past its deadline means its job never ran.
-      logEvent("idle.intent.pending", {
-        conversationID: this.options.id,
-        ageMs: Date.now() - existing.dueAt,
-        phase: existing.phase,
-      })
-      return false
-    }
-    return this.touch()
+    if (existing !== undefined) return false
+    const scheduled = await this.touch()
+    if (scheduled) this.emit("idle.scheduled", "scheduled")
+    return scheduled
   }
 
   /**
@@ -128,20 +132,30 @@ export class ConversationIdleClose {
    * proof; a refused or unreachable proof is the reason no intent appears.
    */
   private async closeGeneration(): Promise<string | undefined> {
-    if (!this.options.eligibleNative()) return this.skip("not-native")
-    if (!this.options.runtime.nativeRunning()) return this.skip("not-running")
+    if (!this.options.eligibleNative()) return this.skip("not_native")
+    if (!this.options.runtime.nativeRunning()) return this.skip("not_running")
     try {
       const generation = this.options.runtime.generation ?? await this.recoverGeneration()
-      return generation ?? this.skip("no-generation")
+      return generation ?? this.skip("no_generation")
     } catch {
-      return this.skip("generation-unreachable")
+      return this.skip("generation_unreachable")
     }
   }
 
-  /** Record why no close intent was written; this is the only visible signal. */
+  /** Record why no close intent was written; the reason codes are allowlisted. */
   private skip(reason: string): undefined {
-    logEvent("idle.intent.skipped", { conversationID: this.options.id, reason })
+    this.emit("idle.skipped", "skipped", reason)
     return undefined
+  }
+
+  /** Emit an allowlisted idle envelope; free-form values are never logged. */
+  private emit(event: "idle.scheduled" | "idle.deferred" | "idle.skipped", result: "scheduled" | "blocked" | "skipped", reasonCode?: string): void {
+    emitConversationTelemetry({
+      event,
+      conversationID: this.options.id,
+      result,
+      ...(reasonCode === undefined ? {} : { reasonCode }),
+    })
   }
 
   /** Called after a completed runtime use; never replaces an in-progress close. */
@@ -167,11 +181,9 @@ export class ConversationIdleClose {
         })
         return true
       })
-    } catch (error) {
-      logEvent("idle.intent.failed", {
-        conversationID: this.options.id,
-        error: error instanceof Error ? error.message : String(error),
-      })
+    } catch {
+      // The write or its schedule was refused; the job error carries the text.
+      this.emit("idle.skipped", "skipped", "schedule_refused")
       return false
     }
   }
@@ -193,12 +205,12 @@ export class ConversationIdleClose {
     if (!record || !payload.idleID || !payload.runtimeGeneration ||
       payload.idleID !== record.id || payload.runtimeGeneration !== record.generation) {
       // A mismatched wake is silent by design, which hides a stuck intent.
-      this.skipJob("stale-intent", record)
+      this.skipJob("stale_intent")
       return undefined
     }
     if (record.phase === "waiting" && Date.now() < record.dueAt) return { rescheduleAt: record.dueAt }
     if (!this.options.eligibleNative()) {
-      this.skipJob("not-native", record)
+      this.skipJob("not_native")
       return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
     }
 
@@ -217,7 +229,7 @@ export class ConversationIdleClose {
     // below proves the native execution itself has finished.
     const activityAtRequest = this.options.access.activityEpoch
     if (!(await this.options.stopStream())) {
-      this.skipJob("stream-busy", record)
+      this.skipJob("stream_busy")
       return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
     }
     const owned = await this.options.usage.serialize(async () =>
@@ -267,41 +279,21 @@ export class ConversationIdleClose {
 
   private async blockedBeforeClose(): Promise<boolean> {
     if (await this.options.locallyBusy()) {
-      this.logBlocked("busy")
+      this.emit("idle.deferred", "blocked", "busy")
       return true
     }
     const state = await this.options.store.get()
     if (await this.options.storage.get<boolean>("lifecycleJobsSealed") === true) {
-      this.logBlocked("sealed", state)
+      this.emit("idle.deferred", "blocked", "sealed")
       return true
     }
     if (this.eligibleState(state)) return false
-    this.logBlocked("ineligible", state)
+    this.emit("idle.deferred", "blocked", ineligibleReason(state))
     return true
   }
 
-  /** The state dimensions a deferred close is waiting on. */
-  private logBlocked(reason: string, state?: ConversationState): void {
-    logEvent("idle.close.blocked", {
-      conversationID: this.options.id,
-      reason,
-      ...(state === undefined ? {} : {
-        phase: state.phase ?? "idle",
-        queue: state.queue?.length ?? 0,
-        pending: Object.keys(state.pending ?? {}).length,
-        session: Boolean(state.sessionID),
-        reservation: Boolean(state.budgetReservation),
-        checkpointPending: Boolean(state.checkpointPending),
-      }),
-    })
-  }
-
-  private skipJob(reason: string, record?: ContainerIdleRecord): void {
-    logEvent("idle.close.skipped", {
-      conversationID: this.options.id,
-      reason,
-      ...(record === undefined ? {} : { generation: record.generation, phase: record.phase }),
-    })
+  private skipJob(reason: string): void {
+    this.emit("idle.skipped", "skipped", reason)
   }
 
   private eligibleState(state: ConversationState): boolean {
@@ -313,7 +305,7 @@ export class ConversationIdleClose {
 
   private async verifyAndClose(record: ContainerIdleRecord, activityAtRequest: number): Promise<IdleCloseOutcome> {
     if (this.options.access.activityEpoch !== activityAtRequest) {
-      this.skipJob("activity-changed", record)
+      this.skipJob("activity_changed")
       return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
     }
     if (await this.blockedBeforeClose() || !this.options.runtime.nativeRunning()) {
@@ -340,7 +332,7 @@ export class ConversationIdleClose {
       }
       return await this.archiveAndClose(record, sessionID, activityAtRequest)
     } catch {
-      this.skipJob("verify-failed", record)
+      this.skipJob("verify_failed")
       return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
     }
   }
@@ -365,18 +357,18 @@ export class ConversationIdleClose {
     activityAtRequest: number,
   ): Promise<IdleCloseOutcome> {
     if (!(await this.options.checkpoints.captureOwned())) {
-      this.skipJob("archive-unavailable")
+      this.skipJob("archive_unavailable")
       return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
     }
     const manifest = (await this.options.store.get()).checkpointManifest
     if (!manifest) {
-      this.skipJob("no-manifest")
+      this.skipJob("no_manifest")
       return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
     }
     await this.options.checkpoints.verifySplitArchive(manifest, true)
 
     if (this.options.access.activityEpoch !== activityAtRequest || await this.blockedBeforeClose()) {
-      this.skipJob("activity-changed")
+      this.skipJob("activity_changed")
       return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
     }
     const closeClaim = await this.markClosing(record, sessionID, activityAtRequest)
