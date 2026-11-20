@@ -36,6 +36,7 @@ export type ConversationTelemetryEventName =
   | "container.start.failed"
   | "container.stopped"
   | "container.stop.failed"
+  | "usage.replay.missing_session"
   | "idle.scheduled"
   | "idle.deferred"
   | "idle.skipped"
@@ -128,6 +129,7 @@ const COMPONENT_BY_EVENT: Record<ConversationTelemetryEventName, ConversationTel
   "container.start.failed": "runtime",
   "container.stopped": "runtime",
   "container.stop.failed": "runtime",
+  "usage.replay.missing_session": "turns",
   "idle.scheduled": "runtime",
   "idle.deferred": "runtime",
   "idle.skipped": "runtime",

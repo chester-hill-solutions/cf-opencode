@@ -49,6 +49,7 @@ import { logEvent } from "./log"
 import type { HarnessSettings } from "./settings"
 import { staleAction } from "./lifecycle"
 import { recoveryRequest } from "./recovery"
+import { withCleanupUsage } from "./conversation/cleanup-usage"
 import { GITHUB_TOKEN_KEY, workspaceID } from "./vault"
 import { LEGACY_ACCOUNT_STATE_KEY, parseConversationKey } from "./tenancy"
 import { AccountingPolicyError } from "./accounting-policy"
@@ -1064,25 +1065,10 @@ export class Conversation extends DurableObject<Env> {
 
   /** Keep the usage queue locked through cleanup so a late replay cannot resurrect state. */
   private withUsageLifecycle(cleanup: () => Promise<Response>, cleanupAlreadyFenced = false): Promise<Response> {
-    return this.usage.serialize(async () => {
-      try {
-        const state = await this.store.get()
-        if (state.sessionID && !cleanupAlreadyFenced) {
-          await this.usage.replayLogLocked(state.sessionID)
-          const refreshed = await this.store.get()
-          const execution = refreshed.usageExecution
-          if (execution?.sessionID === state.sessionID &&
-            (execution.startedSeq > execution.terminalSeq || execution.latestStepSeq > execution.terminalSeq)) {
-            throw new Error("provider execution is not terminal; lifecycle cleanup is unsafe")
-          }
-        }
-      } catch (error) {
-        const message = errorMessage(error)
-        await this.store.patch({ usageError: message }).catch(() => {})
-        return Response.json({ ok: false, error: `usage replay failed: ${message}`, retryable: true }, { status: 503 })
-      }
-      return this.runtimeAccess.exclusive(cleanup)
-    })
+    return withCleanupUsage({
+      store: this.store, usage: this.usage, conversationID: this.ctx.id.toString(), errorMessage,
+      exclusive: (task) => this.runtimeAccess.exclusive(task),
+    }, cleanup, cleanupAlreadyFenced)
   }
 
   /** Increment a harness counter; counting must never fail a turn. */
