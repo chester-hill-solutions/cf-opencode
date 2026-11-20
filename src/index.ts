@@ -479,7 +479,7 @@ async function handleApi(
 
   if (request.method === "POST" && suffix.length === 1 && suffix[0] === "recycle") {
     recordConversation()
-    return conversation.fetch("https://conversation/recycle", { method: "POST" })
+    return conversation.fetch(`https://conversation/recycle${url.search}`, { method: "POST" })
   }
 
   if (request.method === "DELETE" && suffix.length === 0) {

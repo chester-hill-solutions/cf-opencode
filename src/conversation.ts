@@ -755,7 +755,7 @@ export class Conversation extends DurableObject<Env> {
     }
     if (url.pathname.startsWith("/onboarding")) return this.providerOnboarding.onboarding(url.pathname, request)
     if (url.pathname === "/reset" && request.method === "POST") return this.onReset()
-    if (url.pathname === "/recycle" && request.method === "POST") return this.onRecycle()
+    if (url.pathname === "/recycle" && request.method === "POST") return this.onRecycle(url.searchParams.get("restart") === "1")
     if (url.pathname === "/debug" && request.method === "GET") {
       return Response.json({
         turnObservation: await this.turnObservation(),
@@ -1002,7 +1002,7 @@ export class Conversation extends DurableObject<Env> {
    * Recycle the container so the next call starts the current image. State is
    * kept: this is what a long-lived conversation needs after an image deploy.
    */
-  private async onRecycle(): Promise<Response> {
+  private onRecycle(restart = false): Promise<Response> {
     return recycleRoute({
       withLock: (task) => this.admissions.withLock(task),
       upgradesPending: () => this.runtimeUpgrades.hasPending(),
@@ -1013,7 +1013,7 @@ export class Conversation extends DurableObject<Env> {
       stop: () => this.runtime.stop(),
       releaseLease: () => this.leases.releaseAfterStop(),
       clearSnapshot: () => this.images.clearSnapshot(),
-    })
+    }, restart ? () => this.ctx.abort() : undefined)
   }
 
   /** Remove the workspace archives and this conversation's stored state. */

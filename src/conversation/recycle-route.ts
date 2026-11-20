@@ -19,7 +19,7 @@ export interface RecycleDeps {
 
 const failure = (error: string) => Response.json({ ok: false, error }, { status: 503 })
 
-export function recycleRoute(deps: RecycleDeps): Promise<Response> {
+export function recycleRoute(deps: RecycleDeps, restart?: () => void): Promise<Response> {
   return deps.withLock(async () => {
     if (await deps.upgradesPending()) {
       return Response.json({ error: "runtime upgrade is pending; resume it before recycling" }, { status: 409 })
@@ -34,6 +34,7 @@ export function recycleRoute(deps: RecycleDeps): Promise<Response> {
       if (!await deps.stop()) return failure("container stop was not confirmed; not recycling")
       if (!await deps.releaseLease()) return failure("container lease release is pending; not recycling")
       await deps.clearSnapshot()
+      restart?.()
       return Response.json({ ok: true })
     })
   })
