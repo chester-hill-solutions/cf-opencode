@@ -362,8 +362,8 @@ export class ConversationScheduler {
       }
       if (failure) throw failure
     })
-    this.options.waitUntil(task.catch(() => {
-      console.warn("conversation lifecycle handoff failed", { kind })
+    this.options.waitUntil(task.catch((error) => {
+      console.warn("conversation lifecycle handoff failed", { kind, reason: jobFailureReason(error) })
     }))
     this.capability.trackAlarmWork(task)
     return undefined
@@ -375,12 +375,29 @@ export class ConversationScheduler {
     _error: unknown,
   ): Promise<LifecycleJobOutcome> {
     if (!(await this.isCurrent(payload))) return undefined
-    console.warn("conversation lifecycle job failed", { kind })
+    console.warn("conversation lifecycle job failed", { kind, reason: jobFailureReason(_error) })
     await this.options.store.patch({ lifecycleJobError: { kind, message: "job failed; owned work remains pending", at: Date.now() } })
     // Retain the existing owner and work; SDK retries are disabled so a failed
     // wake is retried only by this bounded domain backoff.
     return { rescheduleAt: Date.now() + 30_000 }
   }
+}
+
+const FAILURE_REASONS: Array<[RegExp, string]> = [
+  [/session not found/i, "session_missing"],
+  [/capacity/i, "lease_capacity"],
+  [/lease authority/i, "lease_authority"],
+  [/stow|native workspace|before readiness/i, "workspace_unavailable"],
+  [/quiescen/i, "quiescence_unproven"],
+  [/not terminal/i, "execution_not_terminal"],
+  [/usage|ledger|accounting/i, "accounting_refused"],
+  [/timeout|timed out/i, "timeout"],
+]
+
+/** A bounded reason for a failed job: never the raw message. */
+function jobFailureReason(error: unknown): string {
+  const message = displayError(error)
+  return FAILURE_REASONS.find(([pattern]) => pattern.test(message))?.[1] ?? "unclassified"
 }
 
 function displayError(error: unknown): string {
