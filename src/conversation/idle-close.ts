@@ -92,7 +92,15 @@ export class ConversationIdleClose {
       this.skip("unreadable")
       return false
     }
-    if (existing !== undefined) return false
+    if (existing !== undefined) {
+      // An intent that is long past its deadline means its job never ran.
+      logEvent("idle.intent.pending", {
+        conversationID: this.options.id,
+        ageMs: Date.now() - existing.dueAt,
+        phase: existing.phase,
+      })
+      return false
+    }
     return this.touch()
   }
 
@@ -130,19 +138,27 @@ export class ConversationIdleClose {
       dueAt: now + (this.options.idleCloseMs ?? DEFAULT_IDLE_CLOSE_MS),
       phase: "waiting",
     }
-    return this.options.storage.transaction(async (txn) => {
-      const prior = await txn.get<unknown>(IDLE_KEY)
-      if (prior !== undefined && !isContainerIdleRecord(prior)) {
-        throw new Error("container idle intent is unreadable")
-      }
-      if (prior?.phase === "closing") return false
-      await txn.put(IDLE_KEY, record)
-      await this.options.jobs.schedule(record.dueAt, {
-        idleID: record.id,
-        runtimeGeneration: record.generation,
+    try {
+      return await this.options.storage.transaction(async (txn) => {
+        const prior = await txn.get<unknown>(IDLE_KEY)
+        if (prior !== undefined && !isContainerIdleRecord(prior)) {
+          throw new Error("container idle intent is unreadable")
+        }
+        if (prior?.phase === "closing") return false
+        await txn.put(IDLE_KEY, record)
+        await this.options.jobs.schedule(record.dueAt, {
+          idleID: record.id,
+          runtimeGeneration: record.generation,
+        })
+        return true
       })
-      return true
-    })
+    } catch (error) {
+      logEvent("idle.intent.failed", {
+        conversationID: this.options.id,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return false
+    }
   }
 
   /** Prevent an uncertain stop from being reopened by normal runtime preparation. */
