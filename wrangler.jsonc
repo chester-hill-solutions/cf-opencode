@@ -39,7 +39,11 @@
     "bindings": [
       { "class_name": "Conversation", "name": "CONVERSATION" },
       { "class_name": "Settings", "name": "SETTINGS" }
-    ]
+    ],
+    // A live object stays on the code version it was loaded with while its
+    // alarm keeps it warm, so a deploy can miss it for as long as it runs.
+    // Immediate updates reach every object at deploy time instead.
+    "code_update_strategy": { "mode": "immediate" }
   },
   "r2_buckets": [{ "binding": "CHECKPOINTS", "bucket_name": "cf-opencode-checkpoints" }],
   "ratelimits": [

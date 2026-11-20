@@ -19,6 +19,10 @@ async function recycle(instance: { fetch(request: Request): Promise<Response> })
   return instance.fetch(new Request("https://conversation/recycle", { method: "POST" }))
 }
 
+async function restart(instance: { fetch(request: Request): Promise<Response> }) {
+  return instance.fetch(new Request("https://conversation/recycle?restart=1", { method: "POST" }))
+}
+
 describe("image upgrade recycle", () => {
   it("checkpoints, clears the old image snapshot, and preserves conversation data", async () => {
     const stub = env.CONVERSATION.getByName("recycle-current-image-success")
@@ -104,5 +108,40 @@ describe("image upgrade recycle", () => {
     expect(result.body).toMatchObject({ ok: false })
     expect(result.calls).toEqual({ checkpoint: 1, capture: 0, destroy: 0, snapshot: 0 })
     expect(result.snapshot).toEqual({ id: "old-image-snapshot", size: 10 })
+  })
+
+  it("aborts the object after a successful recycle so it reloads the deployed code", async () => {
+    const stub = env.CONVERSATION.getByName("recycle-current-image-restart")
+    let aborted = false
+    try {
+      await runInDurableObject(stub, async (instance, runtime) => {
+        await runtime.storage.put("state", { sessionID: "ses_keep", phase: "idle", seen: [], pending: {} })
+        const calls = { checkpoint: 0, capture: 0, destroy: 0, snapshot: 0 }
+        installContainer(instance, calls)
+        const internal = instance as unknown as { checkpoints: { captureOwned(): Promise<boolean> } }
+        internal.checkpoints.captureOwned = async () => true
+        runtimeCache(instance).markVerified({ fetch: async (input) => usageLogResponse(input, "ses_keep", []) }, "old-generation", true)
+        await restart(instance)
+      })
+    } catch (error) {
+      // ctx.abort() resets the object and rejects the in-flight request.
+      aborted = /abort\(\)/i.test(String(error))
+    }
+    expect(aborted).toBe(true)
+  })
+
+  it("does not abort a conversation that recycle refused", async () => {
+    const stub = env.CONVERSATION.getByName("recycle-current-image-restart-blocked")
+    const status = await runInDurableObject(stub, async (instance, runtime) => {
+      await runtime.storage.put("state", {
+        sessionID: "ses_busy", phase: "running", seen: [], pending: [],
+        budgetReservation: { reservationID: "hold", dispatched: true },
+      })
+      const calls = { checkpoint: 0, capture: 0, destroy: 0, snapshot: 0 }
+      installContainer(instance, calls)
+      const response = await restart(instance)
+      return response.status
+    })
+    expect(status).toBe(409)
   })
 })

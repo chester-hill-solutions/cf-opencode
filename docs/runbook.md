@@ -15,11 +15,20 @@ curl -X POST https://<worker>/api/conversations/<key>/recycle \
   -H "authorization: Bearer $TOKEN"
 ```
 
-Use `--durable-objects-code-update-mode immediate` when deploying code that must
-reach existing Durable Objects immediately. `/recycle` keeps state and starts the
+`wrangler.jsonc` sets `durable_objects.code_update_strategy` to `immediate`, so a
+deploy reaches every object instead of waiting for it to hibernate. Without it, a
+live object can keep the code version it was loaded with for as long as its alarm
+keeps it warm: three conversations did exactly that for 20 hours and pinned every
+container lease. When one is already pinned, force it to reload with
+`/recycle?restart=1` (below). `/recycle` keeps state and starts the
 current image from its portable R2 checkpoint, clearing the retired image's
 snapshot handle. It refuses active, queued or held work. The onboarding
 `/api/onboarding/reset` clears state and is not needed for an image upgrade.
+
+`POST /api/conversations/<key>/recycle?restart=1` does the same recycle and then
+aborts the object, so the next call loads the deployed code. Use it when an object
+is pinned on an old version; it refuses active, queued or held work exactly like
+`/recycle`, and it never touches stored state.
 
 Everything deploys through Cloudflare, driven by `cf`. There is no laptop deploy step and no
 `wrangler` invocation to remember.
