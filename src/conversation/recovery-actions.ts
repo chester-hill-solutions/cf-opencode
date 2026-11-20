@@ -1,4 +1,4 @@
-import { ConversationStore, type ConversationState } from "../state"
+import { ConversationStore, type BudgetReservation, type ConversationState } from "../state"
 import type { ConversationUsage } from "./usage"
 import { classifyRecovery, recoveryQueueSummary, recoverySnapshotID, type RecoveryAuthority, type RecoverySchedulerEvidence } from "../recovery"
 import { traceId } from "../telemetry"
@@ -32,6 +32,8 @@ export interface RecoveryActionsOptions {
   live(): { admitting: boolean; pumping: boolean; activeJobs: number }
   /** Destroy the container and release its lease; used only by force_stop. */
   forceStop(): Promise<{ stopped: boolean; released: boolean }>
+  /** Retire a reservation without measured usage; used only by abandon. */
+  abandonReservation(reservation: BudgetReservation): Promise<boolean>
   jobs: RecoveryJobsPort
 }
 
@@ -140,13 +142,15 @@ export class ConversationRecoveryActions {
     }
   }
 
-  async act(action: "retry" | "cancel_before_dispatch" | "force_stop", expectedSnapshotID: string): Promise<Response> {
+  async act(action: "retry" | "cancel_before_dispatch" | "force_stop" | "abandon", expectedSnapshotID: string): Promise<Response> {
     const startedAt = Date.now()
     this.emitActionTelemetry("recovery.started", action, "started")
     try {
-      const response = await this.options.withAdmissionLock(() => action === "force_stop"
-        ? this.forceStopOwned(expectedSnapshotID)
-        : this.actOwned(action, expectedSnapshotID))
+      const response = await this.options.withAdmissionLock(() => {
+        if (action === "force_stop") return this.forceStopOwned(expectedSnapshotID)
+        if (action === "abandon") return this.abandonOwned(expectedSnapshotID)
+        return this.actOwned(action, expectedSnapshotID)
+      })
       const durationMs = Date.now() - startedAt
       if (response.status === 409) {
         this.emitActionTelemetry("recovery.blocked", action, "blocked", durationMs)
@@ -168,13 +172,13 @@ export class ConversationRecoveryActions {
   }
 
   /** Stop a wedged runtime and release its lease; accounting is left untouched. */
-  private async forceStopOwned(expectedSnapshotID: string): Promise<Response> {
+  private async forceStopOwned(expectedSnapshotID: string, action: "force_stop" | "abandon" = "force_stop"): Promise<Response> {
     const live = this.options.live()
     if (live.pumping || this.recoveryAction) {
       return Response.json({ error: "conversation has a live local operation" }, { status: 409 })
     }
     const status = await this.status()
-    if (status.snapshotID !== expectedSnapshotID || !Array.isArray(status.actions) || !status.actions.includes("force_stop")) {
+    if (status.snapshotID !== expectedSnapshotID || !Array.isArray(status.actions) || !status.actions.includes(action)) {
       return Response.json({ error: "recovery snapshot changed", recovery: status }, { status: 409 })
     }
     this.recoveryAction = true
@@ -189,9 +193,32 @@ export class ConversationRecoveryActions {
     }
   }
 
+  /**
+   * Give up on a wedged turn: stop the runtime and release the lease (the same
+   * path as force_stop), retire the reservation, then return to idle so an
+   * operator can discard the session or continue.
+   */
+  private async abandonOwned(expectedSnapshotID: string): Promise<Response> {
+    const stopped = await this.forceStopOwned(expectedSnapshotID, "abandon")
+    if (stopped.status !== 200) return stopped
+    const current = await this.options.store.get()
+    if (current.budgetReservation && !await this.options.abandonReservation(current.budgetReservation)) {
+      return Response.json({ error: "reservation could not be released", retryable: true }, { status: 503 })
+    }
+    if (current.turnID) {
+      await this.options.store.transitionTurn(current.turnID, {
+        state: "failed",
+        finishedAt: Date.now(),
+        cancellation: { requested: true, observedStop: true, settled: true },
+      }).catch(() => undefined)
+    }
+    await this.options.store.patch({ phase: "idle", runStartedAt: undefined, settlementError: undefined, turnID: undefined })
+    return Response.json({ ok: true, abandoned: true }, { status: 200 })
+  }
+
   private emitActionTelemetry(
     event: "recovery.started" | "recovery.scheduled" | "recovery.settled" | "recovery.blocked",
-    action: "retry" | "cancel_before_dispatch" | "force_stop",
+    action: "retry" | "cancel_before_dispatch" | "force_stop" | "abandon",
     result: "started" | "scheduled" | "succeeded" | "failed" | "blocked",
     durationMs?: number,
   ): void {

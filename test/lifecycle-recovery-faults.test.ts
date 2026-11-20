@@ -338,4 +338,33 @@ describe("Conversation recovery fault regressions", () => {
     expect(outcome.actions).toContain("force_stop")
     expect(outcome.status).toBe(503)
   })
+
+  it("offers abandon for a wedged dispatched turn and settles it back to idle", async () => {
+    const conversation = stub("recovery-abandon")
+    const outcome = await runInDurableObject(conversation, async (instance, runtime) => {
+      const id = (instance as unknown as { ctx: { id: { toString(): string } } }).ctx.id.toString()
+      const { date } = await reserve(id, "abandon-reservation")
+      await runtime.storage.put("state", {
+        sessionID: "ses_wedged",
+        phase: "running",
+        runStartedAt: Date.now() - 60 * 60_000,
+        settlementError: "turn exceeded its time limit; dispatched reservation retained while context is checked",
+        budgetReservation: { reservationID: "abandon-reservation", date, dispatched: true },
+        seen: [],
+        pending: {},
+      } satisfies ConversationState)
+      Object.defineProperty((instance as unknown as { ctx: object }).ctx, "container", {
+        configurable: true,
+        value: { running: true, async destroy() { this.running = false }, async setInactivityTimeout() {} },
+      })
+      const inspect = await (await recovery(instance)).json() as { snapshotID: string; actions: string[] }
+      const response = await recovery(instance, "abandon", inspect.snapshotID)
+      const after = await runtime.storage.get<ConversationState>("state")
+      return { actions: inspect.actions, status: response.status, phase: after?.phase, reservation: after?.budgetReservation ?? null }
+    })
+    expect(outcome.actions).toContain("abandon")
+    expect(outcome.status).toBe(200)
+    expect(outcome.phase).toBe("idle")
+    expect(outcome.reservation).toBeNull()
+  })
 })
