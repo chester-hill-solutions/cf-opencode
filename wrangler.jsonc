@@ -27,10 +27,10 @@
       "scheduling_policy": "durable_object",
       "images": {
         "base": {
-          "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-conversation-base@sha256:ebd9d3db0bb72c4f853c0883a598d2e659978dee420afabeb217c77ba4aeff27"
+          "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-conversation-base@sha256:4f65f338116a03171d0ae8395d86a3b19da628630f06400e74ca6524041abedc"
         },
         "evented": {
-          "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-conversation-evented@sha256:ebd9d3db0bb72c4f853c0883a598d2e659978dee420afabeb217c77ba4aeff27"
+          "image": "registry.cloudflare.com/ad5ec479b9a421faa2ed06c3d1c2b23a/cf-opencode-conversation-evented@sha256:4f65f338116a03171d0ae8395d86a3b19da628630f06400e74ca6524041abedc"
         }
       }
     }
