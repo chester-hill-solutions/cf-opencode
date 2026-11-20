@@ -1,3 +1,5 @@
+import { logEvent } from "../log"
+
 /**
  * One `lease:renew` step. Kept out of the Durable Object so the adopt, release
  * and renew decisions can be tested without a container.
@@ -17,6 +19,11 @@ export async function renewConversationLease(
   ports: LeaseRenewalPorts,
   reason: string | undefined,
 ): Promise<undefined> {
+  logEvent("lease.renew.step", {
+    reason: reason ?? null,
+    containerRunning: ports.containerRunning ?? null,
+    hasLease: await ports.status() !== undefined,
+  })
   if (await ports.status() === undefined) {
     // Old native containers may predate the durable lease intent.
     if (reason === "adopt-running-lease" && ports.nativeEnabled() && ports.containerRunning) await ports.ensureHeld()

@@ -182,7 +182,10 @@ export class ConversationIdleClose {
       return undefined
     }
     if (record.phase === "waiting" && Date.now() < record.dueAt) return { rescheduleAt: record.dueAt }
-    if (!this.options.eligibleNative()) return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
+    if (!this.options.eligibleNative()) {
+      this.skipJob("not-native", record)
+      return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
+    }
 
     if (record.phase === "closing") {
       return this.options.usage.serialize(() =>
@@ -198,7 +201,10 @@ export class ConversationIdleClose {
     // Stop our own SSE reader before taking usage serialization; session.wait
     // below proves the native execution itself has finished.
     const activityAtRequest = this.options.access.activityEpoch
-    if (!(await this.options.stopStream())) return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
+    if (!(await this.options.stopStream())) {
+      this.skipJob("stream-busy", record)
+      return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
+    }
     const owned = await this.options.usage.serialize(async () =>
       this.options.access.exclusive(async () => this.verifyAndClose(record, activityAtRequest)),
     )
@@ -292,6 +298,7 @@ export class ConversationIdleClose {
 
   private async verifyAndClose(record: ContainerIdleRecord, activityAtRequest: number): Promise<IdleCloseOutcome> {
     if (this.options.access.activityEpoch !== activityAtRequest) {
+      this.skipJob("activity-changed", record)
       return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
     }
     if (await this.blockedBeforeClose() || !this.options.runtime.nativeRunning()) {
