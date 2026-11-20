@@ -225,7 +225,7 @@ export function classifyRecovery(input: {
         return { kind: "sealed_idle", blockers, actions: ["retry"] }
       }
     }
-    return { kind: blockers.length ? "blocked" : "none", blockers, actions: [] }
+    return classificationWithoutReservation(state, blockers)
   }
 
   const matching = authority?.holds.filter((hold) =>
@@ -268,6 +268,13 @@ export function classifyRecovery(input: {
   if (phase !== "idle" && phase !== "admitting") blockers.push("phase_not_pre_dispatch")
   if (blockers.length) return { kind: "blocked", blockers, actions: [] }
   return undispatchedClassification(state, blockers)
+}
+
+/** With no local reservation, leftover prompts are the only recoverable state. */
+function classificationWithoutReservation(state: ConversationState, blockers: string[]): RecoveryClassification {
+  if (blockers.length) return { kind: "blocked", blockers, actions: [] }
+  if (Object.keys(state.pending ?? {}).length > 0) return { kind: "orphaned", blockers, actions: ["abandon"] }
+  return { kind: "none", blockers, actions: [] }
 }
 
 /**
