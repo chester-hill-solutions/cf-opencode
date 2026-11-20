@@ -434,7 +434,7 @@ export class Conversation extends DurableObject<Env> {
       prove: (client, sessionID) => this.runtimeUpgrades.proveSession(client, sessionID),
       jobs: {
         schedule: (at, payload) => this.scheduler.schedule("container:idle", at, { ...payload, reason: "unused-runtime" }),
-        cancel: () => this.scheduler.cancel("container:idle"),
+        cancel: () => this.scheduler.cancel("container:idle"), has: () => this.scheduler.has("container:idle"),
       },
     })
 

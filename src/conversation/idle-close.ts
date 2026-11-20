@@ -66,6 +66,8 @@ export interface ConversationIdleCloseOptions {
   jobs: {
     schedule(at: number, payload: IdleCloseJobPayload): Promise<void>
     cancel(): Promise<void>
+    /** Whether the close job is still scheduled; an orphaned intent never fires. */
+    has?(): boolean
   }
 }
 
@@ -120,7 +122,14 @@ export class ConversationIdleClose {
       this.skip("unreadable")
       return false
     }
-    if (existing !== undefined) return false
+    if (existing !== undefined) {
+      // A reset or delete cancels the job but keeps the intent; re-arm it or the
+      // close can never fire and the lease renews forever.
+      if (this.options.jobs.has?.() === false) {
+        await this.options.jobs.schedule(existing.dueAt, { idleID: existing.id, runtimeGeneration: existing.generation })
+      }
+      return false
+    }
     const scheduled = await this.touch()
     if (scheduled) this.emit("idle.scheduled", "scheduled")
     return scheduled

@@ -15,6 +15,7 @@ function makeHarness(options: {
   changeActivityDuringProof?: boolean
   nativeRunning?: boolean
   lostGeneration?: boolean
+  closeJobScheduled?: boolean
   leaseRecord?: unknown
   archiveFails?: boolean
   checkpointCaptureFails?: boolean
@@ -180,6 +181,7 @@ function makeHarness(options: {
     jobs: {
       async schedule(at, payload) { jobs.push({ at, payload }) },
       async cancel() { events.push("job.cancel") },
+      has: () => options.closeJobScheduled ?? true,
     },
   })
 
@@ -240,6 +242,21 @@ describe("ConversationIdleClose", () => {
     expect(await harness.idleClose.ensureScheduled()).toBe(false)
     expect(harness.values.get("containerIdle")).toEqual(first)
     expect(harness.jobs).toHaveLength(1)
+  })
+
+  it("re-arms a close whose job was cancelled so an orphaned intent still fires", async () => {
+    const harness = makeHarness({ closeJobScheduled: false })
+    harness.seedIntent("waiting")
+    const intent = harness.values.get("containerIdle") as ContainerIdleRecord
+    expect(await harness.idleClose.ensureScheduled()).toBe(false)
+    expect(harness.jobs).toEqual([{ at: intent.dueAt, payload: { idleID: intent.id, runtimeGeneration: intent.generation } }])
+  })
+
+  it("leaves a scheduled close alone", async () => {
+    const harness = makeHarness()
+    harness.seedIntent("waiting")
+    expect(await harness.idleClose.ensureScheduled()).toBe(false)
+    expect(harness.jobs).toEqual([])
   })
 
   it("schedules nothing for a holder that is not native or not running", async () => {
