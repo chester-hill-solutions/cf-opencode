@@ -5,14 +5,30 @@ export interface ContainerIdleRecord {
   generation: string
   dueAt: number
   phase: "waiting" | "closing"
+  /** When the intent first appeared, so a repeated use cannot postpone it forever. */
+  createdAt?: number
+}
+
+const IDLE_KEYS = ["version", "id", "generation", "dueAt", "phase", "createdAt"]
+
+function isIdleOption(value: unknown): boolean {
+  return value === undefined || (typeof value === "number" && Number.isSafeInteger(value))
+}
+
+function isIdleTime(raw: Record<string, unknown>): boolean {
+  return typeof raw.dueAt === "number" && Number.isSafeInteger(raw.dueAt) && raw.dueAt >= 0 &&
+    isIdleOption(raw.createdAt)
+}
+
+function isIdleBody(raw: Record<string, unknown>): boolean {
+  return raw.version === 1 && typeof raw.id === "string" && raw.id.length > 0 &&
+    typeof raw.generation === "string" && raw.generation.length > 0 &&
+    isIdleTime(raw) &&
+    (raw.phase === "waiting" || raw.phase === "closing")
 }
 
 export function isContainerIdleRecord(value: unknown): value is ContainerIdleRecord {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false
-  const raw = value as Record<string, unknown>
-  return Object.keys(raw).every((key) => ["version", "id", "generation", "dueAt", "phase"].includes(key)) &&
-    raw.version === 1 && typeof raw.id === "string" && raw.id.length > 0 &&
-    typeof raw.generation === "string" && raw.generation.length > 0 &&
-    typeof raw.dueAt === "number" && Number.isSafeInteger(raw.dueAt) && raw.dueAt >= 0 &&
-    (raw.phase === "waiting" || raw.phase === "closing")
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value) &&
+    Object.keys(value as Record<string, unknown>).every((key) => IDLE_KEYS.includes(key)) &&
+    isIdleBody(value as Record<string, unknown>)
 }

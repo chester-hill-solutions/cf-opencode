@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type { ConversationState } from "../src/state"
 import { ConversationIdleClose, parseIdleCloseMs, type ConversationIdleCloseOptions, type IdleCloseJobPayload } from "../src/conversation/idle-close"
 import type { ContainerIdleRecord } from "../src/conversation/idle-state"
@@ -246,6 +246,30 @@ describe("ConversationIdleClose", () => {
     const stopped = makeHarness({ nativeRunning: false })
     expect(await stopped.idleClose.ensureScheduled()).toBe(false)
     expect(stopped.values.get("containerIdle")).toBeUndefined()
+  })
+
+  it("stops postponing a close after the ceiling so a busy job cannot pin the slot", async () => {
+    vi.useFakeTimers()
+    const base = Date.parse("2026-11-20T00:00:00Z")
+    vi.setSystemTime(base)
+    try {
+      const harness = makeHarness({ idleCloseMs: 30_000 })
+      expect(await harness.idleClose.touch()).toBe(true)
+      const first = harness.values.get("containerIdle") as ContainerIdleRecord
+      expect(first.createdAt).toBe(base)
+
+      // A background use keeps resetting the deadline, until the ceiling passes.
+      for (let elapsed = 60_000; elapsed <= 11 * 60_000; elapsed += 60_000) {
+        vi.setSystemTime(base + elapsed)
+        await harness.idleClose.touch()
+      }
+      const capped = harness.values.get("containerIdle") as ContainerIdleRecord
+      expect(capped.id).toBe(first.id)
+      expect(capped.createdAt).toBe(base)
+      expect(capped.dueAt).toBeLessThanOrEqual(base + 11 * 60_000)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("uses a deployment idle-close override and rejects unsafe values", async () => {
