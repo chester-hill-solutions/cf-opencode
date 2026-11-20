@@ -48,6 +48,15 @@ function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+/** Drop the pending prompts and delivery records a dead turn can never consume. */
+function orphanFreeState(state: ConversationState): Pick<ConversationState, "pending" | "permissionNotifications"> {
+  const pending = Object.fromEntries(Object.entries(state.pending ?? {}).filter(([, sessionID]) => sessionID !== state.sessionID))
+  const permissionNotifications = Object.fromEntries(
+    Object.entries(state.permissionNotifications ?? {}).filter(([requestID]) => Object.hasOwn(pending, requestID)),
+  )
+  return { pending, permissionNotifications }
+}
+
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
   try {
@@ -212,7 +221,13 @@ export class ConversationRecoveryActions {
         cancellation: { requested: true, observedStop: true, settled: true },
       }).catch(() => undefined)
     }
-    await this.options.store.patch({ phase: "idle", runStartedAt: undefined, settlementError: undefined, turnID: undefined })
+    await this.options.store.patch({
+      phase: "idle",
+      runStartedAt: undefined,
+      settlementError: undefined,
+      turnID: undefined,
+      ...orphanFreeState(current),
+    })
     return Response.json({ ok: true, abandoned: true }, { status: 200 })
   }
 

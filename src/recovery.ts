@@ -75,7 +75,7 @@ export interface RecoveryLiveState {
 }
 
 export interface RecoveryClassification {
-  kind: "none" | "undispatched" | "dispatched" | "sealed_idle" | "blocked"
+  kind: "none" | "undispatched" | "dispatched" | "sealed_idle" | "blocked" | "orphaned"
   blockers: string[]
   actions: RecoveryAction[]
 }
@@ -267,6 +267,15 @@ export function classifyRecovery(input: {
   const phase = state.phase ?? "idle"
   if (phase !== "idle" && phase !== "admitting") blockers.push("phase_not_pre_dispatch")
   if (blockers.length) return { kind: "blocked", blockers, actions: [] }
+  return undispatchedClassification(state, blockers)
+}
+
+/**
+ * A turn that ended without clearing its permission prompts leaves residue that
+ * blocks cleanup forever, so it is abandonable rather than merely undispatched.
+ */
+function undispatchedClassification(state: ConversationState, blockers: string[]): RecoveryClassification {
+  if (Object.keys(state.pending ?? {}).length > 0) return { kind: "orphaned", blockers, actions: ["abandon"] }
   return { kind: "undispatched", blockers, actions: ["cancel_before_dispatch"] }
 }
 

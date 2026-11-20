@@ -333,7 +333,6 @@
       "scripts/smoke-slack-checks.ts:@typescript-eslint/no-unused-vars:'mkdir' is defined but never used. Allowed unused vars must match /^_/u.#1",
       "scripts/stow-s3-probe.ts:@typescript-eslint/no-unused-vars:'controlPort' is assigned a value but never used. Allowed unused vars must match /^_/u.#1",
       "src/conversation.ts:@typescript-eslint/no-unused-vars:'ConversationPhase' is defined but never used. Allowed unused vars must match /^_/u.#1",
-      "src/conversation.ts:@typescript-eslint/no-unused-vars:'ConversationState' is defined but never used. Allowed unused vars must match /^_/u.#1",
       "src/conversation.ts:@typescript-eslint/no-unused-vars:'OPENCODE_PORT' is assigned a value but never used. Allowed unused vars must match /^_/u.#1",
       "src/conversation.ts:@typescript-eslint/no-unused-vars:'isSettled' is defined but never used. Allowed unused vars must match /^_/u.#1",
       "src/conversation.ts:@typescript-eslint/no-unused-vars:'parseConversationKey' is defined but never used. Allowed unused vars must match /^_/u.#1",
