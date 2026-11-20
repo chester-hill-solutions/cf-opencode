@@ -18,20 +18,13 @@
 
 FROM --platform=$BUILDPLATFORM golang:1.25.6-bookworm@sha256:f4490d7b261d73af4543c46ac6597d7d101b6e1755bcdd8c5159fda7046b6b3e AS stow-builder
 WORKDIR /src
-ADD --checksum=sha256:387c91bcf9f9a4ac2691fbf980885ccfb88e6eaf7b3732681e75a2eca2b1adc8 https://codeload.github.com/chester-hill-solutions/stow-s3/tar.gz/3bb3e890bbe56f11dd783c2ccfb9bd2813156919 /tmp/stow-source.tar.gz
+ADD --checksum=sha256:501b5e7a07d01cae291f37fea61bc0853b95bc1d2c431492416009be5a91deba https://codeload.github.com/chester-hill-solutions/stow-s3/tar.gz/f74d071ec70ad18bedcbacbc12119f81e5b2f095 /tmp/stow-source.tar.gz
 RUN tar -xzf /tmp/stow-source.tar.gz --strip-components=1 \
       --wildcards '*/go.mod' '*/go.sum' '*/cmd/*' '*/internal/*' '*/pkg/*' \
     && rm /tmp/stow-source.tar.gz
-COPY patches/stow/metadata-refusal_test.go internal/s3api/metadata_refusal_test.go
-# Verify that the regression reaches the original silent-success bug, rather
-# than treating a compilation or environment error as an expected failing test.
-RUN if GOMAXPROCS=2 go test -p 2 ./internal/s3api -run '^TestSDKUnsupportedObjectMetadataRefusedBeforeMutation$' > /tmp/baseline.log 2>&1; then \
-      cat /tmp/baseline.log; exit 1; \
-    else cat /tmp/baseline.log; grep -F 'want typed 501 NotImplemented, got <nil>' /tmp/baseline.log; fi
-COPY patches/stow/metadata-refusal.patch /tmp/stow-metadata.patch
-RUN git apply --check /tmp/stow-metadata.patch \
-    && git apply /tmp/stow-metadata.patch \
-    && GOMAXPROCS=2 go test -p 2 ./internal/s3api
+# Upstream refuses object properties the record cannot carry as of 06f601de
+# (#163), so the local metadata-refusal patch and its regression proof are gone.
+RUN GOMAXPROCS=2 go test -p 2 ./internal/s3api
 ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} GOMAXPROCS=2 \
     go build -p 2 -buildvcs=false -trimpath -ldflags '-s -w' -o /out/stow-s3 ./cmd/stow-s3
