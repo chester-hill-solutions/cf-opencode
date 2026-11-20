@@ -260,6 +260,30 @@ describe("ConversationIdleClose", () => {
     expect(parseIdleCloseMs(undefined)).toBeUndefined()
   })
 
+  it("archives, stops and releases a container that never created a session", async () => {
+    const harness = makeHarness({ state: { sessionID: undefined }, manifest: true })
+    harness.seedIntent()
+    expect(await harness.idleClose.run(harness.payload)).toBeUndefined()
+    expect(harness.values.get("containerIdle")).toBeUndefined()
+    expect(harness.runtime.confirmedStopped).toBe(true)
+    expect(harness.events).toContain("checkpoint.capture")
+    expect(harness.events).toContain("archive.verify:true")
+    expect(harness.events).toContain("runtime.stop")
+    expect(harness.events).toContain("lease.release")
+    expect(harness.events).not.toContain("usage.replay")
+    expect(harness.events).not.toContain("runtime.prove")
+  })
+
+  it("waits for an archive before stopping a session-less container", async () => {
+    const harness = makeHarness({ state: { sessionID: undefined } })
+    harness.seedIntent()
+    const outcome = await harness.idleClose.run(harness.payload)
+    expect(outcome).toBeDefined()
+    expect(harness.events).not.toContain("runtime.stop")
+    expect(harness.events).not.toContain("lease.release")
+    expect(harness.values.get("containerIdle")).toBeDefined()
+  })
+
   it("proves usage and archives before persisting closing, stopping, and releasing", async () => {
     const harness = makeHarness({ manifest: true })
     harness.seedIntent()
