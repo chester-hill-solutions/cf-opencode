@@ -168,4 +168,17 @@ describe("conversation lifecycle telemetry", () => {
     expect(emitted).toMatchObject({ event: "container.stopped", component: "runtime" })
     expect(emitted).not.toHaveProperty("traceId")
   })
+
+  test("records idle close decisions as runtime outcomes with allowlisted reasons", () => {
+    const seen: unknown[] = []
+    emitConversationTelemetry({ event: "idle.scheduled", conversationID: "conv_1", result: "scheduled" }, (event) => { seen.push(event) })
+    emitConversationTelemetry({ event: "idle.deferred", conversationID: "conv_1", result: "blocked", reasonCode: "not_idle_phase" }, (event) => { seen.push(event) })
+    emitConversationTelemetry({ event: "idle.skipped", conversationID: "conv_1", result: "skipped", reasonCode: "no_generation" }, (event) => { seen.push(event) })
+    emitConversationTelemetry({ event: "idle.skipped", result: "skipped", reasonCode: "free form reason" }, (event) => { seen.push(event) })
+
+    expect(seen[0]).toMatchObject({ event: "idle.scheduled", component: "runtime", result: "scheduled" })
+    expect(seen[1]).toMatchObject({ event: "idle.deferred", component: "runtime", result: "blocked", reasonCode: "not_idle_phase" })
+    expect(seen[2]).toMatchObject({ event: "idle.skipped", component: "runtime", reasonCode: "no_generation" })
+    expect(seen[3]).not.toHaveProperty("reasonCode")
+  })
 })
