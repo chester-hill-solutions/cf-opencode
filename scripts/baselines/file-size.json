@@ -2,7 +2,7 @@
   "version": 1,
   "counts": {
     "scripts/stow-s3-probe.ts": 6,
-    "src/conversation.ts": 631,
+    "src/conversation.ts": 629,
     "src/index.ts": 40,
     "src/settings-do.ts": 809,
     "test/container-image.test.ts": 79

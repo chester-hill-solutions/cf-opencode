@@ -480,7 +480,6 @@
       "src/conversation/final-replies.ts:complexity:Async method 'deliver' has a complexity of 17. Maximum allowed is 10.#1",
       "src/conversation/final-replies.ts:complexity:Function 'parse' has a complexity of 26. Maximum allowed is 10.#1",
       "src/conversation/idle-close.ts:complexity:Async arrow function has a complexity of 11. Maximum allowed is 10.#1",
-      "src/conversation/idle-close.ts:complexity:Async method 'currentGeneration' has a complexity of 12. Maximum allowed is 10.#1",
       "src/conversation/idle-close.ts:complexity:Async method 'runLocked' has a complexity of 13. Maximum allowed is 10.#1",
       "src/conversation/idle-close.ts:complexity:Async method 'verifyAndClose' has a complexity of 20. Maximum allowed is 10.#1",
       "src/conversation/idle-state.ts:complexity:Function 'isContainerIdleRecord' has a complexity of 14. Maximum allowed is 10.#1",

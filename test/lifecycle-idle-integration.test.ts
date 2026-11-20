@@ -190,4 +190,66 @@ describe("native idle close Worker integration", () => {
     expect(events.some((event) => event.startsWith(`api:/api/session/${SESSION}/context`))).toBe(true)
     expect(id).toBeTruthy()
   }, 20_000)
+
+  it("gives a lease held after a restart a close intent instead of renewing it forever", async () => {
+    const key = "C1:idle-close-restarted-holder"
+    const stub = env.CONVERSATION.getByName(key)
+    await runInDurableObject(stub, async (instance, runtime) => {
+      await runtime.storage.deleteAll()
+      const settings = await env.SETTINGS.getByName("global").fetch("https://settings/get")
+        .then((response) => response.json()) as { version: number }
+      await runtime.storage.put("state", {
+        sessionID: SESSION,
+        phase: "idle",
+        settingsVersion: settings.version,
+        seen: [],
+        pending: {},
+      } satisfies ConversationState)
+
+      const controlPort: ContainerPort = {
+        async fetch(input) {
+          const request = input instanceof Request ? input : new Request(input)
+          if (new URL(request.url).pathname === "/start") {
+            return json({
+              ok: true,
+              accountingPolicy: ACCOUNTING_POLICY_ID,
+              opencodeGeneration: GENERATION,
+              eventPersistence: true,
+            })
+          }
+          return json({ ok: true })
+        },
+      }
+      const container = {
+        running: true,
+        async destroy() { this.running = false },
+        async setInactivityTimeout() {},
+        getTcpPort() { return controlPort },
+      }
+      const conversation = instance as unknown as {
+        ctx: object
+        key?: string
+        transport?: unknown
+        runtime: { generation?: string }
+        leases: { ensureHeld(): Promise<void> }
+        scheduler: { has(id: string): boolean }
+      }
+      Object.defineProperty(conversation.ctx, "container", { configurable: true, value: container })
+      conversation.key = key
+      conversation.transport = undefined
+      runtimeCache(instance).invalidate()
+
+      // A restart keeps the container and the lease but loses the in-memory
+      // generation, which is exactly what used to block every close intent.
+      await conversation.leases.ensureHeld()
+      expect(conversation.runtime.generation).toBeUndefined()
+      expect(conversation.scheduler.has("container:idle")).toBe(false)
+
+      await driveConversationJobs(instance, runtime.storage, ["lease:renew"])
+
+      const idle = await runtime.storage.get<{ generation?: string; phase?: string }>("containerIdle")
+      expect(idle).toMatchObject({ generation: GENERATION, phase: "waiting" })
+      expect(conversation.runtime.generation).toBeUndefined()
+    })
+  }, 20_000)
 })

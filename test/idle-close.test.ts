@@ -14,6 +14,7 @@ function makeHarness(options: {
   proofGeneration?: string
   changeActivityDuringProof?: boolean
   nativeRunning?: boolean
+  lostGeneration?: boolean
   leaseRecord?: unknown
   archiveFails?: boolean
   checkpointCaptureFails?: boolean
@@ -41,7 +42,7 @@ function makeHarness(options: {
   }
   const events: string[] = []
   let running = options.nativeRunning ?? true
-  let generation: string | undefined = "generation-1"
+  let generation: string | undefined = options.lostGeneration ? undefined : "generation-1"
   let stopFails = options.stopResult === false
   let activityEpoch = 11
   let idleClose!: ConversationIdleClose
@@ -223,6 +224,28 @@ describe("ConversationIdleClose", () => {
     const closing = harness.values.get("containerIdle")
     expect(await harness.idleClose.touch()).toBe(false)
     expect(harness.values.get("containerIdle")).toEqual(closing)
+  })
+
+  it("recovers a lost generation so a restarted holder can still become idle", async () => {
+    const harness = makeHarness({ lostGeneration: true })
+    expect(await harness.idleClose.touch()).toBe(true)
+    const record = harness.values.get("containerIdle") as ContainerIdleRecord
+    expect(record).toMatchObject({ generation: "generation-1", phase: "waiting" })
+  })
+
+  it("schedules one close intent for a held lease and keeps its deadline", async () => {
+    const harness = makeHarness({ lostGeneration: true })
+    expect(await harness.idleClose.ensureScheduled()).toBe(true)
+    const first = harness.values.get("containerIdle") as ContainerIdleRecord
+    expect(await harness.idleClose.ensureScheduled()).toBe(false)
+    expect(harness.values.get("containerIdle")).toEqual(first)
+    expect(harness.jobs).toHaveLength(1)
+  })
+
+  it("schedules nothing for a holder that is not native or not running", async () => {
+    const stopped = makeHarness({ nativeRunning: false })
+    expect(await stopped.idleClose.ensureScheduled()).toBe(false)
+    expect(stopped.values.get("containerIdle")).toBeUndefined()
   })
 
   it("uses a deployment idle-close override and rejects unsafe values", async () => {
