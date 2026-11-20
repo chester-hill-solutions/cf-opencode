@@ -4,6 +4,7 @@ import type { MemoryLimitContext, LifecycleJobOutcome } from "agents/lifecycle"
 import { ConversationJobs, type ConversationJobKind, type ConversationJobPayload } from "./jobs"
 import { ConversationStore, type ConversationState } from "../state"
 import { LEGACY_ALARM_MIGRATION_KEY, type LegacyAlarmMigration } from "./job-state"
+import { withSpan } from "../telemetry"
 
 const POLL_MS = 2000
 const CHECKPOINT_RETRY_MS = 30_000
@@ -324,8 +325,13 @@ export class ConversationScheduler {
       let outcome: DomainOutcome
       let failure: unknown
       try {
-        outcome = await work()
+        outcome = await withSpan("conversation.job", () => work(), { kind })
       } catch (error) {
+        // Observe the failure on the span: the message never becomes a log line.
+        withSpan("conversation.job.failed", (span) => {
+          span.setAttribute("kind", kind)
+          span.setAttribute("error.message", displayError(error).slice(0, 300))
+        })
         failure = error
       }
       try {
