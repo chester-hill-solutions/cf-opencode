@@ -7,6 +7,7 @@ import { encryptBytes } from "./archive-crypto"
 import { deriveWorkspaceKey } from "@chester-hill-solutions/vault/core"
 import type { Alert } from "./alerts"
 import { annotate, traceId } from "./telemetry"
+import { postAlert } from "./alert-delivery"
 import { recoveryRequest } from "./recovery"
 import { MODEL_CATALOG, recommendModel } from "./models"
 import { isOnboardingProxyPath } from "./onboarding"
@@ -760,23 +761,6 @@ async function checkAlerts(env: Env): Promise<Response> {
   const body = (await checked.json()) as { date: string; alerts: Alert[] }
   for (const alert of body.alerts) await postAlert(env, alert)
   return Response.json(body)
-}
-
-/** Post to Slack when a bot token and alert channel are configured. */
-async function postAlert(env: Env, alert: Alert): Promise<void> {
-  if (!env.SLACK_BOT_TOKEN || !env.ALERT_CHANNEL) return
-  try {
-    await fetch("https://slack.com/api/chat.postMessage", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${env.SLACK_BOT_TOKEN}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({ channel: env.ALERT_CHANNEL, text: `:warning: ${alert.message}` }),
-    })
-  } catch {
-    /* alerts are best effort */
-  }
 }
 
 // ---------------------------------------------------------------------- health

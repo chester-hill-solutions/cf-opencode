@@ -3,6 +3,25 @@ import type { BudgetReservation, ConversationState } from "./state"
 import { isConversationLeaseRecord } from "./conversation/lease-state"
 import { TURN_TIMEOUT_MS } from "./lifecycle"
 
+const RECOVERY_ACTIONS = ["retry", "cancel_before_dispatch", "force_stop", "abandon"] as const
+
+export type RecoveryAction = (typeof RECOVERY_ACTIONS)[number]
+
+/** True for the operator actions this build understands. */
+export function isRecoveryAction(value: unknown): value is RecoveryAction {
+  return typeof value === "string" && (RECOVERY_ACTIONS as readonly string[]).includes(value)
+}
+
+/** Parse one operator recovery request: an action and a SHA-256 snapshot. */
+export function recoveryRequest(value: unknown): { action: RecoveryAction; expectedSnapshotID: string } | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  if (Object.keys(record).some((key) => key !== "action" && key !== "expectedSnapshotID")) return undefined
+  const { action, expectedSnapshotID } = record
+  if (!isRecoveryAction(action) || typeof expectedSnapshotID !== "string" || !/^[a-f0-9]{64}$/.test(expectedSnapshotID)) return undefined
+  return { action, expectedSnapshotID }
+}
+
 export interface RecoveryRetirement {
   conversationID: string
   reservationID: string
@@ -43,30 +62,11 @@ export interface RecoverySchedulerEvidence {
   pendingUpgrade: boolean
 }
 
-const RECOVERY_ACTIONS = ["retry", "cancel_before_dispatch", "force_stop"] as const
-
-export type RecoveryAction = (typeof RECOVERY_ACTIONS)[number]
-
-/** True for the operator actions this build understands. */
-export function isRecoveryAction(value: unknown): value is RecoveryAction {
-  return typeof value === "string" && (RECOVERY_ACTIONS as readonly string[]).includes(value)
-}
-
-/** Parse one operator recovery request: an action and a SHA-256 snapshot. */
-export function recoveryRequest(value: unknown): { action: RecoveryAction; expectedSnapshotID: string } | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
-  const record = value as Record<string, unknown>
-  if (Object.keys(record).some((key) => key !== "action" && key !== "expectedSnapshotID")) return undefined
-  const { action, expectedSnapshotID } = record
-  if (!isRecoveryAction(action) || typeof expectedSnapshotID !== "string" || !/^[a-f0-9]{64}$/.test(expectedSnapshotID)) return undefined
-  return { action, expectedSnapshotID }
-}
-
 /** A dispatched turn past its deadline may be force-stopped by an operator. */
 function dispatchedClassification(state: ConversationState, blockers: string[]): RecoveryClassification {
   const overdue = typeof state.runStartedAt === "number" && state.runStartedAt > 0 &&
     Date.now() - state.runStartedAt >= TURN_TIMEOUT_MS
-  return { kind: "dispatched", blockers, actions: overdue ? ["retry", "force_stop"] : ["retry"] }
+  return { kind: "dispatched", blockers, actions: overdue ? ["retry", "force_stop", "abandon"] : ["retry"] }
 }
 
 export interface RecoveryLiveState {
@@ -77,7 +77,7 @@ export interface RecoveryLiveState {
 export interface RecoveryClassification {
   kind: "none" | "undispatched" | "dispatched" | "sealed_idle" | "blocked"
   blockers: string[]
-  actions: Array<"cancel_before_dispatch" | "retry" | "force_stop">
+  actions: RecoveryAction[]
 }
 
 export interface RecoveryQueueSummary {

@@ -214,7 +214,7 @@ export class Conversation extends DurableObject<Env> {
       store: this.store,
       usage: this.usage,
       settings: { fetch: (input, init) => this.env.SETTINGS.getByName("global").fetch(input, init) },
-      forceStop: async () => ({ stopped: await this.runtime.stop(), released: await this.leases.releaseAfterStop() }),
+      forceStop: async () => ({ stopped: await this.runtime.stop(), released: await this.leases.releaseAfterStop() }), abandonReservation: (reservation) => this.budgetReservations.release(reservation),
       withAdmissionLock: (task) => this.admissions.withLock(task),
       live: () => ({ admitting: this.admissions.active, pumping: this.turnExecution.isPumping, activeJobs: this.scheduler.activeCount }),
       jobs: {

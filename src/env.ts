@@ -56,6 +56,8 @@ export interface Env {
   GITHUB_CLIENT_SECRET?: string
   /** Slack channel for threshold alerts; posting also needs SLACK_BOT_TOKEN. */
   ALERT_CHANNEL?: string
+  /** Human-needed alerts go here only; the routine channel is ALERT_CHANNEL. */
+  ESCALATION_CHANNEL?: string
   /** 64 hex characters; encrypts provider and GitHub credentials at rest. */
   VAULT_MASTER_KEY?: string
   /**
