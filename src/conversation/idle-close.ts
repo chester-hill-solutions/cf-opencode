@@ -74,6 +74,24 @@ export interface ConversationIdleCloseOptions {
  * verified. The persisted closing phase fences new preparation until stop and
  * lease release are both confirmed.
  */
+/**
+ * The next close deadline: postponed by each use, but never past the ceiling, so
+ * a background job that keeps touching the runtime cannot pin the slot forever.
+ */
+function nextIdleDeadline(
+  prior: ContainerIdleRecord | undefined,
+  now: number,
+  waitMs: number,
+): Pick<ContainerIdleRecord, "id" | "createdAt" | "dueAt"> {
+  const createdAt = prior?.createdAt ?? now
+  const capped = now - createdAt >= Math.max(2 * waitMs, 10 * 60_000)
+  return {
+    id: prior?.id ?? crypto.randomUUID(),
+    createdAt,
+    dueAt: capped && prior ? Math.min(prior.dueAt, now) : now + waitMs,
+  }
+}
+
 export class ConversationIdleClose {
   constructor(private readonly options: ConversationIdleCloseOptions) {}
 
@@ -131,13 +149,7 @@ export class ConversationIdleClose {
     const generation = await this.closeGeneration()
     if (!generation) return false
     const now = Date.now()
-    const record: ContainerIdleRecord = {
-      version: 1,
-      id: crypto.randomUUID(),
-      generation,
-      dueAt: now + (this.options.idleCloseMs ?? DEFAULT_IDLE_CLOSE_MS),
-      phase: "waiting",
-    }
+    const waitMs = this.options.idleCloseMs ?? DEFAULT_IDLE_CLOSE_MS
     try {
       return await this.options.storage.transaction(async (txn) => {
         const prior = await txn.get<unknown>(IDLE_KEY)
@@ -145,6 +157,9 @@ export class ConversationIdleClose {
           throw new Error("container idle intent is unreadable")
         }
         if (prior?.phase === "closing") return false
+        // Repeated use may postpone the close, but never past the ceiling: a
+        // background job that keeps touching the runtime must not pin a slot.
+        const record: ContainerIdleRecord = { version: 1, generation, phase: "waiting", ...nextIdleDeadline(prior, now, waitMs) }
         await txn.put(IDLE_KEY, record)
         await this.options.jobs.schedule(record.dueAt, {
           idleID: record.id,
