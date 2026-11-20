@@ -49,6 +49,7 @@ import type { Env } from "./env"
 import { logEvent } from "./log"
 import type { HarnessSettings } from "./settings"
 import { staleAction } from "./lifecycle"
+import { recoveryRequest } from "./recovery"
 import { GITHUB_TOKEN_KEY, workspaceID } from "./vault"
 import { LEGACY_ACCOUNT_STATE_KEY, parseConversationKey } from "./tenancy"
 import { AccountingPolicyError } from "./accounting-policy"
@@ -212,9 +213,8 @@ export class Conversation extends DurableObject<Env> {
       storage: ctx.storage,
       store: this.store,
       usage: this.usage,
-      settings: {
-        fetch: (input, init) => this.env.SETTINGS.getByName("global").fetch(input, init),
-      },
+      settings: { fetch: (input, init) => this.env.SETTINGS.getByName("global").fetch(input, init) },
+      forceStop: async () => ({ stopped: await this.runtime.stop(), released: await this.leases.releaseAfterStop() }),
       withAdmissionLock: (task) => this.admissions.withLock(task),
       live: () => ({ admitting: this.admissions.active, pumping: this.turnExecution.isPumping, activeJobs: this.scheduler.activeCount }),
       jobs: {
@@ -434,7 +434,7 @@ export class Conversation extends DurableObject<Env> {
       prove: (client, sessionID) => this.runtimeUpgrades.proveSession(client, sessionID),
       jobs: {
         schedule: (at, payload) => this.scheduler.schedule("container:idle", at, { ...payload, reason: "unused-runtime" }),
-        cancel: () => this.scheduler.cancel("container:idle"),
+        cancel: () => this.scheduler.cancel("container:idle"), has: () => this.scheduler.has("container:idle"),
       },
     })
 
@@ -734,12 +734,9 @@ export class Conversation extends DurableObject<Env> {
       } catch {
         return Response.json({ error: "valid JSON is required" }, { status: 400 })
       }
-      if (!isRecord(parsed) || Object.keys(parsed).some((key) => key !== "action" && key !== "expectedSnapshotID") ||
-        (parsed.action !== "retry" && parsed.action !== "cancel_before_dispatch") ||
-        typeof parsed.expectedSnapshotID !== "string" || !/^[a-f0-9]{64}$/.test(parsed.expectedSnapshotID)) {
-        return Response.json({ error: "action and SHA-256 expectedSnapshotID are required" }, { status: 400 })
-      }
-      return this.recoveryActions.act(parsed.action, parsed.expectedSnapshotID)
+      const recovery = recoveryRequest(parsed)
+      if (!recovery) return Response.json({ error: "action and SHA-256 expectedSnapshotID are required" }, { status: 400 })
+      return this.recoveryActions.act(recovery.action, recovery.expectedSnapshotID)
     }
     if (url.pathname === "/state") return Response.json({ ...await this.store.get(), turnObservation: await this.turnObservation(), stop: await this.stopObservation() })
     if (url.pathname === "/health") return Response.json({ ok: true })

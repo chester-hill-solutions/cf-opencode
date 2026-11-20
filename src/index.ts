@@ -7,6 +7,7 @@ import { encryptBytes } from "./archive-crypto"
 import { deriveWorkspaceKey } from "@chester-hill-solutions/vault/core"
 import type { Alert } from "./alerts"
 import { annotate, traceId } from "./telemetry"
+import { recoveryRequest } from "./recovery"
 import { MODEL_CATALOG, recommendModel } from "./models"
 import { isOnboardingProxyPath } from "./onboarding"
 import { handleSlackInteraction } from "./slack-interactivity"
@@ -320,16 +321,11 @@ async function handleApi(
     if (request.method === "POST") {
       const parsed = await parseObjectJson(request)
       if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 })
-      const action = parsed.value.action
-      const expectedSnapshotID = parsed.value.expectedSnapshotID
-      if (Object.keys(parsed.value).some((field) => field !== "action" && field !== "expectedSnapshotID") ||
-        (action !== "retry" && action !== "cancel_before_dispatch") ||
-        typeof expectedSnapshotID !== "string" || !/^[a-f0-9]{64}$/.test(expectedSnapshotID)) {
-        return Response.json({ error: "action and SHA-256 expectedSnapshotID are required" }, { status: 400 })
-      }
+      const recovery = recoveryRequest(parsed.value)
+      if (!recovery) return Response.json({ error: "action and SHA-256 expectedSnapshotID are required" }, { status: 400 })
       const response = await conversation.fetch("https://conversation/recovery", {
         method: "POST",
-        body: JSON.stringify({ action, expectedSnapshotID }),
+        body: JSON.stringify(recovery),
       })
       return new Response(response.body, { status: response.status, headers: response.headers })
     }
