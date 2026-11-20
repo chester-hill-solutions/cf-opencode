@@ -497,6 +497,8 @@ export class ConversationAdmissions {
         // failure records remain attributable to this accepted turn.
         runStartedAt: dispatchedAt,
         turnBaseline,
+        // A new dispatch owns its own observation, whatever closed the last one.
+        missingSessionSettlement: undefined,
       })
       if (!(await this.options.store.advance("running"))) {
         await this.options.store.patch({ phase: "running" })

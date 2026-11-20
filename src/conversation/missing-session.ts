@@ -44,11 +44,15 @@ export async function settleMissingSession(ports: MissingSessionPorts, error: un
     await ports.store.transitionTurn(state.turnID, { state: "failed", finishedAt: Date.now() }).catch(() => undefined)
   }
   await ports.store.patch({
-    // A retained reservation needs an operator, so the phase stays out of idle
-    // and idle-close does not delete the runtime that operator may resume.
+    // The turn is over either way. A retained reservation is marked as awaiting
+    // an operator so that job rehydration does not re-arm the turn: a phase that
+    // still looks running is exactly what made this settlement loop once per wake.
+    phase: "idle",
+    runStartedAt: undefined,
+    settlementError: reservationRetained ? MISSING_SESSION_RETAINED : undefined,
     ...(reservationRetained
-      ? { phase: "running" as const, settlementError: MISSING_SESSION_RETAINED }
-      : { phase: "idle" as const, settlementError: undefined, runStartedAt: undefined }),
+      ? { missingSessionSettlement: { at: Date.now(), ...(state.sessionID ? { sessionID: state.sessionID } : {}) } }
+      : { missingSessionSettlement: undefined }),
     turnID: undefined,
     lastTurnError: MISSING_SESSION_FAILED,
     reportedError: "session_missing",

@@ -154,8 +154,7 @@ export class ConversationScheduler {
     if (await this.options.storage.get<boolean>("lifecycleJobsSealed")) return
     const state = await this.options.store.get()
     const phase = state.phase ?? "idle"
-    if (!this.capability.has("turn:observe") &&
-      (state.budgetReservation?.dispatched || phase === "running" || phase === "settling")) {
+    if (!this.capability.has("turn:observe") && needsObservation(state)) {
       await this.schedule("turn:observe", Date.now(), {
         reservationID: state.budgetReservation?.reservationID,
         reservationDate: state.budgetReservation?.date,
@@ -409,6 +408,17 @@ export function failureRetryAt(
   if (jobFailureReason(failure) === "session_missing") return undefined
   if (kind === "turn:observe" && !observationHasWork(state)) return undefined
   return Date.now() + 30_000
+}
+
+/**
+ * A rehydrated turn is observable only while it is dispatched, running or
+ * settling, and never once it was closed for a lost session: a wake (a lease
+ * renewal is enough) would otherwise re-arm the settlement it just performed.
+ */
+function needsObservation(state: ConversationState): boolean {
+  if (state.missingSessionSettlement) return false
+  const phase = state.phase ?? "idle"
+  return state.budgetReservation?.dispatched === true || phase === "running" || phase === "settling"
 }
 
 /** A turn is observable only while it is dispatched, running or settling. */

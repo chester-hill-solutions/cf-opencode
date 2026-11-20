@@ -498,7 +498,6 @@
       "src/conversation/readiness.ts:complexity:Async method 'prepare' has a complexity of 133. Maximum allowed is 10.#1",
       "src/conversation/reconciliation.ts:complexity:Async arrow function has a complexity of 33. Maximum allowed is 10.#1",
       "src/conversation/reconciliation.ts:complexity:Async method 'buildDraft' has a complexity of 138. Maximum allowed is 10.#1",
-      "src/conversation/recovery-actions.ts:complexity:Async arrow function has a complexity of 11. Maximum allowed is 10.#1",
       "src/conversation/recovery-actions.ts:complexity:Async arrow function has a complexity of 61. Maximum allowed is 10.#1",
       "src/conversation/recovery-actions.ts:complexity:Async method 'status' has a complexity of 24. Maximum allowed is 10.#1",
       "src/conversation/runtime-upgrades.ts:complexity:Async arrow function has a complexity of 15. Maximum allowed is 10.#1",

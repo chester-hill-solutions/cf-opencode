@@ -198,8 +198,6 @@ export interface ConversationState {
   lastTurnError?: string
   /** Legacy cumulative spend snapshot; durable usage sources supersede it. */
   usage?: { date: string; costUSD: number; input: number; output: number }
-  /** Legacy auxiliary accumulator; durable usage sources supersede it. */
-  usageAux?: { date: string; costUSD: number; input: number; output: number; seen: string[] }
   /** Highest acknowledged durable session log sequence for this session. */
   usageCursor?: { sessionID: string; seq: number }
   /** Latest acknowledged billable step for terminal settlement proof. */
@@ -208,8 +206,9 @@ export interface ConversationState {
   usageExecution?: { sessionID: string; startedSeq: number; terminalSeq: number; latestStepSeq: number }
   /** Why the last usage refresh failed, for operators. */
   usageError?: string
-  /** Why terminal settlement is paused while usage or hold release is unacknowledged. */
+  /** Why terminal settlement is paused, or why a closed turn keeps its reservation. */
   settlementError?: string
+  missingSessionSettlement?: { at: number; sessionID?: string }
   /** Slack event ids already handled (dedupe). */
   seen: string[]
   /** Pending permission requests: requestID -> sessionID. */

@@ -163,14 +163,16 @@ describe("a turn whose session the runtime lost", () => {
     expect(result.state?.turnID).toBeUndefined()
     expect(result.state?.pending).toEqual({})
     expect(result.state?.lastTurnError).toContain("no longer knows this session")
+    expect(result.state?.missingSessionSettlement).toBeUndefined()
     // A settled turn owes no observation: no retry row may survive it.
     expect(result.job).toBeUndefined()
   })
 
-  it("retains a dispatched reservation for an operator instead of re-observing", async () => {
+  it("retains a dispatched reservation for an operator without re-arming the turn", async () => {
     const stub = env.CONVERSATION.getByName("C1:session-lost-retained")
     const result = await runInDurableObject(stub, async (instance, runtime) => {
-      instance.transport = lostSessionContainer({ context: 0, permission: 0 })
+      const observed = { context: 0, permission: 0 }
+      instance.transport = lostSessionContainer(observed)
       await runtime.storage.put("state", {
         phase: "running",
         runStartedAt: Date.now() - 5_000,
@@ -181,16 +183,22 @@ describe("a turn whose session the runtime lost", () => {
       } satisfies ConversationState)
       await startLegacyJobs(instance, runtime.storage)
       await driveConversationJobs(instance, runtime.storage, ["turn:observe"])
-      const job = runtime.storage.sql.exec<{ id: string }>(
+      const settled = await runtime.storage.get<ConversationState>("state")
+      const afterSettlement = observed.context
+      // A later alarm (a lease renewal is enough) must not rehydrate the turn.
+      await startLegacyJobs(instance, runtime.storage)
+      const rehydrated = runtime.storage.sql.exec<{ id: string }>(
         "SELECT id FROM cf_agents_jobs WHERE id = ?",
         "turn:observe",
       ).toArray()[0]
-      return { state: await runtime.storage.get<ConversationState>("state"), job }
+      return { settled, afterSettlement, rehydrated, observed }
     })
     // The spend was dispatched and cannot be measured, so an operator retires it.
-    expect(result.state?.budgetReservation?.reservationID).toBe("hold-lost")
-    expect(result.state?.settlementError).toContain("reservation retained")
-    expect(result.state?.phase).toBe("running")
-    expect(result.job).toBeUndefined()
+    expect(result.settled?.budgetReservation?.reservationID).toBe("hold-lost")
+    expect(result.settled?.settlementError).toContain("reservation retained")
+    expect(result.settled?.missingSessionSettlement?.sessionID).toBe("ses_lost")
+    expect(result.settled?.phase).toBe("idle")
+    expect(result.rehydrated).toBeUndefined()
+    expect(result.observed.context).toBe(result.afterSettlement)
   })
 })
