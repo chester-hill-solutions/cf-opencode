@@ -517,6 +517,16 @@ confirming there is nothing to replay; it now proceeds and records
 inspect again: a leftover permission prompt whose turn is gone classifies as
 `orphaned` and `abandon` clears it.
 
+A turn whose runtime has lost its session settles itself: `turn:observe` detects
+`Session not found`, fails the turn, clears that session's prompts, stops the
+container, releases the lease and stops retrying. Without that it re-prepared a
+container, failed the same way and renewed the lease forever. A *dispatched*
+reservation is retained, because the provider may have billed a turn whose usage
+can no longer be read: the conversation reports
+`settlementError: runtime no longer knows this session; reservation retained for
+operator reconciliation`, and `retry`, `force_stop` or `abandon` stay an operator
+decision. A failed observation that owns no turn at all is never rescheduled.
+
 2026-11-19 reference: two conversations sat dispatched for 406 minutes. `retry`
 re-failed, `cancel` returned "interrupt outcome is unknown", reconciliation could
 not prove quiescence, and `delete` refused. Reaching `delivered` needed rungs 3, 4

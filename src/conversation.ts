@@ -27,6 +27,7 @@ import { ConversationLease } from "./conversation/lease"
 import { renewConversationLease } from "./conversation/lease-renewal"
 import { ConversationBudgetReservations, type BudgetReservationResult } from "./conversation/budget-reservations"
 import { ConversationTurnExecution } from "./conversation/turn-execution"
+import { ConversationTurnObservation } from "./conversation/turn-observation"
 import { ConversationReadiness } from "./conversation/readiness"
 import { ConversationReconciliation } from "./conversation/reconciliation"
 import { ConversationAccountingCutover } from "./conversation/accounting-cutover"
@@ -57,6 +58,7 @@ import { parseWorkspaceRepositorySelection, parseWorkspaceRepositoryBinding, Wor
 import { parseOperatorReconciliationProposal } from "./operator-reconciliation"
 import { hasConnectedProvider } from "./onboarding"
 import type { ConversationJobPayload } from "./conversation/jobs"
+import { settleMissingSession } from "./conversation/missing-session"
 import { ConversationScheduler } from "./conversation/scheduler"
 import { ConversationSessions } from "./conversation/sessions"
 import { ConversationSlackAdapter } from "./conversation/slack-adapter"
@@ -112,6 +114,7 @@ export class Conversation extends DurableObject<Env> {
   private readonly leases: ConversationLease
   private readonly budgetReservations: ConversationBudgetReservations
   private readonly turnExecution: ConversationTurnExecution
+  private readonly turnObserver: ConversationTurnObservation
   private readonly readiness: ConversationReadiness
   private readonly reconciliation: ConversationReconciliation
   private readonly accountingCutover: ConversationAccountingCutover
@@ -208,22 +211,7 @@ export class Conversation extends DurableObject<Env> {
       replyWake: () => this.finalReplies.nextAt(),
     })
     this.lifecycle.use(this.scheduler.capability)
-    this.recoveryActions = new ConversationRecoveryActions({
-      conversationID: ctx.id.toString(),
-      storage: ctx.storage,
-      store: this.store,
-      usage: this.usage,
-      settings: { fetch: (input, init) => this.env.SETTINGS.getByName("global").fetch(input, init) },
-      forceStop: async () => ({ stopped: await this.runtime.stop(), released: await this.leases.releaseAfterStop() }), abandonReservation: (reservation) => this.budgetReservations.release(reservation),
-      withAdmissionLock: (task) => this.admissions.withLock(task),
-      live: () => ({ admitting: this.admissions.active, pumping: this.turnExecution.isPumping, activeJobs: this.scheduler.activeCount }),
-      jobs: {
-        epoch: () => this.scheduler.epoch(),
-        evidence: () => this.scheduler.evidence(),
-        resumeSealedIdle: (evidence, state) => this.scheduler.resumeSealedIdle(evidence, state),
-        scheduleRecovery: (at, payload, allowSealed) => this.scheduler.schedule("recovery:wake", at, payload, allowSealed),
-      },
-    })
+    this.recoveryActions = this.createRecoveryActions()
     this.controlPlane = new ConversationControlPlane({
       conversationID: ctx.id.toString(),
       storage: ctx.storage,
@@ -405,6 +393,19 @@ export class Conversation extends DurableObject<Env> {
       },
       startStream: (sessionID) => this.turnExecution.startStream(sessionID),
       waitUntil: (promise) => ctx.waitUntil(promise),
+    })
+    this.turnObserver = new ConversationTurnObservation({
+      conversationID: ctx.id.toString(),
+      storage: ctx.storage,
+      store: this.store,
+      scheduler: this.scheduler,
+      runtimeUpgrades: this.runtimeUpgrades,
+      recoveryActive: () => this.recoveryActions.active,
+      admissions: this.admissions,
+      turnExecution: this.turnExecution,
+      count: (name) => this.count(name),
+      settings: () => this.settings(),
+      settleMissingSession: (error) => this.settleLostSession(error),
     })
     const runtime = this.runtime
     this.idleClose = new ConversationIdleClose({
@@ -606,6 +607,30 @@ export class Conversation extends DurableObject<Env> {
         if (!response.ok) { void response.body?.cancel().catch(() => {}); throw new Error("Slack delivery was not acknowledged") }
         const body = JSON.parse(new TextDecoder().decode(await readWorkspaceCheckBytes(response.body, 32 * 1024, 10000))) as { ok?: boolean }
         if (body.ok !== true) throw new Error("Slack delivery was not acknowledged")
+      },
+    })
+  }
+
+  private createRecoveryActions(): ConversationRecoveryActions {
+    return new ConversationRecoveryActions({
+      conversationID: this.ctx.id.toString(),
+      storage: this.ctx.storage,
+      store: this.store,
+      usage: this.usage,
+      settings: { fetch: (input, init) => this.env.SETTINGS.getByName("global").fetch(input, init) },
+      forceStop: async () => ({ stopped: await this.runtime.stop(), released: await this.leases.releaseAfterStop() }),
+      abandonReservation: (reservation) => this.budgetReservations.release(reservation),
+      withAdmissionLock: (task) => this.admissions.withLock(task),
+      live: () => ({
+        admitting: this.admissions.active,
+        pumping: this.turnExecution.isPumping,
+        activeJobs: this.scheduler.activeCount,
+      }),
+      jobs: {
+        epoch: () => this.scheduler.epoch(),
+        evidence: () => this.scheduler.evidence(),
+        resumeSealedIdle: (evidence, state) => this.scheduler.resumeSealedIdle(evidence, state),
+        scheduleRecovery: (at, payload, allowSealed) => this.scheduler.schedule("recovery:wake", at, payload, allowSealed),
       },
     })
   }
@@ -1196,57 +1221,20 @@ export class Conversation extends DurableObject<Env> {
     await this.lifecycle.alarm()
   }
 
-  private async processTurnObservation(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
-    if (!(await this.scheduler.isCurrent(payload)) || await this.runtimeUpgrades.hasPending()) return undefined
-    const before = await this.store.get()
-    const reservation = before.budgetReservation
-    if (payload.reservationID && (!reservation?.dispatched || reservation.reservationID !== payload.reservationID ||
-      reservation.date !== payload.reservationDate)) return undefined
-    if (!reservation?.dispatched && !["running", "settling"].includes(before.phase ?? "idle")) return undefined
-    if (this.recoveryActions.active || this.admissions.active || this.turnExecution.isPumping) return { rescheduleAt: Date.now() + POLL_MS }
+  /** Poll a dispatched turn; the observation settles a session the runtime lost. */
+  private processTurnObservation(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
+    return this.turnObserver.run(payload)
+  }
 
-    const phase = before.phase ?? "idle"
-    if (reservation?.dispatched && phase !== "running" && phase !== "settling") {
-      await this.admissions.resumeDispatched(false)
-    }
-    const state = await this.store.get()
-    const action = staleAction(state, Date.now(), false)
-    if (action === "settlement") {
-      logEvent("settlement.stale", {
-        ...(state.runStartedAt ? { durationMs: Date.now() - state.runStartedAt } : {}),
-      })
-      if (state.budgetReservation?.dispatched) {
-        await this.store.patch({ phase: "running" })
-      } else {
-        await this.store.advance("idle")
-        return undefined
-      }
-    }
-    if (action === "timeout") {
-      const reported = await this.ctx.storage.get<PersistedTurnTimeout>("turnTimeout")
-      if (!reported || reported.sessionID !== state.sessionID || reported.runStartedAt !== state.runStartedAt) {
-        await this.ctx.storage.put("turnTimeout", { sessionID: state.sessionID, runStartedAt: state.runStartedAt, observedAt: Date.now() })
-        await this.count("turn.timedout")
-        logEvent("turn.timedout", {
-          conversationID: this.ctx.id.toString(),
-          sessionID: state.sessionID,
-          ...(state.runStartedAt ? { durationMs: Date.now() - state.runStartedAt } : {}),
-        })
-      }
-      if (state.budgetReservation?.dispatched) {
-        await this.turnExecution.pauseSettlement("turn exceeded its time limit; dispatched reservation retained while context is checked")
-      } else {
-        await this.turnExecution.finishTimedOutTurn(state, state.lastReply ?? "", { message: "turn timed out" })
-        return undefined
-      }
-    }
-    const settled = await this.turnExecution.pumpOnce()
-    if (settled) {
-      const after = await this.store.get()
-      if (!after.budgetReservation?.dispatched) return undefined
-    }
-    const settings = await this.settings().catch(() => undefined)
-    return { rescheduleAt: Date.now() + (this.turnExecution.isStreaming ? 30_000 : (settings?.pollSeconds ?? 2) * 1000) }
+  private settleLostSession(error: unknown): Promise<boolean> {
+    return settleMissingSession({
+      conversationID: this.ctx.id.toString(),
+      store: this.store,
+      stopRuntime: () => this.runtime.stop(),
+      releaseLease: () => this.leases.releaseAfterStop(),
+      count: (name) => this.count(name),
+      event: (event) => this.deliver(event),
+    }, error)
   }
 
   private async processAdmissionRetry(payload: ConversationJobPayload): Promise<{ rescheduleAt: number } | undefined> {
