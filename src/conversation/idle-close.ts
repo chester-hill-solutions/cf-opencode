@@ -205,8 +205,10 @@ export class ConversationIdleClose {
   }
 
   private eligibleState(state: ConversationState): boolean {
+    // A container that never created a session still holds a lease; it has
+    // nothing to prove and is closed through the archive-only path below.
     return (state.phase ?? "idle") === "idle" && (state.queue?.length ?? 0) === 0 && !state.budgetReservation &&
-      !state.checkpointPending && Object.keys(state.pending ?? {}).length === 0 && Boolean(state.sessionID)
+      !state.checkpointPending && Object.keys(state.pending ?? {}).length === 0
   }
 
   private async verifyAndClose(record: ContainerIdleRecord, activityAtRequest: number): Promise<IdleCloseOutcome> {
@@ -220,7 +222,9 @@ export class ConversationIdleClose {
     const client = makeClient(portFetch(port))
     const initialState = await this.options.store.get()
     const sessionID = initialState.sessionID
-    if (!sessionID) return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
+    // Without a session there is no log to replay and no quiescence proof to
+    // take, but the container is still holding a slot.
+    if (!sessionID) return this.closeWithoutSession(record, activityAtRequest)
 
     try {
       await this.options.usage.replayLogLocked(sessionID, undefined, client)
@@ -233,27 +237,48 @@ export class ConversationIdleClose {
         this.options.runtime.generation !== record.generation) {
         return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
       }
-      if (!(await this.options.checkpoints.captureOwned())) return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
-      const checkpointState = await this.options.store.get()
-      const manifest = checkpointState.checkpointManifest
-      if (!manifest) return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
-      await this.options.checkpoints.verifySplitArchive(manifest, true)
-
-      if (this.options.access.activityEpoch !== activityAtRequest || await this.blockedBeforeClose()) {
-        return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
-      }
-      const closeClaim = await this.markClosing(record, sessionID, activityAtRequest)
-      if (closeClaim === "stale") return undefined
-      if (closeClaim === "deferred") return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
-      return this.finishClose({ ...record, phase: "closing" })
+      return await this.archiveAndClose(record, sessionID, activityAtRequest)
     } catch {
       return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
     }
   }
 
+  /**
+   * Close a container that never created a session. There is no session log to
+   * replay and no runtime proof to take, so the encrypted workspace archive is
+   * the only gate. Without this the lease renews for as long as the container
+   * lives and starves the cap.
+   */
+  private closeWithoutSession(
+    record: ContainerIdleRecord,
+    activityAtRequest: number,
+  ): Promise<IdleCloseOutcome> {
+    return this.archiveAndClose(record, undefined, activityAtRequest)
+  }
+
+  /** Publish and verify the archive, then claim, stop and release. */
+  private async archiveAndClose(
+    record: ContainerIdleRecord,
+    sessionID: string | undefined,
+    activityAtRequest: number,
+  ): Promise<IdleCloseOutcome> {
+    if (!(await this.options.checkpoints.captureOwned())) return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
+    const manifest = (await this.options.store.get()).checkpointManifest
+    if (!manifest) return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
+    await this.options.checkpoints.verifySplitArchive(manifest, true)
+
+    if (this.options.access.activityEpoch !== activityAtRequest || await this.blockedBeforeClose()) {
+      return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
+    }
+    const closeClaim = await this.markClosing(record, sessionID, activityAtRequest)
+    if (closeClaim === "stale") return undefined
+    if (closeClaim === "deferred") return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
+    return this.finishClose({ ...record, phase: "closing" })
+  }
+
   private async markClosing(
     expected: ContainerIdleRecord,
-    sessionID: string,
+    sessionID: string | undefined,
     activityAtStart: number,
   ): Promise<"marked" | "deferred" | "stale"> {
     return this.options.storage.transaction(async (txn) => {
