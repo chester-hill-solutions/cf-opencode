@@ -345,7 +345,7 @@ export class ConversationScheduler {
           const jobPayload = this.capability.getPayload(kind)
           if (jobPayload?.claimID === claimID) {
             await this.capability.cancel(kind)
-            const retryAt = failure ? Date.now() + 30_000 : outcome?.rescheduleAt
+            const retryAt = failure ? failureRetryAt(kind, failure, state) : outcome?.rescheduleAt
             if (retryAt !== undefined) await this.schedule(kind, Math.max(Date.now(), retryAt), payload)
           }
           if (state) {
@@ -394,8 +394,32 @@ const FAILURE_REASONS: Array<[RegExp, string]> = [
   [/timeout|timed out/i, "timeout"],
 ]
 
+/**
+ * When a failed job may run again.
+ *
+ * A job retries while it still owns work. Retrying one that owns none is how a
+ * single failure becomes an alarm loop: every wake prepares a runtime, fails the
+ * same way and renews the lease, so the conversation can never go quiet.
+ */
+export function failureRetryAt(
+  kind: ConversationJobKind,
+  failure: unknown,
+  state: ConversationState | undefined,
+): number | undefined {
+  if (jobFailureReason(failure) === "session_missing") return undefined
+  if (kind === "turn:observe" && !observationHasWork(state)) return undefined
+  return Date.now() + 30_000
+}
+
+/** A turn is observable only while it is dispatched, running or settling. */
+function observationHasWork(state: ConversationState | undefined): boolean {
+  if (!state) return false
+  const phase = state.phase ?? "idle"
+  return state.budgetReservation?.dispatched === true || phase === "running" || phase === "settling"
+}
+
 /** A bounded reason for a failed job: never the raw message. */
-function jobFailureReason(error: unknown): string {
+export function jobFailureReason(error: unknown): string {
   const message = displayError(error)
   return FAILURE_REASONS.find(([pattern]) => pattern.test(message))?.[1] ?? "unclassified"
 }

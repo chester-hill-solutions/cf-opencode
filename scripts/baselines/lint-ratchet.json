@@ -457,7 +457,6 @@
       "src/conversation.ts:complexity:Async method 'processAdmissionRetry' has a complexity of 20. Maximum allowed is 10.#1",
       "src/conversation.ts:complexity:Async method 'processCheckpointRetry' has a complexity of 12. Maximum allowed is 10.#1",
       "src/conversation.ts:complexity:Async method 'processRecoveryWake' has a complexity of 29. Maximum allowed is 10.#1",
-      "src/conversation.ts:complexity:Async method 'processTurnObservation' has a complexity of 38. Maximum allowed is 10.#1",
       "src/conversation.ts:complexity:Async method 'routeRequest' has a complexity of 86. Maximum allowed is 10.#1",
       "src/conversation.ts:complexity:Async method 'withClient' has a complexity of 15. Maximum allowed is 10.#1",
       "src/conversation.ts:complexity:Async method 'workspacePreflight' has a complexity of 12. Maximum allowed is 10.#1",
