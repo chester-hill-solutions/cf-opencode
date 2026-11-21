@@ -2,6 +2,7 @@ import { logEvent } from "../log"
 import { withSpan } from "../telemetry"
 import type { ConversationRuntime } from "./runtime"
 import { LEGACY_ALARM_MIGRATION_KEY, isFreshLegacyAlarmMigration } from "./job-state"
+import { STATE_METADATA_FIELDS } from "../conversation-state"
 import type { ConversationState } from "../state"
 import { hasBenignSlackControlHistory } from "../state"
 import { isFreshTurnState } from "../turns"
@@ -11,13 +12,15 @@ import { parseWorkspaceRepositoryBinding } from "../workspace-repository"
 type RuntimeContainer = NonNullable<DurableObjectState["container"]>
 
 /** Fields a conversation may carry before its first turn has been dispatched. */
-const FRESH_STATE_FIELDS = new Set([
+const FRESH_STATE_FIELDS = new Set<string>([
   "phase", "seen", "pending", "slackEngaged", "modelOverride",
   "transport", "slack", "announcedForms", "admissionID", "admissionStartedAt",
   "queue", "permissionNotifications",
   "workspaceRepository",
   "slackControlHistory",
   "turnID", "turns", "turnKeys",
+  // The store stamps the record shape on every write, including the first.
+  ...STATE_METADATA_FIELDS,
 ])
 
 /**
