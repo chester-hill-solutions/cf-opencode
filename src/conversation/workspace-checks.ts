@@ -1,6 +1,7 @@
 import type { ContainerPort } from "../opencode"
 import type { ConversationStore } from "../state"
 import type { ConversationCheckpoints } from "./checkpoints"
+import { archiveMetadata } from "./archive-keys"
 import { encryptBytes } from "../archive-crypto"
 import {
   parseWorkspaceCheckIntent, parseWorkspaceCheckRequest, sameWorkspaceCheckRequest, workspaceCheckRequestSHA256,
@@ -24,7 +25,7 @@ interface WorkspaceChecksOptions {
   storage: DurableObjectStorage
   store: ConversationStore
   bucket: R2Bucket
-  checkpoints: Pick<ConversationCheckpoints, "cryptoKey" | "decryptBody">
+  checkpoints: Pick<ConversationCheckpoints, "cryptoKey" | "decryptBody" | "keyId">
   admission<T>(operation: () => Promise<T>): Promise<T>
   usage<T>(operation: () => Promise<T>): Promise<T>
   isWarm(): boolean
@@ -128,7 +129,7 @@ export class ConversationWorkspaceChecks {
       throw new CheckError(503, "WORKSPACE_CHECK_SOURCE_UNAVAILABLE")
     }
     try {
-      const clear = await this.options.checkpoints.decryptBody(object.body, true)
+      const clear = await this.options.checkpoints.decryptBody(object.body, true, metadata)
       const source = await verifyWorkspaceCheckSnapshot(await readJSON(clear, MAX_SOURCE_BYTES))
       this.matchSource(intent, source)
       if (metadata.sourceSHA256 !== source.snapshotSHA256) throw new Error("source digest mismatch")
@@ -198,10 +199,10 @@ export class ConversationWorkspaceChecks {
         this.matchSource(selected, source)
         const ciphertext = await encryptBytes(new TextEncoder().encode(source.canonicalJSON), key)
         try {
-          await this.options.bucket.put(this.sourceKey(selected.requestID), ciphertext, { customMetadata: {
+          await this.options.bucket.put(this.sourceKey(selected.requestID), ciphertext, { customMetadata: archiveMetadata({
             encrypted: "1", kind: "workspace-check-source", requestID: selected.requestID,
             requestSHA256: await workspaceCheckRequestSHA256(selected), sourceSHA256: source.snapshotSHA256,
-          } })
+          }, await this.options.checkpoints.keyId()) })
         } catch {
           const acknowledged = await this.storedSource(selected)
           if (!acknowledged || acknowledged.snapshotSHA256 !== source.snapshotSHA256) throw new CheckError(503, "WORKSPACE_CHECK_SOURCE_UNAVAILABLE")

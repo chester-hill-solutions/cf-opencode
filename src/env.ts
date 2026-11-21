@@ -60,6 +60,8 @@ export interface Env {
   ESCALATION_CHANNEL?: string
   /** 64 hex characters; encrypts provider and GitHub credentials at rest. */
   VAULT_MASTER_KEY?: string
+  /** Comma separated retained secrets; read-only, used to decrypt older archives. */
+  VAULT_MASTER_KEY_PREVIOUS?: string
   /**
    * Explicit opt-out of archive encryption. Without a vault key, checkpoints
    * and account seeds fail closed unless this is exactly "1".

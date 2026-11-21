@@ -1,4 +1,5 @@
-import { deriveWorkspaceKey } from "@chester-hill-solutions/vault/core"
+import { archiveKeyRing, archiveMetadata, configuredMasters, selectArchiveKey } from "./archive-keys"
+import { archiveKeyId } from "../vault"
 import { plaintextArchivesAllowed, type ArchivePolicyEnv } from "../archive-policy"
 import {
   decryptTransform,
@@ -101,7 +102,7 @@ export class ConversationCheckpoints {
       if (!object || object.size !== part.size || object.customMetadata?.encrypted !== (part.encrypted ? "1" : "0")) {
         throw new Error("split checkpoint object does not match its manifest")
       }
-      const clear = await this.decryptBody(object.body, part.encrypted)
+      const clear = await this.decryptBody(object.body, part.encrypted, object.customMetadata)
       const reader = clear.getReader()
       let bytes = 0
       try {
@@ -141,21 +142,26 @@ export class ConversationCheckpoints {
   }
 
   async cryptoKey(): Promise<CryptoKey | undefined> {
-    const master = this.options.archiveEnv.VAULT_MASTER_KEY
-    if (!master) {
-      if (plaintextArchivesAllowed(this.options.archiveEnv)) return undefined
+    const env = this.options.archiveEnv
+    if (configuredMasters(env).length === 0) {
+      if (plaintextArchivesAllowed(env)) return undefined
       throw new Error(
         "VAULT_MASTER_KEY is required to encrypt checkpoints; set it or explicitly allow plaintext archives",
       )
     }
-    return deriveWorkspaceKey(master, this.options.workspaceID)
+    return (await archiveKeyRing(env, this.options.workspaceID)).active.key
   }
 
-  async decryptBody(body: ReadableStream, encrypted: boolean): Promise<ReadableStream> {
+  /** Identity of the key new archives are sealed with, for rotation. */
+  async keyId(): Promise<string | undefined> {
+    const master = this.options.archiveEnv.VAULT_MASTER_KEY
+    return master ? archiveKeyId(master, this.options.workspaceID) : undefined
+  }
+
+  async decryptBody(body: ReadableStream, encrypted: boolean, metadata?: { keyId?: string }): Promise<ReadableStream> {
     if (!encrypted) return body
-    const key = await this.cryptoKey()
-    if (!key) throw new Error("checkpoint is encrypted but VAULT_MASTER_KEY is not configured")
-    return body.pipeThrough(decryptTransform(key))
+    const ring = await archiveKeyRing(this.options.archiveEnv, this.options.workspaceID)
+    return body.pipeThrough(decryptTransform(selectArchiveKey(ring, metadata?.keyId).key))
   }
 
   async retry(): Promise<boolean> {
@@ -228,11 +234,16 @@ export class ConversationCheckpoints {
     if (stale.length) this.emitTelemetry({ event: "checkpoint.pruned", count: stale.length })
   }
 
-  private async uploadPart(key: string, response: Response, cryptoKey: CryptoKey | undefined): Promise<number> {
+  private async uploadPart(
+    key: string,
+    response: Response,
+    cryptoKey: CryptoKey | undefined,
+    keyId?: string,
+  ): Promise<number> {
     if (!response.body) throw new Error("checkpoint part has no body")
     const encrypted = Boolean(cryptoKey)
     const length = Number(response.headers.get("content-length"))
-    const metadata = { customMetadata: { encrypted: encrypted ? "1" : "0" } }
+    const metadata = { customMetadata: archiveMetadata({ encrypted: encrypted ? "1" : "0" }, keyId) }
     let bytes: number
     if (cryptoKey) {
       if (Number.isFinite(length) && length > 0) {
@@ -320,7 +331,7 @@ export class ConversationCheckpoints {
               return
             }
             if (!response.ok) throw new Error(`checkpoint returned ${response.status}`)
-            const bytes = await this.uploadPart(workspaceKey, response, cryptoKey)
+            const bytes = await this.uploadPart(workspaceKey, response, cryptoKey, await this.keyId())
             span.setAttribute("checkpoint.bytes", bytes)
             void this.options.count("checkpoint.saved")
             await this.options.store.patch({
@@ -348,7 +359,7 @@ export class ConversationCheckpoints {
             }
             await this.requirePart(workspacePart, "workspace")
           } else if (response.ok) {
-            const bytes = await this.uploadPart(workspaceKey, response, cryptoKey)
+            const bytes = await this.uploadPart(workspaceKey, response, cryptoKey, await this.keyId())
             workspacePart = { key: workspaceKey, size: bytes, encrypted }
             uploaded = true
           } else {
@@ -371,7 +382,7 @@ export class ConversationCheckpoints {
             statePart = undefined
             stateFingerprint = undefined
           } else if (stateResponse.ok) {
-            const bytes = await this.uploadPart(stateKey, stateResponse, cryptoKey)
+            const bytes = await this.uploadPart(stateKey, stateResponse, cryptoKey, await this.keyId())
             statePart = { key: stateKey, size: bytes, encrypted }
             stateFingerprint = stateResponse.headers.get("x-state-fingerprint") ?? stateFingerprint
             uploaded = true

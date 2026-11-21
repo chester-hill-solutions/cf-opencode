@@ -175,6 +175,7 @@ export class ConversationReadiness {
         const workspace = await this.options.checkpoints.decryptBody(
           checkpoint.workspace.body,
           checkpoint.workspace.customMetadata?.encrypted === "1",
+          checkpoint.workspace.customMetadata,
         )
         const workspaceQuery = checkpoint.split
           ? "?part=workspace" + (checkpoint.state ? "" : "&final=1")
@@ -199,6 +200,7 @@ export class ConversationReadiness {
           const stateArchive = await this.options.checkpoints.decryptBody(
             checkpoint.state.body,
             checkpoint.state.customMetadata?.encrypted === "1",
+            checkpoint.state.customMetadata,
           )
           const stateStartedAt = Date.now()
           const restoredState = await control.fetch("http://container/restore?part=state", {
@@ -225,7 +227,7 @@ export class ConversationReadiness {
         const seed = await env.CHECKPOINTS.get(accountStateKey(parseConversationKey(key)))
         if (seed?.body) {
           const body = seed.customMetadata?.encrypted === "1"
-            ? await this.options.checkpoints.decryptBody(seed.body, true)
+            ? await this.options.checkpoints.decryptBody(seed.body, true, seed.customMetadata)
             : seed.body
           const seeded = await control.fetch("http://container/seed-state", {
             method: "POST", body, signal: AbortSignal.timeout(60_000),

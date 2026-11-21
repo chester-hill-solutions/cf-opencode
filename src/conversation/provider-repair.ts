@@ -4,6 +4,7 @@ import type { ContainerPort } from "../opencode"
 import { portFetch } from "../opencode"
 import type { ConversationStore } from "../state"
 import type { ConversationCheckpoints } from "./checkpoints"
+import { archiveMetadata } from "./archive-keys"
 import { encryptBytes } from "../archive-crypto"
 import { readWorkspaceCheckBytes } from "./workspace-checks"
 
@@ -20,7 +21,7 @@ interface Repair extends RepairRequest {
 export class ProviderRepairError extends Error { constructor(readonly code: string, readonly status = 409) { super(code) } }
 interface Options {
   id: string; storage: DurableObjectStorage; store: ConversationStore; bucket: R2Bucket
-  checkpoints: Pick<ConversationCheckpoints, "cryptoKey" | "decryptBody" | "captureOwned">
+  checkpoints: Pick<ConversationCheckpoints, "cryptoKey" | "decryptBody" | "captureOwned" | "keyId">
   enabled(): boolean
   admission<T>(task: () => Promise<T>): Promise<T>
   usage<T>(task: () => Promise<T>): Promise<T>
@@ -111,7 +112,7 @@ export class ConversationProviderRepair {
     const object = await this.options.bucket.get(this.capsuleKey(row))
     if (object) {
       if (object.customMetadata?.encrypted !== "1" || object.customMetadata.kind !== "provider-credential-repair" || object.customMetadata.previewID !== row.previewID || object.size > 32768) { void object.body.cancel().catch(() => {}); throw new ProviderRepairError("PROVIDER_REPAIR_BUNDLE_UNAVAILABLE", 503) }
-      const clear = await this.options.checkpoints.decryptBody(object.body, true)
+      const clear = await this.options.checkpoints.decryptBody(object.body, true, object.customMetadata)
       const credential = keyCredential(JSON.parse(new TextDecoder().decode(await readWorkspaceCheckBytes(clear, 24000))))
       if (credential.id !== row.sourceCredentialID || await sha(credential.value) !== row.sourceFingerprint) throw new ProviderRepairError("PROVIDER_REPAIR_BUNDLE_UNAVAILABLE", 503)
       return credential
@@ -120,7 +121,7 @@ export class ConversationProviderRepair {
     const credential = await this.source(row.sourceCredentialID)
     if (await sha(credential.value) !== row.sourceFingerprint) throw new ProviderRepairError("PROVIDER_REPAIR_SOURCE_CHANGED")
     const encrypted = await encryptBytes(new TextEncoder().encode(JSON.stringify(credential)), cryptoKey)
-    await this.options.bucket.put(this.capsuleKey(row), encrypted, { customMetadata: { encrypted: "1", kind: "provider-credential-repair", previewID: row.previewID } })
+    await this.options.bucket.put(this.capsuleKey(row), encrypted, { customMetadata: archiveMetadata({ encrypted: "1", kind: "provider-credential-repair", previewID: row.previewID }, await this.options.checkpoints.keyId()) })
     // Read through authenticated storage before changing the Linux credential store.
     return this.capsule(row, cryptoKey, false)
   }

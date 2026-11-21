@@ -22,6 +22,17 @@ export interface VaultEnv {
 export const GITHUB_TOKEN_KEY = "github.token"
 export const GITHUB_LOGIN_KEY = "github.login"
 
+/**
+ * Public identity of the archive key for one master secret: a fingerprint, never
+ * the secret. Stored with every archive so a rotation can pick the right key
+ * instead of trial-decrypting a stream.
+ */
+export async function archiveKeyId(master: string, workspaceID: string): Promise<string> {
+  const material = new TextEncoder().encode(`archive-key\n${workspaceID}\n${master}`)
+  const digest = await crypto.subtle.digest("SHA-256", material)
+  return [...new Uint8Array(digest).slice(0, 8)].map((byte) => byte.toString(16).padStart(2, "0")).join("")
+}
+
 /** Tenant key. Single-tenant today; a real account id when onboarding is multi-tenant. */
 export function workspaceID(env: VaultEnv): string {
   return env.WORKSPACE_ID ?? "default"

@@ -9,6 +9,8 @@
 
 export interface ArchivePolicyEnv {
   VAULT_MASTER_KEY?: string
+  /** Retained secrets, comma separated, so a rotation can still read old archives. */
+  VAULT_MASTER_KEY_PREVIOUS?: string
   ALLOW_PLAINTEXT_ARCHIVES?: string
 }
 
