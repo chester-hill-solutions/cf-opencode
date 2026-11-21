@@ -78,7 +78,8 @@ export interface ConversationIdleCloseOptions {
  */
 /** The single state dimension a deferred close is waiting on, as an allowlisted code. */
 function ineligibleReason(state: ConversationState): string {
-  if ((state.phase ?? "idle") !== "idle") return "not_idle_phase"
+  const phase = state.phase ?? "idle"
+  if (phase !== "idle") return `not_idle_${phase}`
   if ((state.queue?.length ?? 0) > 0) return "queued"
   if (state.budgetReservation) return "reserved"
   if (state.checkpointPending) return "checkpoint_pending"
