@@ -62,3 +62,38 @@ export function approvalVerdict(check: ApprovalCheck): ApprovalVerdict {
   if (!check.members) return "unverifiable"
   return check.members.has(check.userId) ? "allow" : "deny"
 }
+
+/**
+ * Who may start or steer a turn.
+ *
+ * Approvals already use channel membership as the boundary, but a message that
+ * starts work had no check at all: any member of any channel the bot was invited
+ * to could spend the deployment's money and act on its repositories. Each list is
+ * opt-in — unset keeps today's behaviour — and a malformed list denies rather
+ * than allowing everyone.
+ */
+export interface SlackActorCheck {
+  teamId?: string
+  userId?: string
+  channelId?: string
+  allowedTeams?: string
+  allowedUsers?: string
+  allowedChannels?: string
+}
+
+export type SlackActorVerdict = "allow" | "deny_team" | "deny_user" | "deny_channel"
+
+/** An unset list allows; a set list requires an exact, non-empty match. */
+function listed(csv: string | undefined, value: string | undefined): boolean {
+  if (csv === undefined) return true
+  const entries = csv.split(",").map((entry) => entry.trim()).filter(Boolean)
+  if (entries.length === 0) return false
+  return value !== undefined && entries.includes(value)
+}
+
+export function slackActorVerdict(check: SlackActorCheck): SlackActorVerdict {
+  if (!listed(check.allowedTeams, check.teamId)) return "deny_team"
+  if (!listed(check.allowedUsers, check.userId)) return "deny_user"
+  if (!listed(check.allowedChannels, check.channelId)) return "deny_channel"
+  return "allow"
+}

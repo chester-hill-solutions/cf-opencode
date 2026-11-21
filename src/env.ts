@@ -12,6 +12,10 @@ export interface Env {
   SLACK_BOT_TOKEN?: string
   /** Bot user id, used to strip mentions and skip our own messages. */
   SLACK_BOT_USER_ID?: string
+  /** Opt-in allow-lists for who may start or steer a turn; unset allows. */
+  SLACK_TEAM_ID?: string
+  SLACK_ALLOWED_USERS?: string
+  SLACK_ALLOWED_CHANNELS?: string
   CONVERSATION: DurableObjectNamespace<import("./conversation").Conversation>
   SETTINGS: DurableObjectNamespace<import("./settings-do").Settings>
   WORKSPACE_REPO?: string
