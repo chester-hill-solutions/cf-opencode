@@ -252,4 +252,70 @@ describe("native idle close Worker integration", () => {
       expect(conversation.runtime.generation).toBeUndefined()
     })
   }, 20_000)
+  it("re-arms an observation the state still owes when the lease renews", async () => {
+    const key = "C1:lease-rearms-observation"
+    const stub = env.CONVERSATION.getByName(key)
+    const restored = await runInDurableObject(stub, async (instance, runtime) => {
+      await runtime.storage.deleteAll()
+      const settings = await env.SETTINGS.getByName("global").fetch("https://settings/get")
+        .then((response) => response.json()) as { version: number }
+      // A turn is running, but the wake row that would observe it is gone: a
+      // restart lost it, so nothing can settle the turn or close the container.
+      await runtime.storage.put("state", {
+        sessionID: SESSION,
+        phase: "running",
+        runStartedAt: Date.now() - 60_000,
+        settingsVersion: settings.version,
+        seen: [],
+        pending: {},
+      } satisfies ConversationState)
+
+      const controlPort: ContainerPort = {
+        async fetch(input) {
+          const request = input instanceof Request ? input : new Request(input)
+          const url = new URL(request.url)
+          if (url.pathname === "/health") return json({ ok: true })
+          if (url.pathname === "/start") {
+            return json({
+              ok: true,
+              accountingPolicy: ACCOUNTING_POLICY_ID,
+              opencodeGeneration: GENERATION,
+              eventPersistence: true,
+            })
+          }
+          return json({ error: "not found" }, 404)
+        },
+      }
+      const container = {
+        running: true,
+        async destroy() { this.running = false },
+        async setInactivityTimeout() {},
+        getTcpPort() { return controlPort },
+      }
+      const conversation = instance as unknown as {
+        ctx: object
+        key?: string
+        transport?: unknown
+        leases: { ensureHeld(): Promise<void> }
+      }
+      Object.defineProperty(conversation.ctx, "container", { configurable: true, value: container })
+      conversation.key = key
+      conversation.transport = undefined
+      runtimeCache(instance).invalidate()
+      await conversation.leases.ensureHeld()
+      runtime.storage.sql.exec(
+        "DELETE FROM cf_agents_jobs WHERE id = ? AND capability = ?",
+        "turn:observe",
+        "conversation-jobs",
+      )
+
+      await driveConversationJobs(instance, runtime.storage, ["lease:renew"])
+
+      return runtime.storage.sql.exec<{ id: string }>(
+        "SELECT id FROM cf_agents_jobs WHERE id = ?",
+        "turn:observe",
+      ).toArray()[0]
+    })
+    expect(restored?.id).toBe("turn:observe")
+  }, 20_000)
 })

@@ -31,10 +31,9 @@ export function isSessionMissing(error: unknown): boolean {
 /**
  * Settle a turn whose session the runtime no longer has.
  *
- * Returns false for any other error, so the caller keeps its own handling. A
- * settled turn leaves nothing to observe, which is what stops the observation
- * loop: without this, every retry re-prepares a container, fails the same way
- * and renews the lease forever.
+ * Returns false for any other error, so the caller keeps its own handling. The
+ * turn is recorded as closed, which is what ends the loop: without it every
+ * retry re-prepared a container, failed the same way and renewed the lease.
  */
 export async function settleMissingSession(ports: MissingSessionPorts, error: unknown): Promise<boolean> {
   if (!isSessionMissing(error)) return false

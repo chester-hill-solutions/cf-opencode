@@ -44,7 +44,7 @@ export class ConversationScheduler {
       checkpointRetry: (payload) => this.handoff("checkpoint:retry", payload, () => options.work.checkpointRetry(payload)),
       recoveryWake: (payload) => this.handoff("recovery:wake", payload, () => options.work.recoveryWake(payload)),
       legacyBootstrap: (payload) => this.runLegacyAlarmBootstrap(payload),
-      leaseRenew: (payload) => this.handoff("lease:renew", payload, () => options.work.leaseRenew(payload)),
+      leaseRenew: (payload) => this.handoff("lease:renew", payload, () => this.renewLease(payload)),
       idleClose: (payload) => this.handoff("container:idle", payload, () => options.work.idleClose?.(payload) ?? Promise.resolve(undefined)),
       checkNotify: (payload) => this.handoff("check:notify", payload, () => options.work.checkNotify?.(payload) ?? Promise.resolve(undefined)),
       replyDeliver: (payload) => this.handoff("reply:deliver", payload, () => options.work.replyDeliver?.(payload) ?? Promise.resolve(undefined)),
@@ -146,6 +146,16 @@ export class ConversationScheduler {
         consumed: true,
       })
     })
+  }
+
+  /**
+   * A lease renewal holds a container slot, so it first reconciles the work it is
+   * holding the slot for. Without this, a lost wake row leaves a running
+   * container that no job is able to close, and the lease renews forever.
+   */
+  private async renewLease(payload: ConversationJobPayload): Promise<DomainOutcome> {
+    await this.rehydrateConversationJobs()
+    return this.options.work.leaseRenew(payload)
   }
 
   /** Recreate lost SDK wake rows from durable domain state; no external I/O. */
