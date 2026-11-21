@@ -814,6 +814,25 @@ automatic hold migration tool.
 - Container snapshots — a fast restore cache for the image that created them. They are image-bound, have a 30-day TTL and no delete API. Explicit `/recycle` checkpoints to R2, clears the old image's stored snapshot handle, and destroys the container so the next start uses the current image; ordinary per-turn durability stays with the R2 archive.
 - Container workspace — ephemeral; restored from R2 on cold start.
 
+
+Every encrypted archive records `keyId`, a fingerprint of the master secret that
+sealed it, so the key can be rotated without orphaning retained checkpoints.
+
+### Rotating the archive key
+
+1. Set `VAULT_MASTER_KEY_PREVIOUS` to the current `VAULT_MASTER_KEY`.
+2. Set `VAULT_MASTER_KEY` to the new secret (64 hex characters).
+3. Deploy. New archives are written with the new key id; retained ones still read
+   through the previous entry.
+4. Once every conversation has checkpointed under the new key — or the checkpoint
+   retention window has passed — clear `VAULT_MASTER_KEY_PREVIOUS`.
+
+Never retire the previous key while a retained archive still names it: reading one
+fails with `archive key <id> is not configured; set VAULT_MASTER_KEY_PREVIOUS to
+the secret that wrote it`. Archives written before key ids carry none; with a
+single secret they read normally, with two they are refused rather than guessed,
+so rotate only after the conversations have checkpointed once under this build.
+
 Start path: try the stored snapshot, and on any failure log `snapshot.stale`, delete the handle, start from the image, then restore the newest R2 archive. Counters: `snapshot.restored`, `snapshot.stale`, `snapshot.failed`. To exercise the fallback without an image change, poison the handle and take a turn:
 
 ```sh

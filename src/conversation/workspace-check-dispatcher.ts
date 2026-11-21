@@ -2,6 +2,7 @@ import type { ConversationWorkspaceChecks } from "./workspace-checks"
 import { readWorkspaceCheckBytes } from "./workspace-checks"
 import type { ConversationCheckpoints } from "./checkpoints"
 import type { SlackTarget } from "../state"
+import { archiveMetadata } from "./archive-keys"
 import { encryptBytes } from "../archive-crypto"
 import { parseWorkspaceCheckArgv, sameWorkspaceCheckRequest, WorkspaceCheckValidationError } from "../workspace-check"
 import {
@@ -32,7 +33,7 @@ interface Options {
   key(): string
   checks: ConversationWorkspaceChecks
   bucket: R2Bucket
-  checkpoints: Pick<ConversationCheckpoints, "cryptoKey" | "decryptBody">
+  checkpoints: Pick<ConversationCheckpoints, "cryptoKey" | "decryptBody" | "keyId">
   admission<T>(operation: () => Promise<T>): Promise<T>
   config(): { collectorID: string; imageID: string; timeoutMs: number; platform: "linux/amd64" | "linux/arm64" }
   register(): Promise<void>
@@ -166,11 +167,11 @@ export class ConversationWorkspaceCheckDispatcher {
           try { void existing.body.cancel().catch(() => {}) } catch {}
           throw new DispatchError("CHECK_LOG_UNAVAILABLE", 503)
         }
-        const clear = await this.options.checkpoints.decryptBody(existing.body, true)
+        const clear = await this.options.checkpoints.decryptBody(existing.body, true, existing.customMetadata)
         if (await digest(await readWorkspaceCheckBytes(clear, 180_000)) !== logsSHA256) throw new DispatchError("CHECK_LOG_UNAVAILABLE", 503)
       } else {
         const cipher = await encryptBytes(encoder.encode(logJSON), key)
-        await bounded(this.options.bucket.put(logKey, cipher, { customMetadata: { encrypted: "1", kind: "workspace-check-logs", completionSHA256 } }))
+        await bounded(this.options.bucket.put(logKey, cipher, { customMetadata: archiveMetadata({ encrypted: "1", kind: "workspace-check-logs", completionSHA256 }, await this.options.checkpoints.keyId()) }))
       }
       const next = parseWorkspaceCheckExecution({ ...row, status: "completed", receipt, completedAt: Date.now(), completionSHA256,
         logs: { key: logKey, sha256: logsSHA256 }, notification: { ...row.notification, status: row.target ? "pending" : "not_requested", nextAttemptAt: Date.now() } })

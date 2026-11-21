@@ -2,7 +2,7 @@ import { parseInteractionBody, verifySlackSignature, type SlackEventEnvelope } f
 import type { Env } from "./env"
 import type { MessageRequest, PermissionRequest, SlackEventRequest } from "./conversation"
 import { ACCOUNT_STATE_KEY } from "./conversation"
-import { GITHUB_LOGIN_KEY, GITHUB_TOKEN_KEY, workspaceID } from "./vault"
+import { GITHUB_LOGIN_KEY, GITHUB_TOKEN_KEY, archiveKeyId, workspaceID } from "./vault"
 import { encryptBytes } from "./archive-crypto"
 import { deriveWorkspaceKey } from "@chester-hill-solutions/vault/core"
 import type { Alert } from "./alerts"
@@ -660,7 +660,7 @@ async function handleOnboarding(
               : new Uint8Array(bytes)
             await env.CHECKPOINTS.put(ACCOUNT_STATE_KEY, stored, {
               httpMetadata: { contentType: "application/gzip" },
-              ...(key ? { customMetadata: { encrypted: "1" } } : {}),
+              ...(master ? { customMetadata: { encrypted: "1", keyId: await archiveKeyId(master, workspaceID(env)) } } : {}),
             })
             snapshot = true
           }
