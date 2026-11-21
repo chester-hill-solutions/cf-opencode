@@ -170,11 +170,16 @@ export class ConversationScheduler {
     const phase = state.phase ?? "idle"
     if (phase === "idle") return
     const observation = this.capability.getPayload("turn:observe")
+    const claims = await this.options.storage.get<Record<string, { until?: number }>>("conversationJobClaims")
     logEvent("lease.held", {
       phase,
       observation: observation !== undefined,
       observationEpoch: observation?.epoch,
       currentEpoch: await this.epoch(),
+      observationDueAt: observation?.dueAt,
+      observationReason: observation?.reason,
+      claimUntil: claims?.["turn:observe"]?.until,
+      activeJobs: this.activeCount,
       recovery: this.capability.has("recovery:wake"),
       sealed: await this.options.storage.get<boolean>("lifecycleJobsSealed") === true,
       dispatched: state.budgetReservation?.dispatched === true,
