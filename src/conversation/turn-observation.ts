@@ -148,7 +148,17 @@ export class ConversationTurnObservation {
 
   private async poll(): Promise<TurnObservationOutcome> {
     const settled = await this.options.turnExecution.pumpOnce()
-    if (settled && !(await this.options.store.get()).budgetReservation?.dispatched) return undefined
+    return settled ? this.settledOutcome() : this.nextPoll()
+  }
+
+  /** A settled turn keeps observing only while it still holds a dispatch. */
+  private async settledOutcome(): Promise<TurnObservationOutcome> {
+    const after = await this.options.store.get()
+    if (after.closedTurn) return undefined
+    return after.budgetReservation?.dispatched ? this.nextPoll() : undefined
+  }
+
+  private async nextPoll(): Promise<TurnObservationOutcome> {
     const settings = await this.options.settings().catch(() => undefined)
     return {
       rescheduleAt: Date.now() + (this.options.turnExecution.isStreaming
@@ -160,6 +170,6 @@ export class ConversationTurnObservation {
 
 /** Whether this turn still expects a provider outcome worth polling. */
 function expectsProviderOutcome(state: ConversationState): boolean {
-  if (state.missingSessionSettlement) return false
+  if (state.closedTurn) return false
   return state.budgetReservation?.dispatched === true || OBSERVED_PHASES.has(state.phase ?? "idle")
 }

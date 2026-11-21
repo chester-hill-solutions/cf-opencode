@@ -184,7 +184,7 @@ export class ConversationScheduler {
       sealed: await this.options.storage.get<boolean>("lifecycleJobsSealed") === true,
       dispatched: state.budgetReservation?.dispatched === true,
       settlement: state.settlementError !== undefined,
-      closed: state.missingSessionSettlement !== undefined,
+      closed: state.closedTurn !== undefined,
       session: state.sessionID !== undefined,
     })
   }
@@ -466,7 +466,7 @@ async function repairQueuedPhase(store: ConversationStore, state: ConversationSt
  * renewal is enough) would otherwise re-arm the settlement it just performed.
  */
 function needsObservation(state: ConversationState): boolean {
-  if (state.missingSessionSettlement || state.settlementError) return false
+  if (state.closedTurn || state.settlementError) return false
   const phase = state.phase ?? "idle"
   return state.budgetReservation?.dispatched === true || phase === "running" || phase === "settling"
 }

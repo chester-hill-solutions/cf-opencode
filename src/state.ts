@@ -208,7 +208,7 @@ export interface ConversationState {
   usageError?: string
   /** Why terminal settlement is paused, or why a closed turn keeps its reservation. */
   settlementError?: string
-  missingSessionSettlement?: { at: number; sessionID?: string }
+  closedTurn?: { at: number; reason: "session_missing" | "settlement_expired"; sessionID?: string }
   /** Slack event ids already handled (dedupe). */
   seen: string[]
   /** Pending permission requests: requestID -> sessionID. */

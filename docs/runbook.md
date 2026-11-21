@@ -533,6 +533,13 @@ phase with an empty queue can never be admitted, so it returns to idle, and
 `idle.deferred` names the phase (`not_idle_queued`, `not_idle_admitting`, …)
 instead of a bare `not_idle_phase`.
 
+A dispatched turn whose provider outcome never appears is closed once it is an
+hour past dispatch (`settlement_expired`): phase `idle`, container free, prompts
+cleared, and the reservation retained. Nothing polls it afterwards. `retry`
+re-observes it, `abandon` retires the reservation, `force_stop` only reclaims the
+runtime. Before this ceiling such a turn polled forever, and an agent that could
+not answer a single read pinned the slot with it.
+
 Some older conversations are keyed by the durable object id they were given
 (`idFromName(...).toString()`). `agents/lifecycle` refuses to serve a fetch for an
 object without `ctx.id.name`, so `/recovery`, `/state`, `abandon` and `DELETE`
