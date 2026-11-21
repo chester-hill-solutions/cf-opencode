@@ -183,6 +183,7 @@ export class ConversationScheduler {
       recovery: this.capability.has("recovery:wake"),
       sealed: await this.options.storage.get<boolean>("lifecycleJobsSealed") === true,
       dispatched: state.budgetReservation?.dispatched === true,
+      ...ownedWork(state),
       settlement: state.settlementError !== undefined,
       closed: state.closedTurn !== undefined,
       session: state.sessionID !== undefined,
@@ -450,6 +451,15 @@ export function failureRetryAt(
   if (jobFailureReason(failure) === "session_missing") return undefined
   if (kind === "turn:observe" && !observationHasWork(state)) return undefined
   return Date.now() + 30_000
+}
+
+/** What the state still owns, independent of the phase that reports it. */
+function ownedWork(state: ConversationState): { queueDepth: number; prompts: number; checkpointPending: boolean } {
+  return {
+    queueDepth: state.queue?.length ?? 0,
+    prompts: Object.keys(state.pending ?? {}).length,
+    checkpointPending: state.checkpointPending === true,
+  }
 }
 
 /**
