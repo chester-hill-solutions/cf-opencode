@@ -4,6 +4,7 @@ import type { MemoryLimitContext, LifecycleJobOutcome } from "agents/lifecycle"
 import { ConversationJobs, type ConversationJobKind, type ConversationJobPayload } from "./jobs"
 import { ConversationStore, type ConversationState } from "../state"
 import { LEGACY_ALARM_MIGRATION_KEY, type LegacyAlarmMigration } from "./job-state"
+import { logEvent } from "../log"
 import { withSpan } from "../telemetry"
 
 const POLL_MS = 2000
@@ -155,7 +156,32 @@ export class ConversationScheduler {
    */
   private async renewLease(payload: ConversationJobPayload): Promise<DomainOutcome> {
     await this.rehydrateConversationJobs()
+    await this.reportHeldSlot()
     return this.options.work.leaseRenew(payload)
+  }
+
+  /**
+   * Bounded evidence for a slot that keeps renewing while its turn is not idle:
+   * an operator otherwise sees a lease and a deferred close, and nothing about
+   * what refuses to release it.
+   */
+  private async reportHeldSlot(): Promise<void> {
+    const state = await this.options.store.get()
+    const phase = state.phase ?? "idle"
+    if (phase === "idle") return
+    const observation = this.capability.getPayload("turn:observe")
+    logEvent("lease.held", {
+      phase,
+      observation: observation !== undefined,
+      observationEpoch: observation?.epoch,
+      currentEpoch: await this.epoch(),
+      recovery: this.capability.has("recovery:wake"),
+      sealed: await this.options.storage.get<boolean>("lifecycleJobsSealed") === true,
+      dispatched: state.budgetReservation?.dispatched === true,
+      settlement: state.settlementError !== undefined,
+      closed: state.missingSessionSettlement !== undefined,
+      session: state.sessionID !== undefined,
+    })
   }
 
   /** Recreate lost SDK wake rows from durable domain state; no external I/O. */
@@ -435,7 +461,7 @@ async function repairQueuedPhase(store: ConversationStore, state: ConversationSt
  * renewal is enough) would otherwise re-arm the settlement it just performed.
  */
 function needsObservation(state: ConversationState): boolean {
-  if (state.missingSessionSettlement) return false
+  if (state.missingSessionSettlement || state.settlementError) return false
   const phase = state.phase ?? "idle"
   return state.budgetReservation?.dispatched === true || phase === "running" || phase === "settling"
 }
