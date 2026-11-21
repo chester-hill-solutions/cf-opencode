@@ -77,14 +77,23 @@ export interface ConversationIdleCloseOptions {
  * lease release are both confirmed.
  */
 /** The single state dimension a deferred close is waiting on, as an allowlisted code. */
-function ineligibleReason(state: ConversationState): string {
+export function ineligibleReason(state: ConversationState): string {
   const phase = state.phase ?? "idle"
   if (phase !== "idle") return `not_idle_${phase}`
-  if ((state.queue?.length ?? 0) > 0) return "queued"
-  if (state.budgetReservation) return "reserved"
+  // A closed turn keeps only an accounting record and a queue nothing may admit
+  // until an operator decides; neither of those needs a running container.
+  if (!state.closedTurn) {
+    if ((state.queue?.length ?? 0) > 0) return "queued"
+    if (state.budgetReservation) return "reserved"
+  }
+  return runtimeWorkBlocker(state) ?? "ineligible"
+}
+
+/** Work that genuinely needs the runtime to stay up. */
+function runtimeWorkBlocker(state: ConversationState): string | undefined {
   if (state.checkpointPending) return "checkpoint_pending"
   if (Object.keys(state.pending ?? {}).length > 0) return "pending_work"
-  return "ineligible"
+  return undefined
 }
 
 /**
@@ -307,10 +316,9 @@ export class ConversationIdleClose {
   }
 
   private eligibleState(state: ConversationState): boolean {
-    // A container that never created a session still holds a lease; it has
-    // nothing to prove and is closed through the archive-only path below.
-    return (state.phase ?? "idle") === "idle" && (state.queue?.length ?? 0) === 0 && !state.budgetReservation &&
-      !state.checkpointPending && Object.keys(state.pending ?? {}).length === 0
+    // One rule for both the decision and its diagnostic: "ineligible" is the
+    // answer only when nothing blocks the close.
+    return ineligibleReason(state) === "ineligible"
   }
 
   private async verifyAndClose(record: ContainerIdleRecord, activityAtRequest: number): Promise<IdleCloseOutcome> {
@@ -325,14 +333,12 @@ export class ConversationIdleClose {
     const client = makeClient(portFetch(port))
     const initialState = await this.options.store.get()
     const sessionID = initialState.sessionID
-    // Without a session there is no log to replay and no quiescence proof to
-    // take, but the container is still holding a slot.
-    if (!sessionID) return this.closeWithoutSession(record, activityAtRequest)
+    // Without a session there is no log to replay and no proof to take; a closed
+    // turn is the same shape, and either way the container is holding a slot.
+    if (!sessionID || initialState.closedTurn) return this.closeWithoutSession(record, activityAtRequest)
 
     try {
-      await this.options.usage.replayLogLocked(sessionID, undefined, client)
-      const ledger = await this.options.usage.ledger()
-      if (ledger.conversationID !== this.options.id || ledger.holds.length || ledger.blockers.length || ledger.legacyRows.length) {
+      if (await this.ledgerBlocksClose(client, sessionID)) {
         return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
       }
       const proof = await this.options.prove(client, sessionID)
@@ -345,6 +351,14 @@ export class ConversationIdleClose {
       this.skipJob("verify_failed")
       return { rescheduleAt: Date.now() + IDLE_RETRY_MS }
     }
+  }
+
+  /** Whether outstanding budget must keep this runtime up. */
+  private async ledgerBlocksClose(client: OpenCodeClient, sessionID: string): Promise<boolean> {
+    await this.options.usage.replayLogLocked(sessionID, undefined, client)
+    const ledger = await this.options.usage.ledger()
+    if (ledger.conversationID !== this.options.id) return true
+    return ledger.holds.length > 0 || ledger.blockers.length > 0 || ledger.legacyRows.length > 0
   }
 
   /**
