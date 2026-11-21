@@ -120,6 +120,31 @@ curl -s -H "authorization: Bearer $TOKEN" https://<worker>/api/settings
 curl -s -H "authorization: Bearer $TOKEN" https://<worker>/api/conversations/<key>
 ```
 
+### Who may use the agent
+
+Slack proves an event came from Slack. It does not decide whether the person behind
+it may spend this deployment's money and act on its repositories — and by default
+**any member of any channel the bot is invited to can start a turn**. Approval
+buttons already require channel membership (`slack-auth.ts`); messages had no check.
+
+Three opt-in allow-lists close that, each unset by default so existing deployments
+keep their behaviour:
+
+| Variable | Accepts | Denies |
+|---|---|---|
+| `SLACK_TEAM_ID` | one workspace id | events from any other workspace that installs the app |
+| `SLACK_ALLOWED_USERS` | comma separated Slack user ids | everyone else, before a conversation is created |
+| `SLACK_ALLOWED_CHANNELS` | comma separated channel ids | every other channel the bot was invited to |
+
+A refused message is acknowledged to Slack and dropped with
+`slack.actor_refused` (reason + channel) in telemetry; nothing is queued, reserved or
+dispatched. A configured list that matches nothing denies everyone, which is the
+safe reading of a typo.
+
+For a channel that runs a long-lived agent, set at least `SLACK_TEAM_ID` and
+`SLACK_ALLOWED_CHANNELS`; for a workspace where only a few people should act, add
+`SLACK_ALLOWED_USERS`.
+
 ## Slack connection — 2026-11-11
 
 With operator approval, Team Nate's existing **OpenCode** app (`A0CEH25QREK`,

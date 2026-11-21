@@ -1,6 +1,5 @@
-import { parseInteractionBody, verifySlackSignature, type SlackEventEnvelope } from "./adapters/slack"
 import type { Env } from "./env"
-import type { MessageRequest, PermissionRequest, SlackEventRequest } from "./conversation"
+import type { MessageRequest, PermissionRequest } from "./conversation"
 import { ACCOUNT_STATE_KEY } from "./conversation"
 import { GITHUB_LOGIN_KEY, GITHUB_TOKEN_KEY, archiveKeyId, workspaceID } from "./vault"
 import { encryptBytes } from "./archive-crypto"
@@ -11,8 +10,7 @@ import { postAlert } from "./alert-delivery"
 import { recoveryRequest } from "./recovery"
 import { MODEL_CATALOG, recommendModel } from "./models"
 import { isOnboardingProxyPath } from "./onboarding"
-import { handleSlackInteraction } from "./slack-interactivity"
-import { conversationKey, resolveAgentForChannel } from "./tenancy"
+import { handleSlackIngress } from "./slack-ingress"
 import { encryptionRequired, plaintextArchivesAllowed } from "./archive-policy"
 import { bearerAuthorized } from "./control-auth"
 import { enforceRateLimit } from "./rate-limit"
@@ -20,7 +18,6 @@ import { logEvent } from "./log"
 import { parseObjectJson } from "./http-json"
 import { validateOpencodeKey } from "./opencode-key-validation"
 import { handleCheckCollector } from "./workspace-check-collector"
-import { handleSlackCanaryRoute } from "./slack-canary"
 import {
   alertsRoute, postRoute, conversationStub, decodePathSegments, KEY_PATTERN, questionsRoute, safeDecode, settingsDo, turnStatusRoute,
 } from "./worker-routes"
@@ -51,111 +48,7 @@ export default {
       return apiRoute(request, env, url, ctx)
     }
 
-    if (request.method !== "POST") return new Response("not found", { status: 404 })
-    if (!env.SLACK_SIGNING_SECRET) {
-      return new Response("slack adapter not configured", { status: 503 })
-    }
-
-    const body = await request.text()
-    const valid = await verifySlackSignature({
-      signingSecret: env.SLACK_SIGNING_SECRET,
-      timestamp: request.headers.get("x-slack-request-timestamp"),
-      signature: request.headers.get("x-slack-signature"),
-      body,
-    })
-    if (!valid) return new Response("invalid signature", { status: 401 })
-
-    const canaryRoute = (kind: string | null, claim: boolean) => handleSlackCanaryRoute(body, kind, {
-      channel: env.SLACK_CANARY_CHANNEL,
-      newThreads: claim ? env.SLACK_CANARY_NEW_THREADS : "false",
-      startTS: env.SLACK_CANARY_START_TS,
-      botUserID: env.SLACK_BOT_USER_ID,
-      async ownership(action, channel, threadTs) {
-        const response = await settingsDo(env, "/slack/canary-thread", { action, channel, threadTs })
-        if (!response.ok) throw new Error("Canary ownership unavailable")
-        const result: unknown = await response.json()
-        if (!result || typeof result !== "object" || Array.isArray(result) ||
-          Object.keys(result).length !== 1 || !("owned" in result) || typeof result.owned !== "boolean") {
-          throw new Error("Invalid canary ownership acknowledgement")
-        }
-        return result.owned
-      },
-    })
-    if (url.pathname === "/slack/canary-route") return canaryRoute(url.searchParams.get("kind"), true)
-    if (env.SLACK_CANARY_CHANNEL && ["/slack/events", "/slack/interactivity"].includes(url.pathname)) {
-      // Delegation cannot dispatch outside a previously claimed canary thread.
-      const decision = await canaryRoute(url.pathname === "/slack/events" ? "events" : "interactivity", false)
-      if (!decision.ok) return decision
-      if ((await decision.json() as { route: string }).route !== "canary") return new Response("ok")
-    }
-
-    if (url.pathname === "/slack/events") {
-      let payload: SlackEventEnvelope
-      try {
-        payload = JSON.parse(body) as SlackEventEnvelope
-      } catch {
-        return new Response("invalid json", { status: 400 })
-      }
-      if (payload.type === "url_verification") {
-        return Response.json({ challenge: payload.challenge })
-      }
-
-      const event = payload.event
-      if (!event?.channel || !event.ts) return new Response("ok")
-      const isFileShare = event.subtype === "file_share" && Boolean(event.files?.length)
-      if (event.bot_id || (event.subtype && !isFileShare) || (env.SLACK_BOT_USER_ID && event.user === env.SLACK_BOT_USER_ID)) return new Response("ok")
-
-      const isDm = event.channel_type === "im"
-      if (!isDm && event.type !== "app_mention" &&
-        (event.type !== "message" || !event.thread_ts ||
-          (env.SLACK_BOT_USER_ID && event.text?.includes(`<@${env.SLACK_BOT_USER_ID}>`)))) return new Response("ok")
-      const replyTs = isDm ? undefined : event.thread_ts ?? event.ts
-      const legacyKey = isDm ? `${event.channel}:dm` : `${event.channel}:${event.thread_ts ?? event.ts}`
-      // A channel binding selects the agent, which namespaces the conversation
-      // (and therefore its state, checkpoints and account seed). Unbound
-      // channels stay on the legacy single-tenant key during the migration.
-      const agent = await resolveAgentForChannel(env, payload.team_id, event.channel).catch(
-        (error) => {
-          logEvent("tenancy.resolve_failed", { error: String(error) })
-          return undefined
-        },
-      )
-      if (!agent && env.TENANCY) logEvent("tenancy.unbound", { channel: event.channel })
-      const key = agent ? conversationKey(agent, legacyKey) : legacyKey
-
-      // The registry is the only way to answer "what conversations exist?";
-      // record Slack traffic as well as HTTP traffic.
-      ctx.waitUntil(settingsDo(env, "/conversations", { key }).catch(() => undefined))
-
-      const dispatch: SlackEventRequest = {
-        appUrl: url.origin,
-        ...(payload.event_id ? { eventID: payload.event_id } : {}),
-        ...(replyTs ? { replyTs } : {}),
-        event,
-      }
-      ctx.waitUntil(
-        conversationStub(env, key).fetch("https://conversation/slack", {
-          method: "POST",
-          body: JSON.stringify(dispatch),
-        }),
-      )
-      return new Response("ok")
-    }
-
-    if (url.pathname === "/slack/interactivity") {
-      // Slack requires acknowledgement within three seconds, including when
-      // membership checks or runtime preparation are slow. Keep authorization,
-      // application and visible feedback together in the background operation.
-      ctx.waitUntil(handleSlackInteraction(parseInteractionBody(body), {
-        env,
-        dispatch: (key, path, value) => conversationStub(env, key).fetch(`https://conversation${path}`, {
-          method: "POST", body: JSON.stringify(value),
-        }),
-      }))
-      return new Response("ok")
-    }
-
-    return new Response("not found", { status: 404 })
+    return handleSlackIngress(request, env, ctx, url)
   },
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(checkAlerts(env))

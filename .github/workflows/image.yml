@@ -125,3 +125,19 @@ jobs:
           Digest: \`${DIGEST}\`
 
           Verify after merge with \`cf containers ssh\` and \`python3 -c 'import openpyxl'\`."
+
+      # One digest is current; every older one is superseded by construction. The
+      # repin PR carries no CI (it is opened with GITHUB_TOKEN), so nothing else
+      # will ever close it, and one accumulates per source change.
+      - name: Close superseded digest PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          NEW="chore/image-${GITHUB_SHA::12}"
+          gh pr list --state open --limit 100 --json number,headRefName \
+            --jq ".[] | select(.headRefName | startswith(\"chore/image-\")) | select(.headRefName != \"$NEW\") | .number" \
+            | while read -r number; do
+                [ -n "$number" ] || continue
+                gh pr close "$number" --comment "Superseded by the digest built from ${GITHUB_SHA}."
+              done
