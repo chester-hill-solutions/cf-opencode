@@ -511,6 +511,11 @@ and stop at the first action the inspection offers; each rung releases one lock:
 `force_stop` and `abandon` are offered only for a dispatched turn past
 `TURN_TIMEOUT_MS` (30 min), so a healthy turn never shows them.
 
+Most of these states now close themselves. The guarantee each automatic rule gives,
+and the regression that enforces it, is listed in the
+[recovery acceptance matrix](design/recovery-acceptance.md); reach for the ladder
+when a row there is not the shape you are looking at.
+
 If `DELETE` reports `usage replay failed: Session not found`, that is cleanup
 confirming there is nothing to replay; it now proceeds and records
 `usage.replay.missing_session`. If it reports `conversation has unresolved work`,

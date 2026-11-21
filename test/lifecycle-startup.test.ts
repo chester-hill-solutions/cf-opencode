@@ -407,4 +407,48 @@ describe("Conversation Lifecycle startup recovery", () => {
     },
     10_000,
   )
+  it("never resubmits a dispatched turn after a restart between dispatch and observe", async () => {
+    const conversation = stub("startup-dispatch-then-restart")
+    let conversationID = ""
+    const reservationID = "reservation-restart-observe"
+    await runInDurableObject(conversation, async (_instance, runtime) => {
+      conversationID = runtime.id.toString()
+      await seedHeldState(runtime.storage, conversationID, reservationID, "ses_restart_observe")
+      await runtime.storage.setAlarm(Date.now() - 1)
+    })
+    // The provider call was dispatched; the process died before it was observed.
+    await evictDurableObject(conversation)
+
+    const calls: string[] = []
+    const prompts = { count: 0 }
+    const result = await runInDurableObject(conversation, async (instance, runtime) => {
+      instance.transport = runtimeProbe(calls, prompts)
+      // A restart translates the old physical alarm once; that bootstrap is what
+      // re-creates the observation from durable state.
+      await runtime.storage.setAlarm(Date.now() - 1)
+      await instance.fetch(new Request("https://conversation/health"))
+      await instance.alarm()
+      const armed = await waitForJob(runtime.storage, "turn:observe")
+      runtime.storage.sql.exec(
+        "UPDATE cf_agents_jobs SET time = ?, running = 0, execution_started_at = NULL WHERE id = ? AND capability = ?",
+        Date.now(),
+        "turn:observe",
+        "conversation-jobs",
+      )
+      await instance.alarm()
+      await waitForNoClaims(runtime.storage)
+      const afterFirst = jobs(runtime.storage).find((job) => job.id === "turn:observe")
+      return { armed: Boolean(armed), afterFirst, state: await runtime.storage.get<ConversationState>("state") }
+    })
+
+    // The observation is re-armed from durable state, not rebuilt from a prompt.
+    expect(result.armed).toBe(true)
+    // An ambiguous provider request is observed, never submitted twice.
+    expect(prompts.count).toBe(0)
+    expect(calls.some((call) => call.endsWith("/prompt"))).toBe(false)
+    // With no terminal outcome yet the turn keeps its hold and keeps observing.
+    expect(result.state?.phase).toBe("running")
+    expect(result.state?.budgetReservation?.reservationID).toBe(reservationID)
+    expect(result.afterFirst).toBeDefined()
+  }, 20_000)
 })
