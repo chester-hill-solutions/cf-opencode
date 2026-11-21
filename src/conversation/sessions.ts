@@ -80,7 +80,6 @@ export class ConversationSessions {
         lastSlackReply: undefined,
         reportedError: undefined,
         usage: undefined,
-        usageAux: undefined,
         usageCursor: undefined,
         usageTerminal: undefined,
         usageExecution: undefined,

@@ -160,5 +160,6 @@ export class ConversationTurnObservation {
 
 /** Whether this turn still expects a provider outcome worth polling. */
 function expectsProviderOutcome(state: ConversationState): boolean {
+  if (state.missingSessionSettlement) return false
   return state.budgetReservation?.dispatched === true || OBSERVED_PHASES.has(state.phase ?? "idle")
 }

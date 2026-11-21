@@ -441,7 +441,7 @@ export class ConversationSlackAdapter {
           turnBaseline: undefined, runStartedAt: undefined, pending: {}, announcedForms: [],
           permissionNotifications: undefined,
           lastReply: undefined, lastSlackReply: undefined, reportedError: undefined, lastTurnError: undefined,
-          usage: undefined, usageAux: undefined, usageCursor: undefined, usageTerminal: undefined,
+          usage: undefined, usageCursor: undefined, usageTerminal: undefined,
           usageExecution: undefined, usageError: undefined, settlementError: undefined,
         })
         return Response.json({ ok: true })

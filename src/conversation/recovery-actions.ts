@@ -225,6 +225,7 @@ export class ConversationRecoveryActions {
       phase: "idle",
       runStartedAt: undefined,
       settlementError: undefined,
+      missingSessionSettlement: undefined,
       turnID: undefined,
       ...orphanFreeState(current),
     })
@@ -305,8 +306,7 @@ export class ConversationRecoveryActions {
               liveReservation.date !== reservation.date || liveState?.sessionID !== current.sessionID) {
               throw new Error("recovery owner changed")
             }
-            await txn.delete("lifecycleJobsSealed")
-            if (liveState?.lifecycleJobsSealed) await txn.put("state", { ...liveState, lifecycleJobsSealed: false })
+            await this.reopenClosedTurn(txn, liveState)
             await this.options.jobs.scheduleRecovery(Date.now(), {
               reservationID: reservation.reservationID,
               reservationDate: reservation.date,
@@ -387,6 +387,14 @@ export class ConversationRecoveryActions {
       }
     }
     return action === "cancel_before_dispatch" ? this.options.usage.serialize(perform) : perform()
+  }
+
+  /** Lift the seals an operator retry must lift before it re-observes the turn. */
+  private async reopenClosedTurn(txn: DurableObjectTransaction, state: ConversationState | undefined): Promise<void> {
+    await txn.delete("lifecycleJobsSealed")
+    if (!state) return
+    if (!state.lifecycleJobsSealed && !state.missingSessionSettlement) return
+    await txn.put("state", { ...state, lifecycleJobsSealed: false, missingSessionSettlement: undefined })
   }
 
   async runAction<T>(operation: () => Promise<T>): Promise<T> {

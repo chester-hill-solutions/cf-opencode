@@ -525,7 +525,19 @@ reservation is retained, because the provider may have billed a turn whose usage
 can no longer be read: the conversation reports
 `settlementError: runtime no longer knows this session; reservation retained for
 operator reconciliation`, and `retry`, `force_stop` or `abandon` stay an operator
-decision. A failed observation that owns no turn at all is never rescheduled.
+decision. The turn is then closed: a later wake (a lease renewal is enough) does
+not re-arm the observation, so the conversation stops costing container slots
+until an operator acts. A failed observation that owns no turn at all is never
+rescheduled.
+
+Some older conversations are keyed by the durable object id they were given
+(`idFromName(...).toString()`). `agents/lifecycle` refuses to serve a fetch for an
+object without `ctx.id.name`, so `/recovery`, `/state`, `abandon` and `DELETE`
+reach a *different, empty* object with the same name and report success while the
+original keeps running. Those conversations are closed only by their own alarms;
+there is no operator path to them. Never read `{"ok":true}` from a delete as proof
+that an id-keyed conversation stopped — confirm from telemetry
+(`container.started`, `container.recycled`) instead.
 
 2026-11-19 reference: two conversations sat dispatched for 406 minutes. `retry`
 re-failed, `cancel` returned "interrupt outcome is unknown", reconciliation could
