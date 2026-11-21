@@ -99,6 +99,18 @@ refused rather than written to R2 in plaintext, and `/api/health` returns 503. S
 `ALLOW_PLAINTEXT_ARCHIVES=1` only for a throwaway deployment where provider credentials in R2 are
 acceptable.
 
+### A source change lands in two parts
+
+The image copies `src/` (`COPY src ./src`), because the control server imports it.
+A merged Worker change therefore deploys **new Worker code against the previous
+container image** until the automatic digest PR (`chore/image-<sha>`) merges.
+Every pinned-image feature — the control API, `/checkpoint`, `/restore`, lease
+and readiness behaviour — is only version-consistent once that repin lands.
+
+Merge the repin from the merge you just shipped, and close older open repins as
+superseded; each carries a later commit's image. A repin for a commit that changed
+`src/` is not optional bookkeeping.
+
 ## Health checks
 
 ```sh
