@@ -20,6 +20,38 @@ const running: ConversationState = {
   pending: {},
 }
 
+function harness(runtime: DurableObjectState, store: ConversationStore, client: ReturnType<typeof makeClient>, calls: { context: number }) {
+  return new ConversationTurnExecution({
+    conversationID: runtime.id.toString(),
+    storage: runtime.storage,
+    store,
+    usage: { refresh: async () => {}, recordContext: async () => {} },
+    checkpoints: { capture: async () => true },
+    controlPlane: { pendingForms: async () => [] },
+    runtime: {
+      openStream: async () => new Response(null),
+      withClient: async (fn) => {
+        calls.context++
+        return fn(client)
+      },
+    },
+    guards: { recovering: () => false, hasPendingUpgrade: async () => false },
+    delivery: {
+      event: async () => {},
+      toSlack: async () => {},
+      slack: async () => ({}),
+      count: async () => {},
+      slackBotToken: () => undefined,
+    },
+    conversationKey: () => "C1:observe-silent-runtime",
+    jobs: { schedule: async () => {} },
+    settings: async () => defaultSettings({}),
+    releaseBudgetReservation: async () => true,
+    waitUntil: () => {},
+    observeTimeoutMs: 25,
+  })
+}
+
 describe("turn observation timeout", () => {
   it("releases the pump when the runtime never answers", async () => {
     const stub = env.CONVERSATION.getByName("C1:observe-silent-runtime")
@@ -35,29 +67,8 @@ describe("turn observation timeout", () => {
           signal.addEventListener("abort", () => reject(signal.reason))
         })
       })
-      const execution = new ConversationTurnExecution({
-        conversationID: runtime.id.toString(),
-        storage: runtime.storage,
-        store,
-        usage: { refresh: async () => {}, recordContext: async () => {} },
-        checkpoints: { capture: async () => true },
-        controlPlane: { pendingForms: async () => [] },
-        runtime: { openStream: async () => new Response(null), withClient: async (fn) => fn(client) },
-        guards: { recovering: () => false, hasPendingUpgrade: async () => false },
-        delivery: {
-          event: async () => {},
-          toSlack: async () => {},
-          slack: async () => ({}),
-          count: async () => {},
-          slackBotToken: () => undefined,
-        },
-        conversationKey: () => "C1:observe-silent-runtime",
-        jobs: { schedule: async () => {} },
-        settings: async () => defaultSettings({}),
-        releaseBudgetReservation: async () => true,
-        waitUntil: () => {},
-        observeTimeoutMs: 25,
-      })
+      const calls = { context: 0 }
+      const execution = harness(runtime, store, client, calls)
 
       const startedAt = Date.now()
       const failure = await execution.pumpOnce().then(() => undefined, (error: unknown) => error)
@@ -72,5 +83,36 @@ describe("turn observation timeout", () => {
     // Without the bound this flag stays true for the instance's lifetime.
     expect(result.pumping).toBe(false)
     expect(result.elapsedMs).toBeLessThan(2_000)
+  }, 20_000)
+
+  it("does not let a stale pump latch own the turn", async () => {
+    const stub = env.CONVERSATION.getByName("C1:observe-stale-latch")
+    const result = await runInDurableObject(stub, async (_instance, runtime) => {
+      await runtime.storage.put("state", running)
+      const store = new ConversationStore(runtime.storage)
+      const calls = { context: 0 }
+      const client = makeClient(async (input) => {
+        const url = new URL(input instanceof Request ? input.url : String(input))
+        if (url.pathname.endsWith("/context")) return Response.json({ data: [] })
+        return Response.json({ data: [] })
+      })
+      const execution = harness(runtime, store, client, calls)
+      const latch = execution as unknown as { pumpStartedAt?: number }
+
+      latch.pumpStartedAt = Date.now()
+      const blocked = await execution.pumpOnce()
+      const whileFresh = calls.context
+
+      latch.pumpStartedAt = Date.now() - 11 * 60_000
+      const ran = await execution.pumpOnce()
+      return { blocked, ran, whileFresh, afterStale: calls.context }
+    })
+
+    // A latch inside its bound keeps the turn to one pump.
+    expect(result.blocked).toBe(false)
+    expect(result.whileFresh).toBe(0)
+    // Past the bound it belongs to an await that will never return, so a new pump
+    // must be allowed: that is the difference from the permanent slot leak.
+    expect(result.afterStale).toBeGreaterThan(0)
   }, 20_000)
 })

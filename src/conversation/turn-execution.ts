@@ -81,6 +81,12 @@ export interface ConversationTurnExecutionOptions {
 const POLL_MS = 2_000
 /** A single observation must answer, or the pump flag wedges the whole instance. */
 const OBSERVE_TIMEOUT_MS = 30_000
+/**
+ * The longest a pump may own the turn. Every read inside one is bounded, so a
+ * latch older than this belongs to an await that will never return; expiring it
+ * is the difference between one duplicate delivery and a permanently stuck turn.
+ */
+const PUMP_LATCH_MS = 10 * 60_000
 const STREAM_STOP_WAIT_MS = 10_000
 const DELIVERY_RETRY_BASE_MS = 5_000
 const DELIVERY_RETRY_MAX_MS = 5 * 60_000
@@ -102,7 +108,8 @@ interface FormRetries {
 /** Owns the reply poll and the one native OpenCode event stream for a turn. */
 export class ConversationTurnExecution {
   private streaming = false
-  private pumping = false
+  private pumpStartedAt?: number
+  private pumpToken = 0
   private seenEvents = new Map<string, number>()
   private streamState = "idle"
   private streamOwner?: StreamOwner
@@ -112,7 +119,7 @@ export class ConversationTurnExecution {
 
   get isStreaming(): boolean { return this.streaming }
   private get observeTimeout(): number { return this.options.observeTimeoutMs ?? OBSERVE_TIMEOUT_MS }
-  get isPumping(): boolean { return this.pumping }
+  get isPumping(): boolean { return this.pumpStartedAt !== undefined }
   get currentStreamState(): string { return this.streamState }
   get observedEvents(): ReadonlyMap<string, number> { return new Map(this.seenEvents) }
 
@@ -237,8 +244,8 @@ export class ConversationTurnExecution {
 
   /** One poll: deliver new assistant text, permissions, settle + checkpoint. */
   async pumpOnce(): Promise<boolean> {
-    if (this.pumping || this.options.guards.recovering()) return false
-    this.pumping = true
+    if (this.pumpLatchOpen() || this.options.guards.recovering()) return false
+    const token = this.beginPump()
     try {
       if (await this.options.guards.hasPendingUpgrade()) return false
       const state = await this.options.store.get()
@@ -277,8 +284,31 @@ export class ConversationTurnExecution {
       }
       return false
     } finally {
-      this.pumping = false
+      this.endPump(token)
     }
+  }
+
+  /** Claim the turn for this pump; a late finisher must not release a newer one. */
+  private beginPump(): number {
+    const token = ++this.pumpToken
+    this.pumpStartedAt = Date.now()
+    return token
+  }
+
+  private endPump(token: number): void {
+    if (this.pumpToken === token) this.pumpStartedAt = undefined
+  }
+
+  /**
+   * Whether a pump still owns this turn. The latch guards against a concurrent
+   * pump, not against a dead one: an await that never returned would otherwise
+   * hold it for the life of the Durable Object instance.
+   */
+  private pumpLatchOpen(): boolean {
+    if (this.pumpStartedAt === undefined) return false
+    if (Date.now() - this.pumpStartedAt < PUMP_LATCH_MS) return true
+    void this.options.delivery.count("pump.latch_expired").catch(() => {})
+    return false
   }
 
   async finishTimedOutTurn(state: ConversationState, reply: string, failure: TurnFailure): Promise<void> {
