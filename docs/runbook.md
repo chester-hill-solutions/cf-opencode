@@ -528,7 +528,10 @@ operator reconciliation`, and `retry`, `force_stop` or `abandon` stay an operato
 decision. The turn is then closed: a later wake (a lease renewal is enough) does
 not re-arm the observation, so the conversation stops costing container slots
 until an operator acts. A failed observation that owns no turn at all is never
-rescheduled.
+rescheduled. A lease renewal also reconciles a phase that owns nothing: a queued
+phase with an empty queue can never be admitted, so it returns to idle, and
+`idle.deferred` names the phase (`not_idle_queued`, `not_idle_admitting`, …)
+instead of a bare `not_idle_phase`.
 
 Some older conversations are keyed by the durable object id they were given
 (`idFromName(...).toString()`). `agents/lifecycle` refuses to serve a fetch for an

@@ -318,4 +318,61 @@ describe("native idle close Worker integration", () => {
     })
     expect(restored?.id).toBe("turn:observe")
   }, 20_000)
+  it("returns a queued phase with no queue to idle when the lease renews", async () => {
+    const key = "C1:lease-repairs-empty-queue"
+    const stub = env.CONVERSATION.getByName(key)
+    const phase = await runInDurableObject(stub, async (instance, runtime) => {
+      await runtime.storage.deleteAll()
+      const settings = await env.SETTINGS.getByName("global").fetch("https://settings/get")
+        .then((response) => response.json()) as { version: number }
+      // Whatever drained the queue also failed to leave the phase: no admission
+      // retry exists, so nothing would ever return this conversation to idle.
+      await runtime.storage.put("state", {
+        phase: "queued",
+        queue: [],
+        settingsVersion: settings.version,
+        seen: [],
+        pending: {},
+      } satisfies ConversationState)
+
+      const controlPort: ContainerPort = {
+        async fetch(input) {
+          const request = input instanceof Request ? input : new Request(input)
+          const url = new URL(request.url)
+          if (url.pathname === "/health") return json({ ok: true })
+          if (url.pathname === "/start") {
+            return json({
+              ok: true,
+              accountingPolicy: ACCOUNTING_POLICY_ID,
+              opencodeGeneration: GENERATION,
+              eventPersistence: true,
+            })
+          }
+          return json({ error: "not found" }, 404)
+        },
+      }
+      const container = {
+        running: true,
+        async destroy() { this.running = false },
+        async setInactivityTimeout() {},
+        getTcpPort() { return controlPort },
+      }
+      const conversation = instance as unknown as {
+        ctx: object
+        key?: string
+        transport?: unknown
+        leases: { ensureHeld(): Promise<void> }
+      }
+      Object.defineProperty(conversation.ctx, "container", { configurable: true, value: container })
+      conversation.key = key
+      conversation.transport = undefined
+      runtimeCache(instance).invalidate()
+      await conversation.leases.ensureHeld()
+
+      await driveConversationJobs(instance, runtime.storage, ["lease:renew"])
+
+      return (await runtime.storage.get<ConversationState>("state"))?.phase
+    })
+    expect(phase).toBe("idle")
+  }, 20_000)
 })

@@ -163,6 +163,7 @@ export class ConversationScheduler {
     const epoch = await this.epoch()
     if (await this.options.storage.get<boolean>("lifecycleJobsSealed")) return
     const state = await this.options.store.get()
+    await repairQueuedPhase(this.options.store, state)
     const phase = state.phase ?? "idle"
     if (!this.capability.has("turn:observe") && needsObservation(state)) {
       await this.schedule("turn:observe", Date.now(), {
@@ -418,6 +419,14 @@ export function failureRetryAt(
   if (jobFailureReason(failure) === "session_missing") return undefined
   if (kind === "turn:observe" && !observationHasWork(state)) return undefined
   return Date.now() + 30_000
+}
+
+/**
+ * A queued phase with no queue owns nothing: whatever drained it also failed to
+ * leave the phase, so no admission retry exists and nothing returns it to idle.
+ */
+async function repairQueuedPhase(store: ConversationStore, state: ConversationState): Promise<void> {
+  if ((state.phase ?? "idle") === "queued" && !state.queue?.[0]) await store.advance("idle")
 }
 
 /**
