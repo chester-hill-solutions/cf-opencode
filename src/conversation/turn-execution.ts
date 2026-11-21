@@ -68,6 +68,8 @@ export interface ConversationTurnExecutionOptions {
     schedule(kind: ConversationJobKind, at: number, payload?: ConversationJobPayload): Promise<void>
   }
   settings(): Promise<HarnessSettings>
+  /** Bound on one runtime read; a hung read must not wedge the pump for the instance. */
+  observeTimeoutMs?: number
   releaseBudgetReservation(reservation: BudgetReservation): Promise<boolean>
   finalReply?(state: ConversationState, text: string, assistantID?: string): Promise<void>
   waitUntil(promise: Promise<unknown>): void
@@ -77,6 +79,8 @@ export interface ConversationTurnExecutionOptions {
 }
 
 const POLL_MS = 2_000
+/** A single observation must answer, or the pump flag wedges the whole instance. */
+const OBSERVE_TIMEOUT_MS = 30_000
 const STREAM_STOP_WAIT_MS = 10_000
 const DELIVERY_RETRY_BASE_MS = 5_000
 const DELIVERY_RETRY_MAX_MS = 5 * 60_000
@@ -101,6 +105,7 @@ export class ConversationTurnExecution {
   constructor(private readonly options: ConversationTurnExecutionOptions) {}
 
   get isStreaming(): boolean { return this.streaming }
+  private get observeTimeout(): number { return this.options.observeTimeoutMs ?? OBSERVE_TIMEOUT_MS }
   get isPumping(): boolean { return this.pumping }
   get currentStreamState(): string { return this.streamState }
   get observedEvents(): ReadonlyMap<string, number> { return new Map(this.seenEvents) }
@@ -239,8 +244,12 @@ export class ConversationTurnExecution {
       if (phase !== "running" && phase !== "settling") return true
       const sessionID = state.sessionID
       const [messages, pending, questions] = await Promise.all([
-        this.options.runtime.withClient((client) => client.session.context({ sessionID })) as Promise<MessageInfo[]>,
-        this.options.runtime.withClient((client) => client.permission.list({ sessionID })).catch(
+        this.options.runtime.withClient((client) =>
+          client.session.context({ sessionID }, { signal: AbortSignal.timeout(this.observeTimeout) }),
+        ) as Promise<MessageInfo[]>,
+        this.options.runtime.withClient((client) =>
+          client.permission.list({ sessionID }, { signal: AbortSignal.timeout(this.observeTimeout) }),
+        ).catch(
           () => undefined,
         ),
         state.slack ? this.options.controlPlane.pendingForms(sessionID).catch(() => [] as Form[]) : Promise.resolve([] as Form[]),
