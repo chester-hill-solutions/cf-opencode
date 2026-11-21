@@ -50,8 +50,14 @@ export async function settleMissingSession(ports: MissingSessionPorts, error: un
     runStartedAt: undefined,
     settlementError: reservationRetained ? MISSING_SESSION_RETAINED : undefined,
     ...(reservationRetained
-      ? { missingSessionSettlement: { at: Date.now(), ...(state.sessionID ? { sessionID: state.sessionID } : {}) } }
-      : { missingSessionSettlement: undefined }),
+      ? {
+        closedTurn: {
+          at: Date.now(),
+          reason: "session_missing" as const,
+          ...(state.sessionID ? { sessionID: state.sessionID } : {}),
+        },
+      }
+      : { closedTurn: undefined }),
     turnID: undefined,
     lastTurnError: MISSING_SESSION_FAILED,
     reportedError: "session_missing",

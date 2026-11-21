@@ -163,7 +163,7 @@ describe("a turn whose session the runtime lost", () => {
     expect(result.state?.turnID).toBeUndefined()
     expect(result.state?.pending).toEqual({})
     expect(result.state?.lastTurnError).toContain("no longer knows this session")
-    expect(result.state?.missingSessionSettlement).toBeUndefined()
+    expect(result.state?.closedTurn).toBeUndefined()
     // A settled turn owes no observation: no retry row may survive it.
     expect(result.job).toBeUndefined()
   })
@@ -196,7 +196,7 @@ describe("a turn whose session the runtime lost", () => {
     // The spend was dispatched and cannot be measured, so an operator retires it.
     expect(result.settled?.budgetReservation?.reservationID).toBe("hold-lost")
     expect(result.settled?.settlementError).toContain("reservation retained")
-    expect(result.settled?.missingSessionSettlement?.sessionID).toBe("ses_lost")
+    expect(result.settled?.closedTurn).toMatchObject({ reason: "session_missing", sessionID: "ses_lost" })
     expect(result.settled?.phase).toBe("idle")
     expect(result.rehydrated).toBeUndefined()
     expect(result.observed.context).toBe(result.afterSettlement)

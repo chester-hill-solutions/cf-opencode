@@ -225,7 +225,7 @@ export class ConversationRecoveryActions {
       phase: "idle",
       runStartedAt: undefined,
       settlementError: undefined,
-      missingSessionSettlement: undefined,
+      closedTurn: undefined,
       turnID: undefined,
       ...orphanFreeState(current),
     })
@@ -393,8 +393,8 @@ export class ConversationRecoveryActions {
   private async reopenClosedTurn(txn: DurableObjectTransaction, state: ConversationState | undefined): Promise<void> {
     await txn.delete("lifecycleJobsSealed")
     if (!state) return
-    if (!state.lifecycleJobsSealed && !state.missingSessionSettlement) return
-    await txn.put("state", { ...state, lifecycleJobsSealed: false, missingSessionSettlement: undefined })
+    if (!state.lifecycleJobsSealed && !state.closedTurn) return
+    await txn.put("state", { ...state, lifecycleJobsSealed: false, closedTurn: undefined })
   }
 
   async runAction<T>(operation: () => Promise<T>): Promise<T> {

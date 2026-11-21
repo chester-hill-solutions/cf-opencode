@@ -87,6 +87,12 @@ const DELIVERY_RETRY_MAX_MS = 5 * 60_000
 /** A settlement that outlived its turn may need an operator, so poll it slowly. */
 const PAUSED_SETTLEMENT_BACKOFF_AFTER_MS = 20 * 60_000
 const PAUSED_SETTLEMENT_POLL_MS = 60_000
+/**
+ * Past this age a dispatched turn will never settle: the provider outcome it
+ * needs cannot appear, so polling only keeps a container alive. An operator
+ * retires the reservation (`retry` re-observes, `abandon` writes the spend off).
+ */
+const STALLED_SETTLEMENT_MS = 60 * 60_000
 
 interface FormRetries {
   sessionID: string
@@ -281,6 +287,10 @@ export class ConversationTurnExecution {
 
   async pauseSettlement(message: string): Promise<void> {
     const current = await this.options.store.get()
+    if (stalledSettlement(current)) {
+      await this.closeStalledSettlement(current, message)
+      return
+    }
     const newlyPaused = current.settlementError !== message
     // A fresh turn is retried at the poll cadence; one that has outlived its own
     // timeout may need an operator, and a 2-second alarm loop only burns
@@ -308,6 +318,34 @@ export class ConversationTurnExecution {
       }
       await this.options.delivery.event({ type: "error", message: `Settlement paused: ${message}` }).catch(() => {})
     }
+  }
+
+  /**
+   * Close a turn that cannot settle, keeping its reservation for an operator.
+   * Nothing polls it afterwards: the observation ends and idle-close reclaims the
+   * container, which is what a permanently un-settleable turn must not hold.
+   */
+  private async closeStalledSettlement(state: ConversationState, message: string): Promise<void> {
+    await this.options.store.patch({
+      phase: "idle",
+      runStartedAt: undefined,
+      settlementError: message,
+      closedTurn: {
+        at: Date.now(),
+        reason: "settlement_expired",
+        ...(state.sessionID ? { sessionID: state.sessionID } : {}),
+      },
+    })
+    await this.options.delivery.count("settlement.expired").catch(() => {})
+    logEvent("settlement.expired", {
+      conversationID: this.options.conversationID,
+      sessionID: state.sessionID,
+      ...(state.runStartedAt ? { ageMs: Date.now() - state.runStartedAt } : {}),
+    })
+    await this.options.delivery.event({
+      type: "error",
+      message: "This turn could not be settled within an hour; its reservation is retained for an operator.",
+    }).catch(() => {})
   }
 
   private async finishTurn(state: ConversationState, reply: string, failure?: TurnFailure, messages?: MessageInfo[]): Promise<void> {
@@ -527,6 +565,14 @@ export class ConversationTurnExecution {
       type: "error", message: `Slack question delivery failed; retrying with backoff: ${errorMessage(error)}`,
     }, { slack: false }).catch(() => {})
   }
+}
+
+/** A dispatched turn older than the stall ceiling can never produce its outcome. */
+function stalledSettlement(state: ConversationState): boolean {
+  if (state.budgetReservation?.dispatched !== true) return false
+  const started = state.runStartedAt
+  if (typeof started !== "number" || !Number.isFinite(started) || started <= 0) return false
+  return Date.now() - started > STALLED_SETTLEMENT_MS
 }
 
 function errorMessage(error: unknown): string {
