@@ -106,6 +106,10 @@ implementation has the same shapes and must pass all four:
   `src/index.ts`) should adopt the `<runId>:<callId>` shape or stay opaque.
 - What a suspend means for an in-flight SSE reader
   (`ConversationTurnExecution.runStream`): today only `recycle` fences one.
+- Where a durable program keeps its own fence. `ConversationState` has no shape
+  version, and the file sits at its size ceiling, so a resumed run that needs
+  persisted state must first extract the record type (or the version has nowhere
+  to live). Do that before the first semantic change, not after.
 
 ## Trigger for implementation
 

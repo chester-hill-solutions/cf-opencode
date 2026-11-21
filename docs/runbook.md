@@ -660,6 +660,11 @@ against the last values reported:
 | `capacity.rejected` | container cap hit |
 | `turn.failed`, `turn.timedout` | failed or abandoned turns |
 | `settlement.paused` | first entry into a paused settlement; inspect the conversation's `settlementError` and retained hold |
+| `settlement.expired` | a turn was closed an hour after dispatch with its spend unmeasured; `retry` re-observes, `abandon` retires the reservation |
+| `pump.latch_expired` | an observation stopped answering and its latch had to expire; inspect for a wedged runtime |
+| `turn.session_missing` | a turn was closed because the runtime lost its session (self-heal, notice) |
+| `turn.session_missing.runtime_retained` | the same, but the container could not be stopped (escalation) |
+| `container.recycled` | a container was recycled after consecutive client failures (notice; a rising rate means a wedged runtime) |
 | `slack.form.failed` | question-card delivery failed; check bot scopes/channel access; retries back off from 5 seconds to 5 minutes while the turn is active |
 | `checkpoint.failed`, `snapshot.failed` | durability failures |
 | `budget` | daily spend reaches 80% of `dailyBudgetUSD` |
@@ -676,9 +681,10 @@ When `SLACK_BOT_TOKEN` and `ALERT_CHANNEL` are set, new alerts are also posted
 to Slack. Without them they are stored only.
 
 Routing is by severity, not by convenience. Alerts that need a person —
-timed-out turns, paused settlements, failed checkpoints, failed snapshots,
-undelivered questions, budget pressure — go to `ESCALATION_CHANNEL` and nowhere
-else, with a `:rotating_light:` prefix. Routine notices (capacity rejections,
+timed-out turns, paused or expired settlements, an expired pump latch, a
+lost-session turn whose container would not stop, failed checkpoints, failed
+snapshots, undelivered questions, budget pressure — go to `ESCALATION_CHANNEL`
+and nowhere else, with a `:rotating_light:` prefix. Routine notices (capacity rejections,
 failed turns) stay on `ALERT_CHANNEL` with `:warning:`. If `ESCALATION_CHANNEL`
 is unset, escalations fall back to `ALERT_CHANNEL` rather than being dropped: a
 human-needed signal must never route to nowhere. Keep the escalation channel one
